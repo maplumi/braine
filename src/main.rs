@@ -1,11 +1,7 @@
-mod causality;
-mod prng;
-mod substrate;
-mod assays;
-mod supervisor;
+mod experiments;
 
-use substrate::{ActionPolicy, Brain, BrainConfig, Stimulus};
-use supervisor::{ChildConfigOverrides, ChildSpec, Supervisor};
+use braine::substrate::{ActionPolicy, Brain, BrainConfig, Stimulus};
+use braine::supervisor::{ChildConfigOverrides, ChildSpec, Supervisor};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -14,7 +10,7 @@ fn main() {
         return;
     }
     if args.len() >= 2 && args[1] == "assays" {
-        assays::run();
+        experiments::assays::run();
         return;
     }
     if args.len() >= 2 && args[1] == "spawn-demo" {
@@ -23,6 +19,10 @@ fn main() {
     }
     if args.len() >= 2 && args[1] == "autonomy-demo" {
         run_autonomy_demo();
+        return;
+    }
+    if args.len() >= 2 && args[1] == "pong-demo" {
+        run_pong_demo();
         return;
     }
 
@@ -136,7 +136,33 @@ fn print_help() {
     println!("  cargo run -- assays");
     println!("  cargo run -- spawn-demo");
     println!("  cargo run -- autonomy-demo");
+    println!("  cargo run -- pong-demo");
     println!("  cargo run -- --help");
+}
+
+fn run_pong_demo() {
+    let mut brain = Brain::new(BrainConfig {
+        unit_count: 128,
+        connectivity_per_unit: 8,
+        dt: 0.05,
+        base_freq: 1.0,
+        noise_amp: 0.015,
+        noise_phase: 0.008,
+        global_inhibition: 0.07,
+        hebb_rate: 0.09,
+        forget_rate: 0.0015,
+        prune_below: 0.0008,
+        coactive_threshold: 0.55,
+        phase_lock_threshold: 0.6,
+        imprint_rate: 0.6,
+        seed: Some(123),
+        causal_decay: 0.01,
+    });
+
+    experiments::env_pong::run_pong_demo(
+        &mut brain,
+        experiments::env_pong::PongConfig::default(),
+    );
 }
 
 fn run_autonomy_demo() {
@@ -191,10 +217,16 @@ fn run_autonomy_demo() {
     let novel = "vision_new";
     println!("encounter novel stimulus: {novel}");
 
+    // In a real system, the Frame/body would map a new sensor channel to a sparse group.
+    // For the demo, we materialize the sensor group in the parent immediately.
     if !parent.has_sensor(novel) {
-        println!("no sensor group found; spawning child sandbox...");
+        parent.define_sensor(novel, 6);
+    }
 
-        let mut sup = Supervisor::new(parent);
+    // Spawn a child sandbox to learn what to do with the new signal.
+    println!("spawning child sandbox...");
+
+    let mut sup = Supervisor::new(parent);
         sup.spawn_child(
             ChildSpec {
                 name: "auto_child".to_string(),
@@ -219,19 +251,44 @@ fn run_autonomy_demo() {
         println!("consolidation result: {:?}", winner);
 
         parent = sup.parent;
+
+    // Post-consolidation verification loop:
+    // Parent experiences the novel stimulus and gets reward feedback.
+    let target = "avoid";
+    let verify_steps = 200;
+    let mut target_count = 0usize;
+
+    for _ in 0..verify_steps {
+        parent.apply_stimulus(Stimulus::new(novel, 1.0));
+        parent.step();
+        let (action, _score) = parent.select_action_with_meaning(novel, 1.5);
+        parent.note_action(&action);
+
+        let reward = if action == target { 0.7 } else { -0.4 };
+        parent.set_neuromodulator(reward);
+        if action == target {
+            target_count += 1;
+        }
+        if reward > 0.0 {
+            parent.reinforce_action(target, 0.4);
+        }
+
+        parent.commit_observation();
     }
 
-    // Test response after consolidation.
-    parent.apply_stimulus(Stimulus::new(novel, 1.0));
-    parent.set_neuromodulator(0.0);
-    parent.step();
-    let mut det = ActionPolicy::Deterministic;
-    let (action, score) = parent.select_action(&mut det);
-    parent.note_action(&action);
-    parent.commit_observation();
-
+    let stability = target_count as f32 / verify_steps as f32;
     let hint = parent.meaning_hint(novel);
-    println!("post-learn action={action} score={:+.3} meaning_hint={:?}", score, hint);
+    let pass = stability >= 0.6 && hint.is_some();
+
+    println!("autonomy-demo verification:");
+    println!("  target_action={target}");
+    println!("  action_stability={:.3}", stability);
+    println!("  meaning_hint={:?}", hint);
+    println!("  result={}", if pass { "PASS" } else { "FAIL" });
+
+    if !pass {
+        std::process::exit(1);
+    }
 }
 
 fn run_spawn_demo() {

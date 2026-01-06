@@ -2,6 +2,14 @@ use std::collections::HashMap;
 
 pub type SymbolId = u32;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CausalStats {
+    pub base_symbols: usize,
+    pub edges: usize,
+    pub last_directed_edge_updates: usize,
+    pub last_cooccur_edge_updates: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 struct EdgeStats {
     // Exponentially decayed co-occurrence counts.
@@ -21,6 +29,9 @@ pub struct CausalMemory {
     base: HashMap<SymbolId, f32>,
 
     prev_symbols: Vec<SymbolId>,
+
+    last_directed_edge_updates: usize,
+    last_cooccur_edge_updates: usize,
 }
 
 impl CausalMemory {
@@ -30,10 +41,16 @@ impl CausalMemory {
             edges: HashMap::new(),
             base: HashMap::new(),
             prev_symbols: Vec::new(),
+
+            last_directed_edge_updates: 0,
+            last_cooccur_edge_updates: 0,
         }
     }
 
     pub fn observe(&mut self, current_symbols: &[SymbolId]) {
+        self.last_directed_edge_updates = 0;
+        self.last_cooccur_edge_updates = 0;
+
         // Apply decay.
         for v in self.base.values_mut() {
             *v *= 1.0 - self.decay;
@@ -52,11 +69,37 @@ impl CausalMemory {
             for &b in current_symbols {
                 let key = pack(a, b);
                 self.edges.entry(key).or_default().count += 1.0;
+                self.last_directed_edge_updates += 1;
+            }
+        }
+
+        // Also record same-tick co-occurrence as a cheap proxy for immediate meaning links
+        // (e.g. stimulus present and action selected in the same control cycle).
+        // This keeps compute small because current_symbols is tiny.
+        for (i, &a) in current_symbols.iter().enumerate() {
+            for &b in current_symbols.iter().skip(i + 1) {
+                if a == b {
+                    continue;
+                }
+                let k1 = pack(a, b);
+                let k2 = pack(b, a);
+                self.edges.entry(k1).or_default().count += 0.5;
+                self.edges.entry(k2).or_default().count += 0.5;
+                self.last_cooccur_edge_updates += 2;
             }
         }
 
         self.prev_symbols.clear();
         self.prev_symbols.extend_from_slice(current_symbols);
+    }
+
+    pub fn stats(&self) -> CausalStats {
+        CausalStats {
+            base_symbols: self.base.len(),
+            edges: self.edges.len(),
+            last_directed_edge_updates: self.last_directed_edge_updates,
+            last_cooccur_edge_updates: self.last_cooccur_edge_updates,
+        }
     }
 
     /// A cheap "causal strength" score: P(B|A) - P(B)

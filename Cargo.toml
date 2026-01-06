@@ -3,5 +3,10 @@ name = "braine"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [
+	"braine_vis",
+]
+
 [dependencies]
 

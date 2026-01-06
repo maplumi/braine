@@ -20,7 +20,12 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 
 ## Reproducible assays
 - Run the current assays with: `cargo run -- assays`
+- Run the layman-visible environment demo with: `cargo run -- pong-demo`
 - Run the interactive-ish demo with: `cargo run`
+
+## Code separation
+- Core brain code lives in `src/lib.rs` + `src/{substrate,causality,supervisor,prng}.rs`
+- Demos/assays live in `src/experiments/*` and are wired by `src/main.rs`
 
 ## Working definitions
 - **Unit**: a tiny dynamical element with amplitude + phase.

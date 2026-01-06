@@ -118,6 +118,58 @@ flowchart TD
 	X --> P
 ```
 
+## 6) Braine internals: data flow (including observers)
+
+This diagram highlights the *runtime loop* and where learning, meaning, and observation happen.
+
+```mermaid
+flowchart TD
+	subgraph Env[Frame and Environment]
+		S["Stimulus symbols (example: pong_ctx_left)"]
+		N["Neuromodulator scalar (reward in -1..+1)"]
+		A["Actuators (chosen action name)"]
+	end
+
+	subgraph Core[Brain core substrate]
+		AS["apply_stimulus"]
+		DYN["step (wave dynamics)"]
+		POL["select_action / select_action_with_meaning"]
+		PL["local plasticity (Hebb + forgetting)"]
+		CO["commit_observation (symbols set)"]
+		CM["CausalMemory observe + score"]
+	end
+
+	S --> AS --> DYN --> POL --> A
+	N --> DYN
+	DYN --> PL --> DYN
+	AS --> CO
+	POL --> CO
+	N --> CO
+	CO --> CM --> POL
+
+	subgraph Obs[Observer read only]
+		T["Telemetry buffers (optional)"]
+		AD["Adapter snapshot (BrainAdapter / SupervisorAdapter)"]
+	end
+
+	Core -."no interference".-> T
+	T --> AD
+	Core -."read-only poll".-> AD
+
+	subgraph Sup[Supervisor child brains]
+		P2["Parent brain"]
+		C1["Child brain"]
+		C2["Child brain"]
+		ST["step_children_parallel"]
+		CS["consolidate_best"]
+	end
+
+	P2 --> ST --> C1
+	P2 --> ST --> C2
+	C1 --> CS --> P2
+	C2 --> CS --> P2
+```
+
 ## 3) Why this is “fundamentally different” from LLMs
 
 This system:

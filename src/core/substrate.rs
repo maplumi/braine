@@ -122,6 +122,20 @@ pub struct Brain {
     reward_neg_symbol: SymbolId,
 
     pruned_last_step: usize,
+
+    age_steps: u64,
+
+    telemetry: Telemetry,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Telemetry {
+    enabled: bool,
+
+    last_stimuli: Vec<SymbolId>,
+    last_actions: Vec<SymbolId>,
+    last_reinforced_actions: Vec<(SymbolId, f32)>,
+    last_committed_symbols: Vec<SymbolId>,
 }
 
 impl Brain {
@@ -184,7 +198,64 @@ impl Brain {
             causal,
             reward_pos_symbol,
             reward_neg_symbol,
+
+            age_steps: 0,
+            telemetry: Telemetry::default(),
         }
+    }
+
+    /// Enable/disable observer telemetry.
+    /// When enabled, the brain records a small summary of what happened each loop.
+    /// Observers read this data without mutating the functional state.
+    pub fn set_observer_telemetry(&mut self, enabled: bool) {
+        self.telemetry.enabled = enabled;
+        if enabled {
+            // Pre-allocate small buffers to avoid per-step allocations.
+            if self.telemetry.last_stimuli.capacity() < 8 {
+                self.telemetry.last_stimuli.reserve(8);
+            }
+            if self.telemetry.last_actions.capacity() < 8 {
+                self.telemetry.last_actions.reserve(8);
+            }
+            if self.telemetry.last_reinforced_actions.capacity() < 8 {
+                self.telemetry.last_reinforced_actions.reserve(8);
+            }
+            if self.telemetry.last_committed_symbols.capacity() < 16 {
+                self.telemetry.last_committed_symbols.reserve(16);
+            }
+        }
+    }
+
+    pub fn age_steps(&self) -> u64 {
+        self.age_steps
+    }
+
+    pub fn neuromodulator(&self) -> f32 {
+        self.neuromod
+    }
+
+    pub fn causal_stats(&self) -> crate::causality::CausalStats {
+        self.causal.stats()
+    }
+
+    pub fn symbol_name(&self, id: SymbolId) -> Option<&str> {
+        self.symbols_rev.get(id as usize).map(|s| s.as_str())
+    }
+
+    pub fn last_stimuli_symbols(&self) -> &[SymbolId] {
+        &self.telemetry.last_stimuli
+    }
+
+    pub fn last_action_symbols(&self) -> &[SymbolId] {
+        &self.telemetry.last_actions
+    }
+
+    pub fn last_reinforced_action_symbols(&self) -> &[(SymbolId, f32)] {
+        &self.telemetry.last_reinforced_actions
+    }
+
+    pub fn last_committed_symbols(&self) -> &[SymbolId] {
+        &self.telemetry.last_committed_symbols
     }
 
     /// Ensure a sensor group exists; if missing, create it.
@@ -327,6 +398,12 @@ impl Brain {
 
             self.note_symbol(stimulus.name);
 
+            if self.telemetry.enabled {
+                if let Some(id) = self.symbol_id(stimulus.name) {
+                    self.telemetry.last_stimuli.push(id);
+                }
+            }
+
             // One-shot imprinting: when a stimulus is present, create a new "concept" unit
             // connected to currently active units (including the sensor group itself).
             // This is the simplest "instant learning" mechanism without training loops.
@@ -337,6 +414,12 @@ impl Brain {
     /// Record the selected action as an event for causality/meaning.
     pub fn note_action(&mut self, action: &str) {
         self.note_symbol(action);
+
+        if self.telemetry.enabled {
+            if let Some(id) = self.symbol_id(action) {
+                self.telemetry.last_actions.push(id);
+            }
+        }
     }
 
     /// Commit current perception/action/reward events into causal memory.
@@ -356,6 +439,13 @@ impl Brain {
         // Deduplicate cheaply (small vectors).
         self.active_symbols.sort_unstable();
         self.active_symbols.dedup();
+
+        if self.telemetry.enabled {
+            self.telemetry.last_committed_symbols.clear();
+            self.telemetry
+                .last_committed_symbols
+                .extend_from_slice(&self.active_symbols);
+        }
 
         self.causal.observe(&self.active_symbols);
         self.active_symbols.clear();
@@ -384,6 +474,67 @@ impl Brain {
         })
     }
 
+    /// Select an action using both:
+    /// - current dynamical readout (habit/attractor)
+    /// - learned meaning/causality (goal-directed)
+    ///
+    /// `alpha` weights meaning vs habit. `alpha=0` => pure habit.
+    pub fn select_action_with_meaning(&mut self, stimulus: &str, alpha: f32) -> (String, f32) {
+        // Allow meaning to dominate when needed (demo/goal-directed mode).
+        let alpha = alpha.clamp(0.0, 20.0);
+        let stimulus_id = self.symbol_id(stimulus);
+
+        let mut best: Option<(String, f32)> = None;
+        for g in &self.action_groups {
+            // Habit readout: treat negative amplitude as "inactive" and normalize to ~[0,1].
+            let habit = g
+                .units
+                .iter()
+                .map(|&id| self.units[id].amp.max(0.0))
+                .sum::<f32>();
+            let habit_norm = if g.units.is_empty() {
+                0.0
+            } else {
+                (habit / (g.units.len() as f32 * 2.0)).clamp(0.0, 1.0)
+            };
+
+            let meaning = if let Some(aid) = self.symbol_id(&g.name) {
+                // Global action value (unconditional).
+                let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
+                    - self.causal.causal_strength(aid, self.reward_neg_symbol);
+
+                // State-conditional value using a composite symbol, if the environment emits it:
+                //   pair::<stimulus>::<action>
+                // This enables learning different actions for different stimuli without requiring
+                // a dense model.
+                let conditional = if stimulus_id.is_some() {
+                    let pair_name = format!("pair::{stimulus}::{}", g.name);
+                    if let Some(pid) = self.symbol_id(&pair_name) {
+                        self.causal.causal_strength(pid, self.reward_pos_symbol)
+                            - self.causal.causal_strength(pid, self.reward_neg_symbol)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                // If conditional exists it should dominate; global is a weak prior.
+                conditional * 1.0 + global * 0.15
+            } else {
+                0.0
+            };
+
+            // Keep habit as a weak tie-breaker; let meaning drive choice.
+            let score = habit_norm * 0.5 + alpha * meaning;
+            if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
+                best = Some((g.name.clone(), score));
+            }
+        }
+
+        best.unwrap_or_else(|| ("idle".to_string(), 0.0))
+    }
+
     pub fn set_neuromodulator(&mut self, value: f32) {
         // Clamp to a reasonable range.
         self.neuromod = value.clamp(-1.0, 1.0);
@@ -391,6 +542,11 @@ impl Brain {
 
     pub fn reinforce_action(&mut self, action: &str, delta_bias: f32) {
         if let Some(group) = self.action_groups.iter().find(|g| g.name == action) {
+            if self.telemetry.enabled {
+                if let Some(id) = self.symbol_id(action) {
+                    self.telemetry.last_reinforced_actions.push((id, delta_bias));
+                }
+            }
             for &id in &group.units {
                 self.units[id].bias = (self.units[id].bias + delta_bias * 0.01).clamp(-0.5, 0.5);
             }
@@ -399,6 +555,13 @@ impl Brain {
 
     pub fn step(&mut self) {
         self.pruned_last_step = 0;
+
+        self.age_steps = self.age_steps.wrapping_add(1);
+        if self.telemetry.enabled {
+            self.telemetry.last_stimuli.clear();
+            self.telemetry.last_actions.clear();
+            self.telemetry.last_reinforced_actions.clear();
+        }
 
         // Compute global inhibition target as mean activity.
         let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32;
