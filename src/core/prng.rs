@@ -15,6 +15,20 @@ impl Prng {
         Self { state: seed }
     }
 
+    pub(crate) fn from_state(state: u64) -> Self {
+        // Avoid a zero state.
+        let state = if state == 0 {
+            0x9E3779B97F4A7C15
+        } else {
+            state
+        };
+        Self { state }
+    }
+
+    pub(crate) fn state(&self) -> u64 {
+        self.state
+    }
+
     #[inline]
     fn next_u64(&mut self) -> u64 {
         // xorshift64*

@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::io::{self, Read, Write};
+
+use crate::storage;
 
 pub type SymbolId = u32;
 
@@ -137,6 +140,101 @@ impl CausalMemory {
             let entry = self.edges.entry(key).or_default();
             entry.count = (1.0 - rate) * entry.count + rate * stats.count;
         }
+    }
+
+    /// Return the strongest outgoing causal links from `a`.
+    ///
+    /// This scans existing edges (so it stays cheap) and ranks by `causal_strength(a,b)`.
+    pub fn top_outgoing(&self, a: SymbolId, top_n: usize) -> Vec<(SymbolId, f32)> {
+        let mut out: Vec<(SymbolId, f32)> = Vec::new();
+        for (&key, _stats) in self.edges.iter() {
+            let from = (key >> 32) as SymbolId;
+            if from != a {
+                continue;
+            }
+            let b = (key & 0xFFFF_FFFF) as SymbolId;
+            let s = self.causal_strength(a, b);
+            out.push((b, s));
+        }
+
+        out.sort_by(|x, y| y.1.total_cmp(&x.1));
+        out.truncate(top_n);
+        out
+    }
+
+    pub(crate) fn image_payload_len_bytes(&self) -> u32 {
+        let base_n = self.base.len() as u64;
+        let edge_n = self.edges.len() as u64;
+        let prev_n = self.prev_symbols.len() as u64;
+
+        let mut len = 0u64;
+        len += 4; // decay
+        len += 4; // base count
+        len += base_n * (4 + 4); // (sym,count)
+        len += 4; // edge count
+        len += edge_n * (8 + 4); // (key,count)
+        len += 4; // prev count
+        len += prev_n * 4; // prev symbols
+
+        u32::try_from(len).unwrap_or(u32::MAX)
+    }
+
+    pub(crate) fn write_image_payload<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        storage::write_f32_le(w, self.decay)?;
+
+        storage::write_u32_le(w, self.base.len() as u32)?;
+        for (&sym, &count) in self.base.iter() {
+            storage::write_u32_le(w, sym)?;
+            storage::write_f32_le(w, count)?;
+        }
+
+        storage::write_u32_le(w, self.edges.len() as u32)?;
+        for (&key, stats) in self.edges.iter() {
+            storage::write_u64_le(w, key)?;
+            storage::write_f32_le(w, stats.count)?;
+        }
+
+        storage::write_u32_le(w, self.prev_symbols.len() as u32)?;
+        for &sym in self.prev_symbols.iter() {
+            storage::write_u32_le(w, sym)?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn read_image_payload<R: Read>(r: &mut R) -> io::Result<Self> {
+        let decay = storage::read_f32_le(r)?;
+
+        let base_n = storage::read_u32_le(r)? as usize;
+        let mut base: HashMap<SymbolId, f32> = HashMap::with_capacity(base_n);
+        for _ in 0..base_n {
+            let sym = storage::read_u32_le(r)?;
+            let count = storage::read_f32_le(r)?;
+            base.insert(sym, count);
+        }
+
+        let edge_n = storage::read_u32_le(r)? as usize;
+        let mut edges: HashMap<u64, EdgeStats> = HashMap::with_capacity(edge_n);
+        for _ in 0..edge_n {
+            let key = storage::read_u64_le(r)?;
+            let count = storage::read_f32_le(r)?;
+            edges.insert(key, EdgeStats { count });
+        }
+
+        let prev_n = storage::read_u32_le(r)? as usize;
+        let mut prev_symbols: Vec<SymbolId> = Vec::with_capacity(prev_n);
+        for _ in 0..prev_n {
+            prev_symbols.push(storage::read_u32_le(r)?);
+        }
+
+        Ok(Self {
+            decay: decay.clamp(0.0, 1.0),
+            edges,
+            base,
+            prev_symbols,
+            last_directed_edge_updates: 0,
+            last_cooccur_edge_updates: 0,
+        })
     }
 }
 

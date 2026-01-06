@@ -197,11 +197,12 @@ impl Supervisor {
         }
 
         for (spec, seed, overrides, parent_id) in spawned {
-            let mut grand = if let Some(parent_child) = self.children.iter().find(|c| c.id == parent_id) {
-                parent_child.brain.spawn_child(seed, overrides)
-            } else {
-                self.parent.spawn_child(seed, overrides)
-            };
+            let mut grand =
+                if let Some(parent_child) = self.children.iter().find(|c| c.id == parent_id) {
+                    parent_child.brain.spawn_child(seed, overrides)
+                } else {
+                    self.parent.spawn_child(seed, overrides)
+                };
 
             grand.ensure_sensor(&spec.stimulus_name, 6);
 
@@ -354,9 +355,14 @@ fn step_one_child(child: &mut ChildBrain) {
 
     // If stuck for a long time, request spawning a grandchild explorer.
     if child.remaining % 300 == 0 {
-        if child.brain.meaning_hint(&child.spec.stimulus_name).is_none() {
-            child.requests.push(ChildRequest::SpawnGrandchild { extra_steps: 250 });
+        if child
+            .brain
+            .meaning_hint(&child.spec.stimulus_name)
+            .is_none()
+        {
+            child
+                .requests
+                .push(ChildRequest::SpawnGrandchild { extra_steps: 250 });
         }
     }
 }
-

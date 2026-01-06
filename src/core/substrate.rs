@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::io::{self, Read, Write};
 
 use crate::causality::{CausalMemory, SymbolId};
 use crate::prng::Prng;
+use crate::storage;
 
 pub type UnitId = usize;
 
@@ -258,6 +260,565 @@ impl Brain {
         &self.telemetry.last_committed_symbols
     }
 
+    /// Serialize a versioned, chunked "brain image".
+    ///
+    /// This is std-only and intended to be capacity-aware when paired with
+    /// `storage::CapacityWriter`.
+    pub fn save_image_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(storage::MAGIC)?;
+        storage::write_u32_le(w, storage::VERSION_V1)?;
+
+        self.write_cfg_chunk(w)?;
+        self.write_prng_chunk(w)?;
+        self.write_stat_chunk(w)?;
+        self.write_unit_chunk(w)?;
+        self.write_mask_chunk(w)?;
+        self.write_groups_chunk(w)?;
+        self.write_symbols_chunk(w)?;
+        self.write_causality_chunk(w)?;
+
+        Ok(())
+    }
+
+    /// Load a versioned, chunked "brain image".
+    ///
+    /// Unknown chunks are skipped for forward-compatibility.
+    pub fn load_image_from<R: Read>(r: &mut R) -> io::Result<Self> {
+        let magic = storage::read_exact::<8, _>(r)?;
+        if &magic != storage::MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad brain image magic",
+            ));
+        }
+
+        let version = storage::read_u32_le(r)?;
+        if version != storage::VERSION_V1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported brain image version",
+            ));
+        }
+
+        let mut cfg: Option<BrainConfig> = None;
+        let mut rng_state: Option<u64> = None;
+        let mut age_steps: Option<u64> = None;
+        let mut units: Option<Vec<Unit>> = None;
+        let mut reserved: Option<Vec<bool>> = None;
+        let mut learning_enabled: Option<Vec<bool>> = None;
+        let mut sensor_groups: Option<Vec<NamedGroup>> = None;
+        let mut action_groups: Option<Vec<NamedGroup>> = None;
+        let mut symbols_rev: Option<Vec<String>> = None;
+        let mut causal: Option<CausalMemory> = None;
+
+        loop {
+            let (tag, len) = match storage::read_chunk_header(r) {
+                Ok(v) => v,
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
+            };
+
+            let mut take = r.take(len as u64);
+            match &tag {
+                b"CFG0" => {
+                    cfg = Some(Self::read_cfg_payload(&mut take)?);
+                }
+                b"PRNG" => {
+                    rng_state = Some(storage::read_u64_le(&mut take)?);
+                }
+                b"STAT" => {
+                    age_steps = Some(storage::read_u64_le(&mut take)?);
+                }
+                b"UNIT" => {
+                    units = Some(Self::read_unit_payload(&mut take)?);
+                }
+                b"MASK" => {
+                    let (rsv, learn) = Self::read_mask_payload(&mut take)?;
+                    reserved = Some(rsv);
+                    learning_enabled = Some(learn);
+                }
+                b"GRPS" => {
+                    let (sg, ag) = Self::read_groups_payload(&mut take)?;
+                    sensor_groups = Some(sg);
+                    action_groups = Some(ag);
+                }
+                b"SYMB" => {
+                    symbols_rev = Some(Self::read_symbols_payload(&mut take)?);
+                }
+                b"CAUS" => {
+                    causal = Some(CausalMemory::read_image_payload(&mut take)?);
+                }
+                _ => {
+                    // Unknown chunk: skip.
+                }
+            }
+
+            // Drain any remaining payload bytes for unknown or partially-read chunks.
+            io::copy(&mut take, &mut io::sink())?;
+        }
+
+        let cfg = cfg.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing CFG0"))?;
+        let unit_count = cfg.unit_count;
+        let units =
+            units.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing UNIT"))?;
+        if units.len() != unit_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "UNIT count mismatch",
+            ));
+        }
+
+        let reserved =
+            reserved.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing MASK"))?;
+        let learning_enabled = learning_enabled
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing MASK"))?;
+        if reserved.len() != unit_count || learning_enabled.len() != unit_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MASK length mismatch",
+            ));
+        }
+
+        let sensor_groups = sensor_groups
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing GRPS"))?;
+        let action_groups = action_groups
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing GRPS"))?;
+
+        let symbols_rev = symbols_rev
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing SYMB"))?;
+        let (symbols, reward_pos_symbol, reward_neg_symbol) =
+            Self::rebuild_symbol_tables(&symbols_rev)?;
+
+        let causal =
+            causal.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing CAUS"))?;
+        let rng_state =
+            rng_state.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing PRNG"))?;
+
+        let age_steps = age_steps.unwrap_or(0);
+
+        Ok(Self {
+            cfg,
+            units,
+            rng: Prng::from_state(rng_state),
+            reserved,
+            learning_enabled,
+            sensor_groups,
+            action_groups,
+            pending_input: vec![0.0; unit_count],
+            neuromod: 0.0,
+            symbols,
+            symbols_rev,
+            active_symbols: Vec::new(),
+            causal,
+            reward_pos_symbol,
+            reward_neg_symbol,
+            pruned_last_step: 0,
+            age_steps,
+            telemetry: Telemetry::default(),
+        })
+    }
+
+    /// Exact serialized size in bytes for the current brain image.
+    pub fn image_size_bytes(&self) -> io::Result<usize> {
+        let mut cw = storage::CountingWriter::new();
+        self.save_image_to(&mut cw)?;
+        Ok(cw.written())
+    }
+
+    fn write_cfg_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = Self::cfg_payload_len_bytes();
+        w.write_all(b"CFG0")?;
+        storage::write_u32_le(w, payload_len)?;
+        self.write_cfg_payload(w)
+    }
+
+    fn cfg_payload_len_bytes() -> u32 {
+        // Bytes based on exact write order below.
+        4  // unit_count
+            + 4  // connectivity_per_unit
+            + 4  // dt
+            + 4  // base_freq
+            + 4  // noise_amp
+            + 4  // noise_phase
+            + 4  // global_inhibition
+            + 4  // hebb_rate
+            + 4  // forget_rate
+            + 4  // prune_below
+            + 4  // coactive_threshold
+            + 4  // phase_lock_threshold
+            + 4  // imprint_rate
+            + 4  // seed_present
+            + 8  // seed
+            + 4 // causal_decay
+    }
+
+    fn write_cfg_payload<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        storage::write_u32_le(w, self.cfg.unit_count as u32)?;
+        storage::write_u32_le(w, self.cfg.connectivity_per_unit as u32)?;
+        storage::write_f32_le(w, self.cfg.dt)?;
+        storage::write_f32_le(w, self.cfg.base_freq)?;
+        storage::write_f32_le(w, self.cfg.noise_amp)?;
+        storage::write_f32_le(w, self.cfg.noise_phase)?;
+        storage::write_f32_le(w, self.cfg.global_inhibition)?;
+        storage::write_f32_le(w, self.cfg.hebb_rate)?;
+        storage::write_f32_le(w, self.cfg.forget_rate)?;
+        storage::write_f32_le(w, self.cfg.prune_below)?;
+        storage::write_f32_le(w, self.cfg.coactive_threshold)?;
+        storage::write_f32_le(w, self.cfg.phase_lock_threshold)?;
+        storage::write_f32_le(w, self.cfg.imprint_rate)?;
+        storage::write_u32_le(w, if self.cfg.seed.is_some() { 1 } else { 0 })?;
+        storage::write_u64_le(w, self.cfg.seed.unwrap_or(0))?;
+        storage::write_f32_le(w, self.cfg.causal_decay)?;
+        Ok(())
+    }
+
+    fn read_cfg_payload<R: Read>(r: &mut R) -> io::Result<BrainConfig> {
+        let unit_count = storage::read_u32_le(r)? as usize;
+        let connectivity_per_unit = storage::read_u32_le(r)? as usize;
+
+        let dt = storage::read_f32_le(r)?;
+        let base_freq = storage::read_f32_le(r)?;
+        let noise_amp = storage::read_f32_le(r)?;
+        let noise_phase = storage::read_f32_le(r)?;
+        let global_inhibition = storage::read_f32_le(r)?;
+        let hebb_rate = storage::read_f32_le(r)?;
+        let forget_rate = storage::read_f32_le(r)?;
+        let prune_below = storage::read_f32_le(r)?;
+        let coactive_threshold = storage::read_f32_le(r)?;
+        let phase_lock_threshold = storage::read_f32_le(r)?;
+        let imprint_rate = storage::read_f32_le(r)?;
+        let seed_present = storage::read_u32_le(r)?;
+        let seed = storage::read_u64_le(r)?;
+        let causal_decay = storage::read_f32_le(r)?;
+
+        Ok(BrainConfig {
+            unit_count,
+            connectivity_per_unit,
+            dt,
+            base_freq,
+            noise_amp,
+            noise_phase,
+            global_inhibition,
+            hebb_rate,
+            forget_rate,
+            prune_below,
+            coactive_threshold,
+            phase_lock_threshold,
+            imprint_rate,
+            seed: if seed_present != 0 { Some(seed) } else { None },
+            causal_decay,
+        })
+    }
+
+    fn write_prng_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(b"PRNG")?;
+        storage::write_u32_le(w, 8)?;
+        storage::write_u64_le(w, self.rng.state())
+    }
+
+    fn write_stat_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(b"STAT")?;
+        storage::write_u32_le(w, 8)?;
+        storage::write_u64_le(w, self.age_steps)
+    }
+
+    fn unit_payload_len_bytes(&self) -> io::Result<u32> {
+        let mut len: u64 = 0;
+        len += 4; // unit_count
+        for u in &self.units {
+            len += 4 * 4; // amp,phase,bias,decay
+            len += 4; // conn_count
+            for _ in &u.connections {
+                len += 4; // target
+                len += 4; // weight
+            }
+        }
+        Ok(u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UNIT chunk too large"))?)
+    }
+
+    fn write_unit_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = self.unit_payload_len_bytes()?;
+        w.write_all(b"UNIT")?;
+        storage::write_u32_le(w, payload_len)?;
+
+        storage::write_u32_le(w, self.units.len() as u32)?;
+        for u in &self.units {
+            storage::write_f32_le(w, u.amp)?;
+            storage::write_f32_le(w, u.phase)?;
+            storage::write_f32_le(w, u.bias)?;
+            storage::write_f32_le(w, u.decay)?;
+            storage::write_u32_le(w, u.connections.len() as u32)?;
+            for c in &u.connections {
+                storage::write_u32_le(w, c.target as u32)?;
+                storage::write_f32_le(w, c.weight)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn read_unit_payload<R: Read>(r: &mut R) -> io::Result<Vec<Unit>> {
+        let unit_count = storage::read_u32_le(r)? as usize;
+        let mut units: Vec<Unit> = Vec::with_capacity(unit_count);
+        for _ in 0..unit_count {
+            let amp = storage::read_f32_le(r)?;
+            let phase = storage::read_f32_le(r)?;
+            let bias = storage::read_f32_le(r)?;
+            let decay = storage::read_f32_le(r)?;
+            let conn_n = storage::read_u32_le(r)? as usize;
+            let mut connections = Vec::with_capacity(conn_n);
+            for _ in 0..conn_n {
+                let target = storage::read_u32_le(r)? as usize;
+                let weight = storage::read_f32_le(r)?;
+                connections.push(Connection { target, weight });
+            }
+            units.push(Unit {
+                amp,
+                phase,
+                bias,
+                decay,
+                connections,
+            });
+        }
+        Ok(units)
+    }
+
+    fn mask_payload_len_bytes(&self) -> u32 {
+        let n = self.units.len() as u32;
+        let bytes_len = ((n as usize) + 7) / 8;
+        // unit_count (u32) + reserved_len (u32) + reserved_bytes + learn_len (u32) + learn_bytes
+        4 + 4 + bytes_len as u32 + 4 + bytes_len as u32
+    }
+
+    fn write_mask_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = self.mask_payload_len_bytes();
+        w.write_all(b"MASK")?;
+        storage::write_u32_le(w, payload_len)?;
+
+        let n = self.units.len();
+        storage::write_u32_le(w, n as u32)?;
+
+        let bytes_len = (n + 7) / 8;
+        storage::write_u32_le(w, bytes_len as u32)?;
+        Self::write_bool_bits(w, &self.reserved)?;
+
+        storage::write_u32_le(w, bytes_len as u32)?;
+        Self::write_bool_bits(w, &self.learning_enabled)?;
+
+        Ok(())
+    }
+
+    fn write_bool_bits<W: Write>(w: &mut W, bits: &[bool]) -> io::Result<()> {
+        let mut i = 0usize;
+        while i < bits.len() {
+            let mut byte = 0u8;
+            for b in 0..8 {
+                let idx = i + b;
+                if idx >= bits.len() {
+                    break;
+                }
+                if bits[idx] {
+                    byte |= 1u8 << b;
+                }
+            }
+            w.write_all(&[byte])?;
+            i += 8;
+        }
+        Ok(())
+    }
+
+    fn read_mask_payload<R: Read>(r: &mut R) -> io::Result<(Vec<bool>, Vec<bool>)> {
+        let n = storage::read_u32_le(r)? as usize;
+
+        let reserved_len = storage::read_u32_le(r)? as usize;
+        let reserved_bytes = {
+            let mut buf = vec![0u8; reserved_len];
+            r.read_exact(&mut buf)?;
+            buf
+        };
+
+        let learning_len = storage::read_u32_le(r)? as usize;
+        let learning_bytes = {
+            let mut buf = vec![0u8; learning_len];
+            r.read_exact(&mut buf)?;
+            buf
+        };
+
+        if reserved_len != learning_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MASK byte length mismatch",
+            ));
+        }
+        let expected_len = (n + 7) / 8;
+        if reserved_len != expected_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MASK byte length invalid",
+            ));
+        }
+
+        Ok((
+            Self::unpack_bool_bits(n, &reserved_bytes),
+            Self::unpack_bool_bits(n, &learning_bytes),
+        ))
+    }
+
+    fn unpack_bool_bits(n: usize, bytes: &[u8]) -> Vec<bool> {
+        let mut out = vec![false; n];
+        for i in 0..n {
+            let byte = bytes[i / 8];
+            let bit = (byte >> (i % 8)) & 1;
+            out[i] = bit != 0;
+        }
+        out
+    }
+
+    fn groups_payload_len_bytes(&self) -> io::Result<u32> {
+        let mut len: u64 = 0;
+        len += 4; // sensor group count
+        for g in &self.sensor_groups {
+            len += 4 + g.name.as_bytes().len() as u64;
+            len += 4; // unit count
+            len += 4 * g.units.len() as u64;
+        }
+
+        len += 4; // action group count
+        for g in &self.action_groups {
+            len += 4 + g.name.as_bytes().len() as u64;
+            len += 4;
+            len += 4 * g.units.len() as u64;
+        }
+
+        Ok(u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "GRPS chunk too large"))?)
+    }
+
+    fn write_groups_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = self.groups_payload_len_bytes()?;
+        w.write_all(b"GRPS")?;
+        storage::write_u32_le(w, payload_len)?;
+
+        storage::write_u32_le(w, self.sensor_groups.len() as u32)?;
+        for g in &self.sensor_groups {
+            storage::write_string(w, &g.name)?;
+            storage::write_u32_le(w, g.units.len() as u32)?;
+            for &u in &g.units {
+                storage::write_u32_le(w, u as u32)?;
+            }
+        }
+
+        storage::write_u32_le(w, self.action_groups.len() as u32)?;
+        for g in &self.action_groups {
+            storage::write_string(w, &g.name)?;
+            storage::write_u32_le(w, g.units.len() as u32)?;
+            for &u in &g.units {
+                storage::write_u32_le(w, u as u32)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn read_groups_payload<R: Read>(r: &mut R) -> io::Result<(Vec<NamedGroup>, Vec<NamedGroup>)> {
+        let sg_n = storage::read_u32_le(r)? as usize;
+        let mut sensor_groups: Vec<NamedGroup> = Vec::with_capacity(sg_n);
+        for _ in 0..sg_n {
+            let name = storage::read_string(r)?;
+            let n = storage::read_u32_le(r)? as usize;
+            let mut units: Vec<UnitId> = Vec::with_capacity(n);
+            for _ in 0..n {
+                units.push(storage::read_u32_le(r)? as usize);
+            }
+            sensor_groups.push(NamedGroup { name, units });
+        }
+
+        let ag_n = storage::read_u32_le(r)? as usize;
+        let mut action_groups: Vec<NamedGroup> = Vec::with_capacity(ag_n);
+        for _ in 0..ag_n {
+            let name = storage::read_string(r)?;
+            let n = storage::read_u32_le(r)? as usize;
+            let mut units: Vec<UnitId> = Vec::with_capacity(n);
+            for _ in 0..n {
+                units.push(storage::read_u32_le(r)? as usize);
+            }
+            action_groups.push(NamedGroup { name, units });
+        }
+
+        Ok((sensor_groups, action_groups))
+    }
+
+    fn symbols_payload_len_bytes(&self) -> io::Result<u32> {
+        let mut len: u64 = 0;
+        len += 4; // count
+        for s in &self.symbols_rev {
+            len += 4 + s.as_bytes().len() as u64;
+        }
+        Ok(u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "SYMB chunk too large"))?)
+    }
+
+    fn write_symbols_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = self.symbols_payload_len_bytes()?;
+        w.write_all(b"SYMB")?;
+        storage::write_u32_le(w, payload_len)?;
+
+        storage::write_u32_le(w, self.symbols_rev.len() as u32)?;
+        for s in &self.symbols_rev {
+            storage::write_string(w, s)?;
+        }
+        Ok(())
+    }
+
+    fn read_symbols_payload<R: Read>(r: &mut R) -> io::Result<Vec<String>> {
+        let n = storage::read_u32_le(r)? as usize;
+        let mut out: Vec<String> = Vec::with_capacity(n);
+        for _ in 0..n {
+            out.push(storage::read_string(r)?);
+        }
+        Ok(out)
+    }
+
+    fn rebuild_symbol_tables(
+        symbols_rev: &[String],
+    ) -> io::Result<(HashMap<String, SymbolId>, SymbolId, SymbolId)> {
+        let mut symbols: HashMap<String, SymbolId> = HashMap::with_capacity(symbols_rev.len());
+        let mut reward_pos: Option<SymbolId> = None;
+        let mut reward_neg: Option<SymbolId> = None;
+
+        for (i, name) in symbols_rev.iter().enumerate() {
+            let id = i as SymbolId;
+            if symbols.insert(name.clone(), id).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate symbol name",
+                ));
+            }
+            if name == "reward_pos" {
+                reward_pos = Some(id);
+            }
+            if name == "reward_neg" {
+                reward_neg = Some(id);
+            }
+        }
+
+        let reward_pos = reward_pos.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing reward_pos symbol")
+        })?;
+        let reward_neg = reward_neg.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing reward_neg symbol")
+        })?;
+
+        Ok((symbols, reward_pos, reward_neg))
+    }
+
+    fn write_causality_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = self.causal.image_payload_len_bytes();
+        w.write_all(b"CAUS")?;
+        storage::write_u32_le(w, payload_len)?;
+        self.causal.write_image_payload(w)
+    }
     /// Ensure a sensor group exists; if missing, create it.
     pub fn ensure_sensor(&mut self, name: &str, width: usize) {
         if self.sensor_groups.iter().any(|g| g.name == name) {
@@ -317,7 +878,11 @@ impl Brain {
 
     /// Consolidate structural/casual knowledge from a child back into self.
     /// Only merges strong, non-identity couplings.
-    pub fn consolidate_from(&mut self, child: &Brain, policy: crate::supervisor::ConsolidationPolicy) {
+    pub fn consolidate_from(
+        &mut self,
+        child: &Brain,
+        policy: crate::supervisor::ConsolidationPolicy,
+    ) {
         let thr = policy.weight_threshold;
         let rate = policy.merge_rate.clamp(0.0, 1.0);
 
@@ -535,6 +1100,79 @@ impl Brain {
         best.unwrap_or_else(|| ("idle".to_string(), 0.0))
     }
 
+    /// Return actions ranked by the same score used by `select_action_with_meaning`.
+    ///
+    /// Useful for visualization/debugging (e.g. showing top-N candidates in a HUD).
+    pub fn ranked_actions_with_meaning(&self, stimulus: &str, alpha: f32) -> Vec<(String, f32)> {
+        let alpha = alpha.clamp(0.0, 20.0);
+        let stimulus_id = self.symbol_id(stimulus);
+
+        let mut scored: Vec<(String, f32)> = Vec::with_capacity(self.action_groups.len());
+        for g in &self.action_groups {
+            let habit = g
+                .units
+                .iter()
+                .map(|&id| self.units[id].amp.max(0.0))
+                .sum::<f32>();
+            let habit_norm = if g.units.is_empty() {
+                0.0
+            } else {
+                (habit / (g.units.len() as f32 * 2.0)).clamp(0.0, 1.0)
+            };
+
+            let meaning = if let Some(aid) = self.symbol_id(&g.name) {
+                let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
+                    - self.causal.causal_strength(aid, self.reward_neg_symbol);
+
+                let conditional = if stimulus_id.is_some() {
+                    let pair_name = format!("pair::{stimulus}::{}", g.name);
+                    if let Some(pid) = self.symbol_id(&pair_name) {
+                        self.causal.causal_strength(pid, self.reward_pos_symbol)
+                            - self.causal.causal_strength(pid, self.reward_neg_symbol)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                conditional * 1.0 + global * 0.15
+            } else {
+                0.0
+            };
+
+            let score = habit_norm * 0.5 + alpha * meaning;
+            scored.push((g.name.clone(), score));
+        }
+
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored
+    }
+
+    pub fn top_actions_with_meaning(
+        &self,
+        stimulus: &str,
+        alpha: f32,
+        top_n: usize,
+    ) -> Vec<(String, f32)> {
+        let mut v = self.ranked_actions_with_meaning(stimulus, alpha);
+        v.truncate(top_n);
+        v
+    }
+
+    /// Explainability helper: strongest outgoing causal links from a named symbol.
+    pub fn top_causal_links_from(&self, from: &str, top_n: usize) -> Vec<(String, f32)> {
+        let Some(a) = self.symbol_id(from) else {
+            return Vec::new();
+        };
+
+        self.causal
+            .top_outgoing(a, top_n)
+            .into_iter()
+            .filter_map(|(bid, s)| self.symbol_name(bid).map(|name| (name.to_string(), s)))
+            .collect()
+    }
+
     pub fn set_neuromodulator(&mut self, value: f32) {
         // Clamp to a reasonable range.
         self.neuromod = value.clamp(-1.0, 1.0);
@@ -544,7 +1182,9 @@ impl Brain {
         if let Some(group) = self.action_groups.iter().find(|g| g.name == action) {
             if self.telemetry.enabled {
                 if let Some(id) = self.symbol_id(action) {
-                    self.telemetry.last_reinforced_actions.push((id, delta_bias));
+                    self.telemetry
+                        .last_reinforced_actions
+                        .push((id, delta_bias));
                 }
             }
             for &id in &group.units {
@@ -585,14 +1225,19 @@ impl Brain {
                 influence_phase += c.weight * angle_diff(v.phase, u.phase);
             }
 
-            let noise_a = self.rng.gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp);
-            let noise_p = self.rng.gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase);
+            let noise_a = self
+                .rng
+                .gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp);
+            let noise_p = self
+                .rng
+                .gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase);
 
             let input = self.pending_input[i];
 
             // Continuous-time-ish update.
             let damp = u.decay * u.amp;
-            let d_amp = (u.bias + input + influence_amp - inhibition - damp + noise_a) * self.cfg.dt;
+            let d_amp =
+                (u.bias + input + influence_amp - inhibition - damp + noise_a) * self.cfg.dt;
             let d_phase = (self.cfg.base_freq + influence_phase + noise_p) * self.cfg.dt;
 
             next_amp[i] = (u.amp + d_amp).clamp(-2.0, 2.0);
@@ -617,7 +1262,12 @@ impl Brain {
         let mut scores: Vec<(String, f32)> = self
             .action_groups
             .iter()
-            .map(|g| (g.name.clone(), g.units.iter().map(|&id| self.units[id].amp).sum()))
+            .map(|g| {
+                (
+                    g.name.clone(),
+                    g.units.iter().map(|&id| self.units[id].amp).sum(),
+                )
+            })
             .collect();
 
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
@@ -636,7 +1286,11 @@ impl Brain {
     }
 
     pub fn diagnostics(&self) -> Diagnostics {
-        let connection_count = self.units.iter().map(|u| u.connections.len()).sum::<usize>();
+        let connection_count = self
+            .units
+            .iter()
+            .map(|u| u.connections.len())
+            .sum::<usize>();
         let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32;
         Diagnostics {
             unit_count: self.units.len(),
@@ -762,8 +1416,16 @@ impl Brain {
 
         // Connect sensor units to the concept (and back) so it can be recalled.
         for &sid in group_units {
-            add_or_bump_connection(&mut self.units[sid].connections, concept_id, self.cfg.imprint_rate);
-            add_or_bump_connection(&mut self.units[concept_id].connections, sid, self.cfg.imprint_rate * 0.7);
+            add_or_bump_connection(
+                &mut self.units[sid].connections,
+                concept_id,
+                self.cfg.imprint_rate,
+            );
+            add_or_bump_connection(
+                &mut self.units[concept_id].connections,
+                sid,
+                self.cfg.imprint_rate * 0.7,
+            );
         }
 
         // Make the concept slightly excitable.
@@ -784,7 +1446,11 @@ impl Brain {
     }
 }
 
-fn intern_symbol(map: &mut HashMap<String, SymbolId>, rev: &mut Vec<String>, name: &str) -> SymbolId {
+fn intern_symbol(
+    map: &mut HashMap<String, SymbolId>,
+    rev: &mut Vec<String>,
+    name: &str,
+) -> SymbolId {
     if let Some(&id) = map.get(name) {
         return id;
     }
@@ -825,4 +1491,47 @@ fn phase_alignment(a: f32, b: f32) -> f32 {
     let d = angle_diff(a, b).abs();
     let x = 1.0 - (d / core::f32::consts::PI);
     x.clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn brain_image_roundtrip_basic() {
+        let cfg = BrainConfig {
+            unit_count: 32,
+            connectivity_per_unit: 4,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.1,
+            noise_phase: 0.05,
+            global_inhibition: 0.02,
+            hebb_rate: 0.01,
+            forget_rate: 0.001,
+            prune_below: 0.0001,
+            coactive_threshold: 0.2,
+            phase_lock_threshold: 0.2,
+            imprint_rate: 0.3,
+            seed: Some(123),
+            causal_decay: 0.01,
+        };
+
+        let brain = Brain::new(cfg);
+        let mut bytes: Vec<u8> = Vec::new();
+        brain.save_image_to(&mut bytes).unwrap();
+
+        let mut cursor = std::io::Cursor::new(bytes);
+        let loaded = Brain::load_image_from(&mut cursor).unwrap();
+
+        assert_eq!(loaded.cfg.unit_count, brain.cfg.unit_count);
+        assert_eq!(
+            loaded.cfg.connectivity_per_unit,
+            brain.cfg.connectivity_per_unit
+        );
+        assert_eq!(loaded.units.len(), brain.units.len());
+        assert_eq!(loaded.reserved.len(), brain.reserved.len());
+        assert_eq!(loaded.learning_enabled.len(), brain.learning_enabled.len());
+        assert_eq!(loaded.symbols_rev, brain.symbols_rev);
+    }
 }

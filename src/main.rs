@@ -85,11 +85,7 @@ fn main() {
         brain.apply_stimulus(stim);
 
         // Simple reinforcement: food -> reward approach, threat -> reward avoid.
-        let reward_signal = if stim.name == "vision_food" {
-            0.6
-        } else {
-            0.6
-        };
+        let reward_signal = if stim.name == "vision_food" { 0.6 } else { 0.6 };
         brain.set_neuromodulator(reward_signal);
 
         brain.step();
@@ -122,8 +118,8 @@ fn main() {
                 diag.unit_count,
                 diag.connection_count,
                 diag.pruned_last_step,
-                diag.avg_amp
-                ,meaning
+                diag.avg_amp,
+                meaning
             );
         }
     }
@@ -159,10 +155,7 @@ fn run_pong_demo() {
         causal_decay: 0.01,
     });
 
-    experiments::env_pong::run_pong_demo(
-        &mut brain,
-        experiments::env_pong::PongConfig::default(),
-    );
+    experiments::env_pong::run_pong_demo(&mut brain, experiments::env_pong::PongConfig::default());
 }
 
 fn run_autonomy_demo() {
@@ -227,30 +220,30 @@ fn run_autonomy_demo() {
     println!("spawning child sandbox...");
 
     let mut sup = Supervisor::new(parent);
-        sup.spawn_child(
-            ChildSpec {
-                name: "auto_child".to_string(),
-                budget_steps: 700,
-                stimulus_name: novel.to_string(),
-                target_action: "avoid".to_string(),
-            },
-            999,
-            ChildConfigOverrides {
-                noise_amp: 0.04,
-                noise_phase: 0.02,
-                hebb_rate: 0.15,
-                forget_rate: 0.0012,
-            },
-        );
+    sup.spawn_child(
+        ChildSpec {
+            name: "auto_child".to_string(),
+            budget_steps: 700,
+            stimulus_name: novel.to_string(),
+            target_action: "avoid".to_string(),
+        },
+        999,
+        ChildConfigOverrides {
+            noise_amp: 0.04,
+            noise_phase: 0.02,
+            hebb_rate: 0.15,
+            forget_rate: 0.0012,
+        },
+    );
 
-        for _ in 0..700 {
-            sup.step_children();
-        }
+    for _ in 0..700 {
+        sup.step_children();
+    }
 
-        let winner = sup.consolidate_best();
-        println!("consolidation result: {:?}", winner);
+    let winner = sup.consolidate_best();
+    println!("consolidation result: {:?}", winner);
 
-        parent = sup.parent;
+    parent = sup.parent;
 
     // Post-consolidation verification loop:
     // Parent experiences the novel stimulus and gets reward feedback.
@@ -400,8 +393,6 @@ fn run_spawn_demo() {
     println!("consolidated winner={:?}", winner);
     println!(
         "parent conns: before={} after={} (pruned_last_step={})",
-        before.connection_count,
-        after.connection_count,
-        after.pruned_last_step
+        before.connection_count, after.connection_count, after.pruned_last_step
     );
 }

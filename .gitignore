@@ -1,3 +1,11 @@
 /target
 /braine_viz_metrics.log
 *.log
+
+# Local brain-image artifacts
+*.bbi
+*.bbi.tmp
+/data/
+
+# Local agent/editor state
+/.ai/

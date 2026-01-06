@@ -92,7 +92,8 @@ pub fn run() {
     let assoc_accuracy_full = association_accuracy(&mut brain, &mut policy, test_trials, 1.0);
 
     let partial_strength = 0.35;
-    let assoc_accuracy_partial = association_accuracy(&mut brain, &mut policy, test_trials, partial_strength);
+    let assoc_accuracy_partial =
+        association_accuracy(&mut brain, &mut policy, test_trials, partial_strength);
 
     let switch_steps_avg = switching_cost(&mut brain, &mut policy);
 

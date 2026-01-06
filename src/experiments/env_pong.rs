@@ -113,8 +113,10 @@ pub fn run_pong_demo(brain: &mut Brain, cfg: PongConfig) {
 
         let (action, _score) = if s.steps <= bootstrap_steps {
             if s.steps == bootstrap_steps {
-                if out_line(format_args!("switching to autonomous control (bootstrap complete)"))
-                    .is_err()
+                if out_line(format_args!(
+                    "switching to autonomous control (bootstrap complete)"
+                ))
+                .is_err()
                 {
                     return;
                 }
@@ -219,7 +221,11 @@ pub fn run_pong_demo(brain: &mut Brain, cfg: PongConfig) {
             }
 
             let hint = brain.meaning_hint(ctx);
-            if out_line(format_args!("  wisdom_probe: ctx={} meaning_hint={:?}", ctx, hint)).is_err()
+            if out_line(format_args!(
+                "  wisdom_probe: ctx={} meaning_hint={:?}",
+                ctx, hint
+            ))
+            .is_err()
             {
                 return;
             }
@@ -262,7 +268,10 @@ pub fn run_pong_demo(brain: &mut Brain, cfg: PongConfig) {
     {
         return;
     }
-    let _ = out_line(format_args!("  cumulative_reward={:.1}", s.cumulative_reward));
+    let _ = out_line(format_args!(
+        "  cumulative_reward={:.1}",
+        s.cumulative_reward
+    ));
 }
 
 fn out_line(args: std::fmt::Arguments<'_>) -> io::Result<()> {

@@ -29,6 +29,14 @@ If you want a longer version, see [doc/research-landscape.md](doc/research-lands
 ## 2D visualizer (macroquad)
 - Run the interactive 2D demo: `cargo run -p braine_viz`
 
+### Meta-modulation (temporal learning progress)
+In `braine_viz` Pong, the demo uses a **meta-modulation** signal derived from **temporal learning progress**:
+- It tracks the time/steps between successful hits and maintains a moving baseline (EMA).
+- When performance gets *slower than its own baseline*, it temporarily increases exploration (it does **not** change the environment reward).
+- When performance improves, the extra exploration decays back down.
+
+This is a deliberate design choice: keep the environment reward as the substrate’s neuromodulator, and use “progress” only to modulate how aggressively the system explores/learns.
+
 **Security note:** the visualizer depends on `macroquad`, which currently has a RustSec
 informational advisory for unsoundness (no patched version is available as of 2026-01).
 The core `braine` crate stays std-only; treat `braine_viz` as a demo tool rather than a
@@ -37,3 +45,5 @@ security-hardened component.
 ## Docs
 - See [doc/README.md](doc/README.md)
 - Interaction + I/O: [doc/interaction.md](doc/interaction.md)
+- Persistence + storage adapters: [doc/brain-image.md](doc/brain-image.md)
+- Visualizer games (what each measures): [doc/visualizer-games.md](doc/visualizer-games.md)

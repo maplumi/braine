@@ -10,4 +10,7 @@ pub mod substrate;
 #[path = "core/supervisor.rs"]
 pub mod supervisor;
 
+#[path = "core/storage.rs"]
+pub mod storage;
+
 pub mod observer;

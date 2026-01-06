@@ -1,0 +1,16 @@
+# cargo-audit configuration
+#
+# NOTE: GitHub/Dependabot currently reports GHSA-gg76-hg3v-5q6c / RUSTSEC-2025-0035
+# against `macroquad`.
+#
+# RustSec marks this as INFORMATIONAL ("unsound") and lists no patched versions.
+# We keep `macroquad` confined to the demo-only `braine_viz` crate; the core `braine`
+# library remains std-only.
+#
+# If you need a security-hardened build, avoid building/running `braine_viz` or
+# switch the visualizer to a different rendering/UI backend.
+
+[advisories]
+ignore = [
+  "RUSTSEC-2025-0035", # macroquad: multiple soundness issues; no patched version available
+]
