@@ -21,6 +21,10 @@ fn main() {
         run_spawn_demo();
         return;
     }
+    if args.len() >= 2 && args[1] == "autonomy-demo" {
+        run_autonomy_demo();
+        return;
+    }
 
     if args.len() >= 2 {
         eprintln!("Unknown command: {}", args[1]);
@@ -131,7 +135,103 @@ fn print_help() {
     println!("  cargo run");
     println!("  cargo run -- assays");
     println!("  cargo run -- spawn-demo");
+    println!("  cargo run -- autonomy-demo");
     println!("  cargo run -- --help");
+}
+
+fn run_autonomy_demo() {
+    // Demonstrates autonomous behavior pattern:
+    // - Parent encounters an unknown stimulus name
+    // - Parent spawns a child sandbox to learn it
+    // - Parent consolidates the child's useful structure
+    // - Parent then responds to the new stimulus
+
+    let mut parent = Brain::new(BrainConfig {
+        unit_count: 128,
+        connectivity_per_unit: 8,
+        dt: 0.05,
+        base_freq: 1.0,
+        noise_amp: 0.015,
+        noise_phase: 0.008,
+        global_inhibition: 0.07,
+        hebb_rate: 0.09,
+        forget_rate: 0.0015,
+        prune_below: 0.0008,
+        coactive_threshold: 0.55,
+        phase_lock_threshold: 0.6,
+        imprint_rate: 0.6,
+        seed: Some(42),
+        causal_decay: 0.01,
+    });
+
+    parent.define_action("approach", 6);
+    parent.define_action("avoid", 6);
+    parent.define_action("idle", 6);
+
+    parent.define_sensor("vision_food", 6);
+    parent.define_sensor("vision_threat", 6);
+
+    // Warm-up with known stimuli.
+    let mut policy = ActionPolicy::EpsilonGreedy { epsilon: 0.05 };
+    for t in 0..250 {
+        let stim = if t % 2 == 0 {
+            Stimulus::new("vision_food", 1.0)
+        } else {
+            Stimulus::new("vision_threat", 1.0)
+        };
+        parent.apply_stimulus(stim);
+        parent.set_neuromodulator(0.2);
+        parent.step();
+        let (a, _) = parent.select_action(&mut policy);
+        parent.note_action(&a);
+        parent.commit_observation();
+    }
+
+    // Encounter a novel stimulus.
+    let novel = "vision_new";
+    println!("encounter novel stimulus: {novel}");
+
+    if !parent.has_sensor(novel) {
+        println!("no sensor group found; spawning child sandbox...");
+
+        let mut sup = Supervisor::new(parent);
+        sup.spawn_child(
+            ChildSpec {
+                name: "auto_child".to_string(),
+                budget_steps: 700,
+                stimulus_name: novel.to_string(),
+                target_action: "avoid".to_string(),
+            },
+            999,
+            ChildConfigOverrides {
+                noise_amp: 0.04,
+                noise_phase: 0.02,
+                hebb_rate: 0.15,
+                forget_rate: 0.0012,
+            },
+        );
+
+        for _ in 0..700 {
+            sup.step_children();
+        }
+
+        let winner = sup.consolidate_best();
+        println!("consolidation result: {:?}", winner);
+
+        parent = sup.parent;
+    }
+
+    // Test response after consolidation.
+    parent.apply_stimulus(Stimulus::new(novel, 1.0));
+    parent.set_neuromodulator(0.0);
+    parent.step();
+    let mut det = ActionPolicy::Deterministic;
+    let (action, score) = parent.select_action(&mut det);
+    parent.note_action(&action);
+    parent.commit_observation();
+
+    let hint = parent.meaning_hint(novel);
+    println!("post-learn action={action} score={:+.3} meaning_hint={:?}", score, hint);
 }
 
 fn run_spawn_demo() {

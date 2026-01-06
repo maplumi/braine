@@ -195,6 +195,10 @@ impl Brain {
         self.define_sensor(name, width);
     }
 
+    pub fn has_sensor(&self, name: &str) -> bool {
+        self.sensor_groups.iter().any(|g| g.name == name)
+    }
+
     /// Create a sandboxed child brain.
     ///
     /// Design intent:
