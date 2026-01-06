@@ -29,6 +29,11 @@ If you want a longer version, see [doc/research-landscape.md](doc/research-lands
 ## 2D visualizer (macroquad)
 - Run the interactive 2D demo: `cargo run -p braine_viz`
 
+**Security note:** the visualizer depends on `macroquad`, which currently has a RustSec
+informational advisory for unsoundness (no patched version is available as of 2026-01).
+The core `braine` crate stays std-only; treat `braine_viz` as a demo tool rather than a
+security-hardened component.
+
 ## Docs
 - See [doc/README.md](doc/README.md)
 - Interaction + I/O: [doc/interaction.md](doc/interaction.md)
