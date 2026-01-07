@@ -44,6 +44,9 @@ enum UiTab {
 // Accelerated learning controls state
 #[derive(Debug, Clone)]
 struct LearningControls {
+    // Master learning toggle
+    learning_enabled: bool,
+
     // Attention gating
     attention_boost: f32,
     attention_enabled: bool,
@@ -73,6 +76,7 @@ struct LearningControls {
 impl Default for LearningControls {
     fn default() -> Self {
         Self {
+            learning_enabled: true,
             attention_boost: 0.0,
             attention_enabled: true,
             dream_replay_pending: false,
@@ -118,6 +122,12 @@ impl LearningControls {
     }
 
     fn apply_to_brain(&mut self, brain: &mut Brain, logger: &mut MetricsLogger, frame: u64) {
+        // If learning is disabled, set brain to minimal learning and skip all mechanisms
+        if !self.learning_enabled {
+            brain.set_burst_mode(false, 0.0); // Zero learning multiplier
+            return;
+        }
+
         // Apply pending dream replay
         if self.dream_replay_pending {
             brain.dream_replay(5, 1.5);
@@ -2622,16 +2632,74 @@ async fn main() {
             }
 
             UiTab::Learning => {
+                // === Master Learning Toggle ===
+                let master_btn_w = 140.0;
+                let master_btn = Rect::new(left_x, row2_y, master_btn_w, BTN_H + 4.0);
+                let (label, color) = if app.learning.learning_enabled {
+                    ("⏹ Stop Learning", Color::new(0.8, 0.3, 0.3, 1.0))
+                } else {
+                    ("▶ Start Learning", Color::new(0.3, 0.8, 0.3, 1.0))
+                };
+                draw_rectangle(
+                    master_btn.x,
+                    master_btn.y,
+                    master_btn.w,
+                    master_btn.h,
+                    color,
+                );
+                draw_rectangle_lines(
+                    master_btn.x,
+                    master_btn.y,
+                    master_btn.w,
+                    master_btn.h,
+                    2.0,
+                    WHITE,
+                );
+                let text_w = measure_text(label, None, 14, 1.0).width;
+                draw_text(
+                    label,
+                    master_btn.x + (master_btn.w - text_w) / 2.0,
+                    master_btn.y + master_btn.h / 2.0 + 5.0,
+                    14.0,
+                    WHITE,
+                );
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let (mx, my) = mouse_position();
+                    if master_btn.contains(Vec2::new(mx, my)) {
+                        app.learning.learning_enabled = !app.learning.learning_enabled;
+                    }
+                }
+
+                // Status indicator
+                let status_text = if app.learning.learning_enabled {
+                    "Learning: ACTIVE"
+                } else {
+                    "Learning: PAUSED"
+                };
+                let status_color = if app.learning.learning_enabled {
+                    Color::new(0.4, 1.0, 0.4, 1.0)
+                } else {
+                    Color::new(1.0, 0.6, 0.3, 1.0)
+                };
+                draw_text(
+                    status_text,
+                    left_x + master_btn_w + 20.0,
+                    row2_y + BTN_H / 2.0 + 5.0,
+                    14.0,
+                    status_color,
+                );
+
                 // === Accelerated Learning Controls ===
+                let controls_y = row2_y + BTN_H + 12.0;
                 draw_text(
                     "Accelerated Learning Mechanisms",
                     left_x,
-                    row2_y + 12.0,
+                    controls_y + 12.0,
                     14.0,
                     Color::new(0.6, 0.8, 1.0, 1.0),
                 );
 
-                let row3_y = row2_y + 20.0;
+                let row3_y = controls_y + 20.0;
                 let col_w = 130.0;
                 let row_h = 32.0;
 
