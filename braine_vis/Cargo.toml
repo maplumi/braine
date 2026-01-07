@@ -1,8 +1,12 @@
 [package]
 name = "braine_viz"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+build = "build.rs"
 
 [dependencies]
-macroquad = "0.4"
+slint = "1.14"
 braine = { path = ".." }
+
+[build-dependencies]
+slint-build = "1.14"
