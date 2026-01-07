@@ -45,7 +45,7 @@ pub struct GpuInfluence {
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct GpuInput {
     pub value: f32,
-    pub _padding: [f32; 3],  // Align to 16 bytes
+    pub _padding: [f32; 3], // Align to 16 bytes
 }
 
 /// Error type for GPU operations.
@@ -215,17 +215,21 @@ impl GpuContext {
         }
 
         // Create buffers
-        let units_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Units Buffer"),
-            contents: bytemuck::cast_slice(units),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
+        let units_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Units Buffer"),
+                contents: bytemuck::cast_slice(units),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
 
-        let influences_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Influences Buffer"),
-            contents: bytemuck::cast_slice(influences),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let influences_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Influences Buffer"),
+                contents: bytemuck::cast_slice(influences),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         // Pack inputs with padding
         let inputs_padded: Vec<GpuInput> = inputs
@@ -235,17 +239,21 @@ impl GpuContext {
                 _padding: [0.0; 3],
             })
             .collect();
-        let inputs_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Inputs Buffer"),
-            contents: bytemuck::cast_slice(&inputs_padded),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let inputs_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Inputs Buffer"),
+                contents: bytemuck::cast_slice(&inputs_padded),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
-        let params_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Params Buffer"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Params Buffer"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         // Staging buffer for readback
         let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {

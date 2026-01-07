@@ -15,11 +15,13 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 ## How to navigate
 - [Architecture](architecture.md): core substrate + "body/frame" interface + execution tiers.
 - [Performance](performance.md): execution tiers, SIMD, GPU, and benchmarking.
+- [Accelerated Learning](accelerated-learning.md): neurogenesis, dream replay, and other speed-up mechanisms.
+- [Research Comparison](research-comparison.md): how braine differs from mainstream AI, AGI analysis.
+- [Research Landscape](research-landscape.md): what this resembles and how it differs.
 - [Metrics](metrics.md): simple capability measurements to track progress.
 - [Experiments](experiments.md): experiment log template + current backlog.
 - [Brain image format](brain-image.md): custom persistence format + storage adapters.
 - [Visualizer games](visualizer-games.md): how to run each game + what it measures.
-- [Research landscape](research-landscape.md): what this resembles and how it differs.
 
 ## Reproducible assays
 - Run the current assays with: `cargo run -- assays`

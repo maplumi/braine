@@ -154,11 +154,10 @@ fn association_accuracy(
         brain.note_action(&action);
         brain.commit_observation();
 
-        let ok = match (stim.name, action.as_str()) {
-            ("vision_food", "approach") => true,
-            ("vision_threat", "avoid") => true,
-            _ => false,
-        };
+        let ok = matches!(
+            (stim.name, action.as_str()),
+            ("vision_food", "approach") | ("vision_threat", "avoid")
+        );
 
         if ok {
             correct += 1;

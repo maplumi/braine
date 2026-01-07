@@ -124,7 +124,7 @@ impl Supervisor {
         }
 
         let threads = max_threads.min(self.children.len()).max(1);
-        let chunk = (self.children.len() + threads - 1) / threads;
+        let chunk = self.children.len().div_ceil(threads);
 
         std::thread::scope(|scope| {
             for segment in self.children.chunks_mut(chunk) {
@@ -274,26 +274,30 @@ impl Default for ChildConfigOverrides {
     }
 }
 
-fn child_environment_step(spec: &ChildSpec, remaining: usize) -> (Stimulus<'static>, f32) {
+fn child_environment_step(_spec: &ChildSpec, remaining: usize) -> (Stimulus<'static>, f32) {
     // Minimal "new signal" environment:
     // - Always present the new stimulus.
     // - Reward is positive most of the time.
     //
     // The point is not realism; it's to let the child build a causal link
     // stimulus -> action -> reward in its sandbox.
-    let strength = if remaining % 17 == 0 { 0.35 } else { 1.0 };
+    let strength = if remaining.is_multiple_of(17) {
+        0.35
+    } else {
+        1.0
+    };
 
     // Leak a tiny negative reward sometimes so meaning isn't trivial.
-    let reward = if remaining % 41 == 0 { -0.4 } else { 0.7 };
+    let reward = if remaining.is_multiple_of(41) {
+        -0.4
+    } else {
+        0.7
+    };
 
     // We need a 'static str for the demo; this is fine because the spec strings are owned.
     // To avoid lifetime complexity, we map on known demo names.
     // If you add new names, extend this mapping.
-    let stim_name: &'static str = if spec.stimulus_name == "vision_new" {
-        "vision_new"
-    } else {
-        "vision_new"
-    };
+    let stim_name: &'static str = "vision_new";
 
     (Stimulus::new(stim_name, strength), reward)
 }
@@ -349,21 +353,20 @@ fn step_one_child(child: &mut ChildBrain) {
     }
 
     // Occasionally ask for parent guidance.
-    if child.remaining % 120 == 0 {
+    if child.remaining.is_multiple_of(120) {
         child.requests.push(ChildRequest::Guidance);
     }
 
     // If stuck for a long time, request spawning a grandchild explorer.
-    if child.remaining % 300 == 0 {
-        if child
+    if child.remaining.is_multiple_of(300)
+        && child
             .brain
             .meaning_hint(&child.spec.stimulus_name)
             .is_none()
-        {
-            child
-                .requests
-                .push(ChildRequest::SpawnGrandchild { extra_steps: 250 });
-        }
+    {
+        child
+            .requests
+            .push(ChildRequest::SpawnGrandchild { extra_steps: 250 });
     }
 }
 
@@ -417,9 +420,11 @@ mod tests {
 
         let initial_remaining = sup.children[0].remaining;
         sup.step_children();
-        
-        assert!(sup.children[0].remaining < initial_remaining, 
-            "Budget should decrease after step");
+
+        assert!(
+            sup.children[0].remaining < initial_remaining,
+            "Budget should decrease after step"
+        );
     }
 
     #[test]
@@ -448,8 +453,10 @@ mod tests {
         sup.step_children(); // This handles requests
 
         // Budget should increase from milk pool
-        assert!(sup.children[0].remaining >= budget_before, 
-            "Child should receive milk pool steps");
+        assert!(
+            sup.children[0].remaining >= budget_before,
+            "Child should receive milk pool steps"
+        );
     }
 
     #[test]
@@ -470,7 +477,7 @@ mod tests {
         sup.set_max_parallelism(4);
         // Setting to 0 should clamp to 1
         sup.set_max_parallelism(0);
-        
+
         // spawn multiple children and step to verify no panic
         for i in 0..3 {
             let spec = ChildSpec {
@@ -502,15 +509,18 @@ mod tests {
         sup.spawn_child(spec, 123, ChildConfigOverrides::default());
 
         // Request grandchild spawn
-        sup.children[0].requests.push(ChildRequest::SpawnGrandchild {
-            extra_steps: 100,
-        });
+        sup.children[0]
+            .requests
+            .push(ChildRequest::SpawnGrandchild { extra_steps: 100 });
 
         sup.step_children();
 
         // Should still be just 1 child (recursive disabled by default)
-        assert_eq!(sup.children.len(), 1, 
-            "Grandchild should not spawn when recursive is disabled");
+        assert_eq!(
+            sup.children.len(),
+            1,
+            "Grandchild should not spawn when recursive is disabled"
+        );
     }
 
     #[test]
@@ -530,21 +540,24 @@ mod tests {
         sup.spawn_child(spec, 123, ChildConfigOverrides::default());
 
         // Request grandchild spawn
-        sup.children[0].requests.push(ChildRequest::SpawnGrandchild {
-            extra_steps: 100,
-        });
+        sup.children[0]
+            .requests
+            .push(ChildRequest::SpawnGrandchild { extra_steps: 100 });
 
         sup.step_children();
 
         // Should now have 2 children (grandchild spawned)
-        assert_eq!(sup.children.len(), 2, 
-            "Grandchild should spawn when recursive is enabled");
+        assert_eq!(
+            sup.children.len(),
+            2,
+            "Grandchild should spawn when recursive is enabled"
+        );
     }
 
     #[test]
     fn child_config_overrides_default() {
         let overrides = ChildConfigOverrides::default();
-        
+
         // Default overrides should have reasonable exploration values
         assert!(overrides.noise_amp >= 0.0);
         assert!(overrides.hebb_rate >= 0.0);

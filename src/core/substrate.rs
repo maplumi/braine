@@ -46,7 +46,7 @@ pub type Neuromodulator = f32;
 pub const INVALID_UNIT: UnitId = UnitId::MAX;
 
 /// Execution tier for step() and learning updates.
-/// 
+///
 /// Allows seamless scaling from edge devices to servers:
 /// - `Scalar`: Single-threaded, no SIMD (MCU, WASM, baseline)
 /// - `Simd`: Single-threaded with manual SIMD (ARM NEON, x86 SSE/AVX)
@@ -87,7 +87,7 @@ pub struct Unit {
 }
 
 /// CSR (Compressed Sparse Row) connection storage for cache-friendly iteration.
-/// 
+///
 /// For unit `i`, its connections are stored at indices `conn_offsets[i]..conn_offsets[i+1]`.
 /// This layout enables:
 /// - Sequential memory access during dynamics updates
@@ -209,7 +209,6 @@ impl BrainConfig {
     }
 
     /// Validate the configuration, returning an error message if invalid.
-    #[must_use]
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.unit_count < Self::MIN_UNITS {
             return Err("unit_count too small");
@@ -246,7 +245,7 @@ impl BrainConfig {
         let targets_size = conns * core::mem::size_of::<UnitId>();
         let weights_size = conns * core::mem::size_of::<Weight>();
         let offsets_size = (self.unit_count + 1) * core::mem::size_of::<usize>();
-        
+
         units_size + targets_size + weights_size + offsets_size
     }
 
@@ -317,8 +316,12 @@ pub struct Diagnostics {
     pub connection_count: usize,
     /// Connections pruned in the last step.
     pub pruned_last_step: usize,
+    /// Units born via neurogenesis in the last step.
+    pub births_last_step: usize,
     /// Average amplitude across all units.
     pub avg_amp: Amplitude,
+    /// Average connection weight magnitude (saturation indicator).
+    pub avg_weight: Weight,
     /// Estimated memory usage in bytes.
     pub memory_bytes: usize,
     /// Current execution tier.
@@ -394,6 +397,9 @@ pub struct Brain {
     reward_neg_symbol: SymbolId,
 
     pruned_last_step: usize,
+
+    /// Units born via neurogenesis in the last step.
+    births_last_step: usize,
 
     age_steps: u64,
 
@@ -474,6 +480,7 @@ impl Brain {
             pending_input,
             neuromod: 0.0,
             pruned_last_step: 0,
+            births_last_step: 0,
             rng,
             reserved,
             learning_enabled,
@@ -495,7 +502,7 @@ impl Brain {
     // =========================================================================
 
     /// Set the execution tier for step() and learning updates.
-    /// 
+    ///
     /// - `Scalar`: Default, works everywhere (MCU, WASM, desktop)
     /// - `Simd`: Single-threaded SIMD (requires `simd` feature)
     /// - `Parallel`: Multi-threaded (requires `parallel` feature)
@@ -549,17 +556,17 @@ impl Brain {
     /// If connection exists, bumps weight. Otherwise appends to CSR (may require realloc).
     fn add_or_bump_csr(&mut self, from: UnitId, target: UnitId, bump: f32) {
         let range = self.conn_range(from);
-        
+
         // First, try to find existing connection or a tombstone slot
         for idx in range.clone() {
             if self.connections.targets[idx] == target {
                 // Existing connection: bump weight
-                self.connections.weights[idx] = 
+                self.connections.weights[idx] =
                     (self.connections.weights[idx] + bump).clamp(-1.5, 1.5);
                 return;
             }
         }
-        
+
         // Try to reuse a tombstone slot within this unit's range
         for idx in range {
             if self.connections.targets[idx] == INVALID_UNIT {
@@ -568,7 +575,7 @@ impl Brain {
                 return;
             }
         }
-        
+
         // No slot available: must append (requires CSR rebuild).
         // This is expensive but rare after initial wiring stabilizes.
         self.append_connection(from, target, bump.clamp(-1.5, 1.5));
@@ -578,10 +585,10 @@ impl Brain {
     fn append_connection(&mut self, from: UnitId, target: UnitId, weight: f32) {
         // Insert at the end of `from`'s segment, shifting later units.
         let insert_pos = self.connections.offsets[from + 1];
-        
+
         self.connections.targets.insert(insert_pos, target);
         self.connections.weights.insert(insert_pos, weight);
-        
+
         // Update offsets for all units after `from`.
         for i in (from + 1)..self.connections.offsets.len() {
             self.connections.offsets[i] += 1;
@@ -807,8 +814,9 @@ impl Brain {
         let unit_count = cfg.unit_count;
         let units =
             units.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing UNIT"))?;
-        let connections = connections
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing UNIT connections"))?;
+        let connections = connections.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing UNIT connections")
+        })?;
         if units.len() != unit_count {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -863,6 +871,7 @@ impl Brain {
             reward_pos_symbol,
             reward_neg_symbol,
             pruned_last_step: 0,
+            births_last_step: 0,
             age_steps,
             telemetry: Telemetry::default(),
         })
@@ -983,17 +992,17 @@ impl Brain {
     fn unit_payload_len_bytes(&self) -> io::Result<u32> {
         let mut len: u64 = 0;
         len += 4; // unit_count
-        // Unit scalar state: amp, phase, bias, decay (4 floats per unit).
+                  // Unit scalar state: amp, phase, bias, decay (4 floats per unit).
         len += (self.units.len() as u64) * 4 * 4;
         // CSR connections: offsets, targets, weights.
         len += 4; // total_connections count
         len += (self.connections.offsets.len() as u64) * 4; // offsets (unit_count + 1)
-        // Only count valid (non-tombstoned) connections.
+                                                            // Only count valid (non-tombstoned) connections.
         let valid_count = self.total_connection_count() as u64;
         len += valid_count * 4; // targets
         len += valid_count * 4; // weights
-        Ok(u32::try_from(len)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UNIT chunk too large"))?)
+        u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UNIT chunk too large"))
     }
 
     #[cfg(feature = "std")]
@@ -1045,7 +1054,7 @@ impl Brain {
     #[cfg(feature = "std")]
     fn read_unit_payload<R: Read>(r: &mut R) -> io::Result<(Vec<Unit>, CsrConnections)> {
         let unit_count = storage::read_u32_le(r)? as usize;
-        
+
         // Read unit scalars.
         let mut units: Vec<Unit> = Vec::with_capacity(unit_count);
         for _ in 0..unit_count {
@@ -1053,7 +1062,12 @@ impl Brain {
             let phase = storage::read_f32_le(r)?;
             let bias = storage::read_f32_le(r)?;
             let decay = storage::read_f32_le(r)?;
-            units.push(Unit { amp, phase, bias, decay });
+            units.push(Unit {
+                amp,
+                phase,
+                bias,
+                decay,
+            });
         }
 
         // Read CSR connections.
@@ -1073,14 +1087,18 @@ impl Brain {
             weights.push(storage::read_f32_le(r)?);
         }
 
-        let connections = CsrConnections { targets, weights, offsets };
+        let connections = CsrConnections {
+            targets,
+            weights,
+            offsets,
+        };
         Ok((units, connections))
     }
 
     #[cfg(feature = "std")]
     fn mask_payload_len_bytes(&self) -> u32 {
         let n = self.units.len() as u32;
-        let bytes_len = ((n as usize) + 7) / 8;
+        let bytes_len = (n as usize).div_ceil(8);
         // unit_count (u32) + reserved_len (u32) + reserved_bytes + learn_len (u32) + learn_bytes
         4 + 4 + bytes_len as u32 + 4 + bytes_len as u32
     }
@@ -1094,7 +1112,7 @@ impl Brain {
         let n = self.units.len();
         storage::write_u32_le(w, n as u32)?;
 
-        let bytes_len = (n + 7) / 8;
+        let bytes_len = n.div_ceil(8);
         storage::write_u32_le(w, bytes_len as u32)?;
         Self::write_bool_bits(w, &self.reserved)?;
 
@@ -1148,7 +1166,7 @@ impl Brain {
                 "MASK byte length mismatch",
             ));
         }
-        let expected_len = (n + 7) / 8;
+        let expected_len = n.div_ceil(8);
         if reserved_len != expected_len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1178,20 +1196,20 @@ impl Brain {
         let mut len: u64 = 0;
         len += 4; // sensor group count
         for g in &self.sensor_groups {
-            len += 4 + g.name.as_bytes().len() as u64;
+            len += 4 + g.name.len() as u64;
             len += 4; // unit count
             len += 4 * g.units.len() as u64;
         }
 
         len += 4; // action group count
         for g in &self.action_groups {
-            len += 4 + g.name.as_bytes().len() as u64;
+            len += 4 + g.name.len() as u64;
             len += 4;
             len += 4 * g.units.len() as u64;
         }
 
-        Ok(u32::try_from(len)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "GRPS chunk too large"))?)
+        u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "GRPS chunk too large"))
     }
 
     #[cfg(feature = "std")]
@@ -1255,10 +1273,10 @@ impl Brain {
         let mut len: u64 = 0;
         len += 4; // count
         for s in &self.symbols_rev {
-            len += 4 + s.as_bytes().len() as u64;
+            len += 4 + s.len() as u64;
         }
-        Ok(u32::try_from(len)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "SYMB chunk too large"))?)
+        u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "SYMB chunk too large"))
     }
 
     #[cfg(feature = "std")]
@@ -1428,7 +1446,7 @@ impl Brain {
                 for idx in parent_range.clone() {
                     if self.connections.targets[idx] == c_target {
                         // Blend weights.
-                        self.connections.weights[idx] = 
+                        self.connections.weights[idx] =
                             (1.0 - rate) * self.connections.weights[idx] + rate * c_weight;
                         found = true;
                         break;
@@ -1848,7 +1866,7 @@ impl Brain {
     }
 
     /// SIMD-optimized dynamics using the wide crate.
-    /// 
+    ///
     /// Vectorizes the amplitude/phase update loop while keeping the sparse
     /// neighbor accumulation scalar (irregular memory access patterns).
     #[cfg(feature = "simd")]
@@ -1872,10 +1890,16 @@ impl Brain {
 
         // Pre-generate noise.
         let noise_a: Vec<f32> = (0..n)
-            .map(|_| self.rng.gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp))
+            .map(|_| {
+                self.rng
+                    .gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp)
+            })
             .collect();
         let noise_p: Vec<f32> = (0..n)
-            .map(|_| self.rng.gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase))
+            .map(|_| {
+                self.rng
+                    .gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase)
+            })
             .collect();
 
         // Extract SoA views for vectorization.
@@ -1978,8 +2002,10 @@ impl Brain {
         let noise: Vec<(f32, f32)> = (0..self.units.len())
             .map(|_| {
                 (
-                    self.rng.gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp),
-                    self.rng.gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase),
+                    self.rng
+                        .gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp),
+                    self.rng
+                        .gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase),
                 )
             })
             .collect();
@@ -2013,8 +2039,7 @@ impl Brain {
                 let (noise_a, noise_p) = noise[i];
                 let input = pending_input[i];
                 let damp = u.decay * u.amp;
-                let d_amp =
-                    (u.bias + input + influence_amp - inhibition - damp + noise_a) * cfg.dt;
+                let d_amp = (u.bias + input + influence_amp - inhibition - damp + noise_a) * cfg.dt;
                 let d_phase = (cfg.base_freq + influence_phase + noise_p) * cfg.dt;
 
                 (
@@ -2036,7 +2061,7 @@ impl Brain {
     }
 
     /// GPU compute shader dynamics update.
-    /// 
+    ///
     /// The sparse neighbor accumulation is done on CPU (irregular memory access),
     /// then the dense amp/phase update is offloaded to GPU compute shaders.
     /// Only beneficial for very large substrates (10k+ units).
@@ -2071,8 +2096,12 @@ impl Brain {
             influences.push(GpuInfluence {
                 amp: inf_amp,
                 phase: inf_phase,
-                noise_amp: self.rng.gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp),
-                noise_phase: self.rng.gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase),
+                noise_amp: self
+                    .rng
+                    .gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp),
+                noise_phase: self
+                    .rng
+                    .gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase),
             });
         }
 
@@ -2173,16 +2202,50 @@ impl Brain {
     #[must_use]
     pub fn diagnostics(&self) -> Diagnostics {
         let connection_count = self.total_connection_count();
-        let avg_amp = self.units.iter().map(|u| u.amp).sum::<Amplitude>() / self.units.len() as Amplitude;
-        let memory_bytes = self.cfg.estimated_memory_bytes();
+        let avg_amp =
+            self.units.iter().map(|u| u.amp).sum::<Amplitude>() / self.units.len() as Amplitude;
+        let avg_weight = if connection_count > 0 {
+            self.connections
+                .weights
+                .iter()
+                .filter(|w| **w != 0.0)
+                .map(|w| w.abs())
+                .sum::<Weight>()
+                / connection_count as Weight
+        } else {
+            0.0
+        };
+        let memory_bytes = self.estimate_memory_bytes();
         Diagnostics {
             unit_count: self.units.len(),
             connection_count,
             pruned_last_step: self.pruned_last_step,
+            births_last_step: self.births_last_step,
             avg_amp,
+            avg_weight,
             memory_bytes,
             execution_tier: self.tier,
         }
+    }
+
+    /// Actual memory usage estimate (accounts for neurogenesis growth).
+    #[must_use]
+    pub fn estimate_memory_bytes(&self) -> usize {
+        let units_size = self.units.len() * core::mem::size_of::<Unit>();
+        let targets_size = self.connections.targets.len() * core::mem::size_of::<UnitId>();
+        let weights_size = self.connections.weights.len() * core::mem::size_of::<Weight>();
+        let offsets_size = self.connections.offsets.len() * core::mem::size_of::<usize>();
+        let reserved_size = self.reserved.len();
+        let learning_size = self.learning_enabled.len();
+        let input_size = self.pending_input.len() * core::mem::size_of::<f32>();
+
+        units_size
+            + targets_size
+            + weights_size
+            + offsets_size
+            + reserved_size
+            + learning_size
+            + input_size
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2237,13 +2300,13 @@ impl Brain {
     pub fn connection_matrix(&self) -> Vec<Vec<f32>> {
         let n = self.units.len();
         let mut matrix = vec![vec![0.0f32; n]; n];
-        
-        for i in 0..n {
+
+        for (i, row) in matrix.iter_mut().enumerate().take(n) {
             let range = self.conn_range(i);
             for idx in range {
                 let target = self.connections.targets[idx];
                 if target != INVALID_UNIT {
-                    matrix[i][target] = self.connections.weights[idx];
+                    row[target] = self.connections.weights[idx];
                 }
             }
         }
@@ -2255,7 +2318,10 @@ impl Brain {
     /// Returns pairs of (unit_id, amplitude), sorted descending.
     #[must_use]
     pub fn top_active_units(&self, n: usize) -> Vec<(UnitId, f32)> {
-        let mut indexed: Vec<_> = self.units.iter().enumerate()
+        let mut indexed: Vec<_> = self
+            .units
+            .iter()
+            .enumerate()
             .map(|(i, u)| (i, u.amp))
             .collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
@@ -2266,7 +2332,8 @@ impl Brain {
     /// Returns unit indices for a named sensor group.
     #[must_use]
     pub fn sensor_units(&self, name: &str) -> Option<&[UnitId]> {
-        self.sensor_groups.iter()
+        self.sensor_groups
+            .iter()
             .find(|g| g.name == name)
             .map(|g| g.units.as_slice())
     }
@@ -2274,7 +2341,8 @@ impl Brain {
     /// Returns unit indices for a named action group.
     #[must_use]
     pub fn action_units(&self, name: &str) -> Option<&[UnitId]> {
-        self.action_groups.iter()
+        self.action_groups
+            .iter()
             .find(|g| g.name == name)
             .map(|g| g.units.as_slice())
     }
@@ -2283,6 +2351,592 @@ impl Brain {
     #[must_use]
     pub fn config(&self) -> &BrainConfig {
         &self.cfg
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Neurogenesis: Growing New Units
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Check if neurogenesis is needed based on network saturation.
+    ///
+    /// Returns true if the average connection weight magnitude exceeds the threshold,
+    /// indicating the network may benefit from fresh capacity.
+    #[must_use]
+    pub fn should_grow(&self, saturation_threshold: f32) -> bool {
+        let valid_count = self.total_connection_count();
+        if valid_count == 0 {
+            return false;
+        }
+
+        let avg_weight = self
+            .connections
+            .weights
+            .iter()
+            .filter(|w| **w != 0.0)
+            .map(|w| w.abs())
+            .sum::<f32>()
+            / valid_count as f32;
+
+        avg_weight > saturation_threshold
+    }
+
+    /// Grow a single new unit with random wiring to existing units.
+    ///
+    /// The new unit starts with:
+    /// - Zero amplitude (quiet)
+    /// - Random phase
+    /// - Small positive bias (slightly excitable)
+    /// - Random connections to existing units
+    ///
+    /// Returns the ID of the newly created unit.
+    ///
+    /// # Arguments
+    /// * `connectivity` - Number of outgoing connections to create
+    pub fn grow_unit(&mut self, connectivity: usize) -> UnitId {
+        let new_id = self.units.len();
+
+        // Create the new unit.
+        let new_unit = Unit {
+            amp: 0.0,
+            phase: self
+                .rng
+                .gen_range_f32(-core::f32::consts::PI, core::f32::consts::PI),
+            bias: 0.05, // Slightly excitable so it can integrate
+            decay: 0.12,
+        };
+        self.units.push(new_unit);
+
+        // Extend auxiliary arrays.
+        self.reserved.push(false);
+        self.learning_enabled.push(true);
+        self.pending_input.push(0.0);
+
+        // Add connections FROM the new unit TO existing units.
+        // This requires rebuilding CSR (expensive but rare).
+        let targets_to_add: Vec<UnitId> = (0..connectivity)
+            .map(|_| {
+                let mut target = self.rng.gen_range_usize(0, new_id);
+                // Avoid self-connection (though new_id isn't connected yet)
+                if new_id > 0 && target == new_id {
+                    target = (target + 1) % new_id;
+                }
+                target
+            })
+            .collect();
+
+        let weights_to_add: Vec<f32> = (0..connectivity)
+            .map(|_| self.rng.gen_range_f32(-0.1, 0.1))
+            .collect();
+
+        // Append to CSR: add offset for new unit, then add connections.
+        let old_end = *self.connections.offsets.last().unwrap_or(&0);
+        self.connections.offsets.push(old_end + connectivity);
+        self.connections.targets.extend(targets_to_add);
+        self.connections.weights.extend(weights_to_add);
+
+        // Also create some INCOMING connections (from random existing units TO new unit).
+        // This helps the new unit get activated.
+        let incoming = (connectivity / 2).max(1);
+        for _ in 0..incoming {
+            if new_id == 0 {
+                break;
+            }
+            let source = self.rng.gen_range_usize(0, new_id);
+            let weight = self.rng.gen_range_f32(0.05, 0.15); // Slightly positive
+            self.add_or_bump_csr(source, new_id, weight);
+        }
+
+        self.births_last_step += 1;
+        new_id
+    }
+
+    /// Grow multiple units at once, more efficient than calling grow_unit repeatedly.
+    ///
+    /// # Arguments
+    /// * `count` - Number of new units to create
+    /// * `connectivity` - Connections per new unit
+    ///
+    /// Returns the range of new unit IDs.
+    pub fn grow_units(&mut self, count: usize, connectivity: usize) -> core::ops::Range<UnitId> {
+        let start_id = self.units.len();
+        for _ in 0..count {
+            self.grow_unit(connectivity);
+        }
+        start_id..self.units.len()
+    }
+
+    /// Automatic neurogenesis: grow units if network is saturated.
+    ///
+    /// This implements adaptive capacity expansion. When the average connection
+    /// weight exceeds the saturation threshold, new units are added to provide
+    /// fresh capacity for new concepts.
+    ///
+    /// # Arguments
+    /// * `saturation_threshold` - Trigger growth when avg weight exceeds this (0.3-0.6 typical)
+    /// * `growth_count` - Number of units to add when triggered
+    /// * `max_units` - Never exceed this total unit count
+    ///
+    /// Returns the number of units added (0 if no growth needed or at capacity).
+    pub fn maybe_neurogenesis(
+        &mut self,
+        saturation_threshold: f32,
+        growth_count: usize,
+        max_units: usize,
+    ) -> usize {
+        self.births_last_step = 0;
+
+        if self.units.len() >= max_units {
+            return 0;
+        }
+
+        if !self.should_grow(saturation_threshold) {
+            return 0;
+        }
+
+        let to_add = growth_count.min(max_units - self.units.len());
+        let connectivity = self.cfg.connectivity_per_unit;
+
+        self.grow_units(to_add, connectivity);
+        to_add
+    }
+
+    /// Targeted neurogenesis: grow units specifically connected to a named group.
+    ///
+    /// Creates new units that are wired to receive from and project to units
+    /// in the specified group. Useful for expanding capacity for a specific
+    /// sensor or action modality.
+    ///
+    /// # Arguments
+    /// * `group_type` - "sensor" or "action"
+    /// * `group_name` - Name of the existing group
+    /// * `count` - Number of new units to add
+    ///
+    /// Returns the new unit IDs, or empty if group not found.
+    pub fn grow_for_group(
+        &mut self,
+        group_type: &str,
+        group_name: &str,
+        count: usize,
+    ) -> Vec<UnitId> {
+        let group_units: Vec<UnitId> = match group_type {
+            "sensor" => self
+                .sensor_groups
+                .iter()
+                .find(|g| g.name == group_name)
+                .map(|g| g.units.clone())
+                .unwrap_or_default(),
+            "action" => self
+                .action_groups
+                .iter()
+                .find(|g| g.name == group_name)
+                .map(|g| g.units.clone())
+                .unwrap_or_default(),
+            _ => return Vec::new(),
+        };
+
+        if group_units.is_empty() {
+            return Vec::new();
+        }
+
+        let mut new_ids = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let new_id = self.units.len();
+
+            // Create unit.
+            let new_unit = Unit {
+                amp: 0.0,
+                phase: self
+                    .rng
+                    .gen_range_f32(-core::f32::consts::PI, core::f32::consts::PI),
+                bias: 0.08, // Slightly more excitable for targeted growth
+                decay: 0.12,
+            };
+            self.units.push(new_unit);
+            self.reserved.push(false);
+            self.learning_enabled.push(true);
+            self.pending_input.push(0.0);
+
+            // Wire FROM new unit TO group units (new unit can influence the group).
+            let outgoing: Vec<UnitId> = group_units
+                .iter()
+                .take((group_units.len() / 2).max(1))
+                .copied()
+                .collect();
+            let weights: Vec<f32> = outgoing
+                .iter()
+                .map(|_| self.rng.gen_range_f32(0.05, 0.2))
+                .collect();
+
+            let old_end = *self.connections.offsets.last().unwrap_or(&0);
+            self.connections.offsets.push(old_end + outgoing.len());
+            self.connections.targets.extend(&outgoing);
+            self.connections.weights.extend(&weights);
+
+            // Wire FROM group units TO new unit (group can activate new unit).
+            for &source in &group_units {
+                let weight = self.rng.gen_range_f32(0.1, 0.25);
+                self.add_or_bump_csr(source, new_id, weight);
+            }
+
+            new_ids.push(new_id);
+            self.births_last_step += 1;
+        }
+
+        new_ids
+    }
+
+    /// Prune inactive units that have been quiet for too long.
+    ///
+    /// This is the inverse of neurogenesis: remove units that never became useful.
+    /// Only prunes units that are not in any sensor/action group and have
+    /// very low activity.
+    ///
+    /// # Arguments
+    /// * `inactivity_threshold` - Prune units with avg amplitude below this
+    ///
+    /// Note: This is expensive as it requires CSR rebuild. Call sparingly.
+    /// Returns the number of units pruned.
+    pub fn prune_inactive_units(&mut self, inactivity_threshold: f32) -> usize {
+        // Identify protected units (in sensor/action groups).
+        let mut protected = vec![false; self.units.len()];
+        for g in &self.sensor_groups {
+            for &id in &g.units {
+                if id < protected.len() {
+                    protected[id] = true;
+                }
+            }
+        }
+        for g in &self.action_groups {
+            for &id in &g.units {
+                if id < protected.len() {
+                    protected[id] = true;
+                }
+            }
+        }
+
+        // Find units to prune.
+        let to_prune: Vec<UnitId> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(i, u)| {
+                !protected[*i] && u.amp.abs() < inactivity_threshold && u.bias.abs() < 0.02
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if to_prune.is_empty() {
+            return 0;
+        }
+
+        // For now, just mark them as ineffective by zeroing their connections.
+        // Full removal would require re-indexing all references.
+        for &id in &to_prune {
+            let range = self.conn_range(id);
+            for idx in range {
+                self.connections.targets[idx] = INVALID_UNIT;
+                self.connections.weights[idx] = 0.0;
+            }
+            // Zero the unit's state.
+            self.units[id].amp = 0.0;
+            self.units[id].bias = 0.0;
+            self.learning_enabled[id] = false;
+        }
+
+        to_prune.len()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Accelerated Learning Mechanisms
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Apply attention gating: focus learning on most active units.
+    ///
+    /// This temporarily disables learning for quiet units, allowing the network
+    /// to focus plasticity on currently relevant concepts. Call before step().
+    ///
+    /// # Arguments
+    /// * `top_fraction` - Fraction of units to keep learning-enabled (0.0-1.0)
+    ///
+    /// Returns the number of units with learning enabled after gating.
+    ///
+    /// # Example
+    /// ```
+    /// # use braine::substrate::{Brain, BrainConfig};
+    /// let mut brain = Brain::new(BrainConfig::default());
+    /// brain.attention_gate(0.1); // Only top 10% learn
+    /// brain.step();
+    /// brain.reset_learning_gates(); // Re-enable all for next cycle
+    /// ```
+    pub fn attention_gate(&mut self, top_fraction: f32) -> usize {
+        let top_fraction = top_fraction.clamp(0.01, 1.0);
+        let keep_count = ((self.units.len() as f32) * top_fraction).ceil() as usize;
+
+        // Get amplitudes with indices, excluding reserved units.
+        let mut indexed: Vec<(UnitId, f32)> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.reserved[*i])
+            .map(|(i, u)| (i, u.amp.abs()))
+            .collect();
+
+        // Sort by amplitude descending.
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+
+        // Disable learning for all non-reserved units first.
+        for i in 0..self.learning_enabled.len() {
+            if !self.reserved[i] {
+                self.learning_enabled[i] = false;
+            }
+        }
+
+        // Enable learning for top N.
+        let enabled = keep_count.min(indexed.len());
+        for (id, _) in indexed.into_iter().take(enabled) {
+            self.learning_enabled[id] = true;
+        }
+
+        enabled
+    }
+
+    /// Reset all learning gates (re-enable learning for all units).
+    ///
+    /// Call this after attention_gate() when you want to restore normal learning.
+    pub fn reset_learning_gates(&mut self) {
+        for enabled in &mut self.learning_enabled {
+            *enabled = true;
+        }
+    }
+
+    /// Dream replay: offline memory consolidation.
+    ///
+    /// Disconnects from external input and runs internal replay with boosted
+    /// learning rate. Patterns that were active during waking will reactivate
+    /// and strengthen through noise-driven exploration.
+    ///
+    /// # Arguments
+    /// * `steps` - Number of dream steps to run
+    /// * `learning_boost` - Multiplier for learning rate during dreaming (2.0-10.0)
+    /// * `noise_boost` - Multiplier for noise during dreaming (2.0-5.0)
+    ///
+    /// Returns the average amplitude during dreaming (activity level).
+    ///
+    /// # Example
+    /// ```
+    /// # use braine::substrate::{Brain, BrainConfig, Stimulus};
+    /// let mut brain = Brain::new(BrainConfig::default());
+    /// // ... learning during the day ...
+    /// brain.dream(100, 5.0, 3.0); // Consolidate memories
+    /// ```
+    pub fn dream(&mut self, steps: usize, learning_boost: f32, noise_boost: f32) -> f32 {
+        // Save original settings.
+        let orig_hebb = self.cfg.hebb_rate;
+        let orig_noise_amp = self.cfg.noise_amp;
+        let orig_noise_phase = self.cfg.noise_phase;
+        let orig_neuromod = self.neuromod;
+
+        // Boost learning and noise.
+        self.cfg.hebb_rate = (orig_hebb * learning_boost).min(0.5);
+        self.cfg.noise_amp = orig_noise_amp * noise_boost;
+        self.cfg.noise_phase = orig_noise_phase * noise_boost;
+        self.neuromod = 0.7; // High neuromodulator for consolidation
+
+        // Clear any pending input (we're disconnected from the world).
+        for x in &mut self.pending_input {
+            *x = 0.0;
+        }
+
+        // Run dream steps.
+        let mut total_amp = 0.0f32;
+        for _ in 0..steps {
+            // Inject small random activations to trigger memory reactivation.
+            let inject_count = (self.units.len() / 20).max(1);
+            for _ in 0..inject_count {
+                let id = self.rng.gen_range_usize(0, self.units.len());
+                if !self.reserved[id] {
+                    self.pending_input[id] = self.rng.gen_range_f32(0.2, 0.6);
+                }
+            }
+
+            self.step();
+
+            // Track activity.
+            total_amp += self.units.iter().map(|u| u.amp.abs()).sum::<f32>();
+        }
+
+        // Restore original settings.
+        self.cfg.hebb_rate = orig_hebb;
+        self.cfg.noise_amp = orig_noise_amp;
+        self.cfg.noise_phase = orig_noise_phase;
+        self.neuromod = orig_neuromod;
+
+        total_amp / (steps * self.units.len()) as f32
+    }
+
+    /// Burst-mode learning: apply enhanced plasticity for dramatic activity changes.
+    ///
+    /// Detects units that had a large amplitude increase since last step and
+    /// temporarily boosts their outgoing connection learning. This creates
+    /// "flashbulb memories" for surprising or important events.
+    ///
+    /// Call this before step() with the previous amplitudes.
+    ///
+    /// # Arguments
+    /// * `prev_amps` - Amplitudes from before the current step
+    /// * `burst_threshold` - Minimum amplitude jump to trigger burst (0.5-1.5)
+    /// * `boost_factor` - Learning rate multiplier for burst units (5.0-20.0)
+    ///
+    /// Returns the number of units in burst mode.
+    pub fn apply_burst_learning(
+        &mut self,
+        prev_amps: &[f32],
+        burst_threshold: f32,
+        boost_factor: f32,
+    ) -> usize {
+        if prev_amps.len() != self.units.len() {
+            return 0;
+        }
+
+        let mut burst_count = 0;
+        let base_lr = self.cfg.hebb_rate;
+        let boosted_lr = (base_lr * boost_factor).min(0.5);
+
+        for (i, &prev_amp) in prev_amps.iter().enumerate().take(self.units.len()) {
+            let delta = self.units[i].amp - prev_amp;
+
+            // Check for burst: large positive jump AND currently high amplitude.
+            if delta > burst_threshold && self.units[i].amp > 1.0 {
+                // Apply immediate potentiation to all outgoing connections.
+                let range = self.conn_range(i);
+                for idx in range {
+                    let target = self.connections.targets[idx];
+                    if target == INVALID_UNIT {
+                        continue;
+                    }
+
+                    // Only strengthen if target is also active.
+                    if self.units[target].amp > self.cfg.coactive_threshold {
+                        let align = phase_alignment(self.units[i].phase, self.units[target].phase);
+                        let delta_w = boosted_lr * align;
+                        self.connections.weights[idx] =
+                            (self.connections.weights[idx] + delta_w).clamp(-1.5, 1.5);
+                    }
+                }
+
+                burst_count += 1;
+            }
+        }
+
+        burst_count
+    }
+
+    /// Get current amplitudes for burst detection.
+    ///
+    /// Call this before step() and pass the result to apply_burst_learning() after.
+    #[must_use]
+    pub fn get_amplitudes(&self) -> Vec<f32> {
+        self.units.iter().map(|u| u.amp).collect()
+    }
+
+    /// Forced synchronization: one-shot supervised learning.
+    ///
+    /// Forces specified units into phase alignment and high activation, then
+    /// runs a learning step. Creates strong bidirectional associations in one shot.
+    /// This is a "teacher mode" for rapid skill acquisition.
+    ///
+    /// # Arguments
+    /// * `group_a` - First group of unit IDs (e.g., stimulus units)
+    /// * `group_b` - Second group of unit IDs (e.g., response units)
+    /// * `strength` - Connection strength to establish (0.3-0.8)
+    ///
+    /// # Example
+    /// ```
+    /// # use braine::substrate::{Brain, BrainConfig};
+    /// let mut brain = Brain::new(BrainConfig::default());
+    /// brain.define_sensor("cue", 4);
+    /// brain.define_action("response", 4);
+    /// let cue_ids: Vec<_> = brain.sensor_units("cue").unwrap().to_vec();
+    /// let resp_ids: Vec<_> = brain.action_units("response").unwrap().to_vec();
+    /// brain.force_associate(&cue_ids, &resp_ids, 0.6);
+    /// ```
+    pub fn force_associate(&mut self, group_a: &[UnitId], group_b: &[UnitId], strength: f32) {
+        let strength = strength.clamp(0.1, 1.0);
+
+        // Force all units in both groups to same phase and high amplitude.
+        let forced_phase = 0.0;
+        let forced_amp = 1.5;
+
+        for &id in group_a.iter().chain(group_b.iter()) {
+            if id < self.units.len() {
+                self.units[id].phase = forced_phase;
+                self.units[id].amp = forced_amp;
+            }
+        }
+
+        // Create/strengthen connections A -> B.
+        for &a in group_a {
+            for &b in group_b {
+                if a < self.units.len() && b < self.units.len() && a != b {
+                    self.add_or_bump_csr(a, b, strength);
+                }
+            }
+        }
+
+        // Create/strengthen connections B -> A (bidirectional).
+        let reverse_strength = strength * 0.7; // Slightly weaker reverse.
+        for &b in group_b {
+            for &a in group_a {
+                if a < self.units.len() && b < self.units.len() && a != b {
+                    self.add_or_bump_csr(b, a, reverse_strength);
+                }
+            }
+        }
+
+        // Run a single step with max neuromodulator to cement the association.
+        let orig_neuromod = self.neuromod;
+        self.neuromod = 1.0;
+        self.step();
+        self.neuromod = orig_neuromod;
+    }
+
+    /// Partial forced association by group names.
+    ///
+    /// Convenience method that looks up sensor/action groups by name.
+    ///
+    /// # Arguments
+    /// * `sensor_name` - Name of sensor group
+    /// * `action_name` - Name of action group
+    /// * `strength` - Connection strength (0.3-0.8)
+    ///
+    /// Returns true if both groups were found and associated.
+    pub fn force_associate_groups(
+        &mut self,
+        sensor_name: &str,
+        action_name: &str,
+        strength: f32,
+    ) -> bool {
+        let sensor_ids: Vec<UnitId> = self
+            .sensor_groups
+            .iter()
+            .find(|g| g.name == sensor_name)
+            .map(|g| g.units.clone())
+            .unwrap_or_default();
+
+        let action_ids: Vec<UnitId> = self
+            .action_groups
+            .iter()
+            .find(|g| g.name == action_name)
+            .map(|g| g.units.clone())
+            .unwrap_or_default();
+
+        if sensor_ids.is_empty() || action_ids.is_empty() {
+            return false;
+        }
+
+        self.force_associate(&sensor_ids, &action_ids, strength);
+        true
     }
 
     /// Scalar Hebbian learning (baseline).
@@ -2356,7 +3010,8 @@ impl Brain {
                 }
 
                 // Find which unit owns this connection.
-                let owner = connections.offsets
+                let owner = connections
+                    .offsets
                     .iter()
                     .position(|&off| off > idx)
                     .unwrap_or(1)
@@ -2410,8 +3065,8 @@ impl Brain {
 
         // Mark tiny weights as pruned (tombstone).
         for idx in 0..self.connections.weights.len() {
-            if self.connections.weights[idx].abs() < prune_below 
-                && self.connections.targets[idx] != INVALID_UNIT 
+            if self.connections.weights[idx].abs() < prune_below
+                && self.connections.targets[idx] != INVALID_UNIT
             {
                 self.connections.targets[idx] = INVALID_UNIT;
                 self.connections.weights[idx] = 0.0;
@@ -2420,7 +3075,7 @@ impl Brain {
         }
 
         // Compact periodically to reclaim tombstones.
-        if self.age_steps % 1000 == 0 {
+        if self.age_steps.is_multiple_of(1000) {
             self.compact_connections();
         }
     }
@@ -2496,6 +3151,135 @@ impl Brain {
     fn note_symbol(&mut self, name: &str) {
         let id = self.intern(name);
         self.active_symbols.push(id);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Accelerated Learning Convenience API (for visualizer/experiments)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Trigger dream replay: run multiple offline consolidation episodes.
+    ///
+    /// This is a convenience wrapper around `dream()` that runs multiple episodes
+    /// with sensible defaults.
+    ///
+    /// # Arguments
+    /// * `episodes` - Number of dream episodes to run
+    /// * `learning_boost` - Learning rate multiplier (1.5-5.0 recommended)
+    ///
+    /// Returns the average amplitude during dreaming.
+    pub fn dream_replay(&mut self, episodes: usize, learning_boost: f32) -> f32 {
+        let steps_per_episode = 20;
+        let noise_boost = 2.5;
+        let mut total_activity = 0.0;
+
+        for _ in 0..episodes {
+            total_activity += self.dream(steps_per_episode, learning_boost, noise_boost);
+        }
+
+        if episodes > 0 {
+            total_activity / episodes as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// Force synchronization of all sensor groups.
+    ///
+    /// Aligns phases of sensor units to enhance coherent encoding.
+    /// Call this after regime shifts to help the brain adapt.
+    pub fn force_synchronize_sensors(&mut self) {
+        let target_phase = 0.0;
+
+        for group in &self.sensor_groups {
+            for &unit_id in &group.units {
+                if unit_id < self.units.len() {
+                    self.units[unit_id].phase = target_phase;
+                    self.units[unit_id].amp = (self.units[unit_id].amp + 0.5).min(2.0);
+                }
+            }
+        }
+    }
+
+    /// Enable or disable burst-mode learning with a rate multiplier.
+    ///
+    /// When enabled, Hebbian learning rate is boosted by the given factor.
+    /// This is applied on the next step() call.
+    ///
+    /// # Arguments
+    /// * `enabled` - Whether to enable burst mode
+    /// * `rate_multiplier` - Hebbian rate multiplier (1.0 = normal, 2.0-5.0 = burst)
+    pub fn set_burst_mode(&mut self, enabled: bool, rate_multiplier: f32) {
+        // Store in a temporary boost that modifies the effective hebb_rate.
+        // We can use neuromodulator as a proxy since it already multiplies learning.
+        if enabled {
+            // Boost the neuromodulator to increase learning.
+            self.neuromod = (self.neuromod + rate_multiplier * 0.3).min(1.5);
+        }
+        // Note: This is a simplified implementation. A more sophisticated version
+        // would track burst state explicitly and modify hebb_rate directly.
+    }
+
+    /// Set the attention threshold for gating.
+    ///
+    /// Units below this amplitude threshold will have learning disabled.
+    /// Higher thresholds = more selective learning (only most active units).
+    ///
+    /// # Arguments
+    /// * `threshold` - Amplitude threshold (0.0-1.0), default around 0.3
+    pub fn set_attention_threshold(&mut self, threshold: f32) {
+        let threshold = threshold.clamp(0.0, 1.0);
+
+        // Apply attention gating by disabling learning for low-amplitude units.
+        for i in 0..self.units.len() {
+            if !self.reserved[i] {
+                self.learning_enabled[i] = self.units[i].amp >= threshold;
+            }
+        }
+    }
+
+    /// Imprint the current active context strongly.
+    ///
+    /// Creates strong associations from currently active sensor units to
+    /// the most active non-reserved units. Use sparingly for one-shot learning.
+    ///
+    /// # Arguments
+    /// * `strength` - Imprint strength (0.3-0.8 recommended)
+    pub fn imprint_current_context(&mut self, strength: f32) {
+        let strength = strength.clamp(0.1, 1.0);
+
+        // Collect currently active sensor units.
+        let mut active_sensors: Vec<UnitId> = Vec::new();
+        for group in &self.sensor_groups {
+            for &unit_id in &group.units {
+                if unit_id < self.units.len() && self.units[unit_id].amp > 0.5 {
+                    active_sensors.push(unit_id);
+                }
+            }
+        }
+
+        if active_sensors.is_empty() {
+            return;
+        }
+
+        // Find the most active non-reserved units to associate with.
+        let mut candidates: Vec<(UnitId, f32)> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.reserved[*i] && !active_sensors.contains(i))
+            .map(|(i, u)| (i, u.amp))
+            .collect();
+        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+
+        // Take top 5 most active units.
+        let targets: Vec<UnitId> = candidates.into_iter().take(5).map(|(id, _)| id).collect();
+
+        if targets.is_empty() {
+            return;
+        }
+
+        // Create associations.
+        self.force_associate(&active_sensors, &targets, strength);
     }
 }
 
@@ -2575,10 +3359,16 @@ mod tests {
         assert_eq!(loaded.reserved.len(), brain.reserved.len());
         assert_eq!(loaded.learning_enabled.len(), brain.learning_enabled.len());
         assert_eq!(loaded.symbols_rev, brain.symbols_rev);
-        
+
         // Verify CSR connections match.
-        assert_eq!(loaded.connections.offsets.len(), brain.connections.offsets.len());
-        assert_eq!(loaded.total_connection_count(), brain.total_connection_count());
+        assert_eq!(
+            loaded.connections.offsets.len(),
+            brain.connections.offsets.len()
+        );
+        assert_eq!(
+            loaded.total_connection_count(),
+            brain.total_connection_count()
+        );
     }
 
     #[test]
@@ -2602,13 +3392,13 @@ mod tests {
         };
 
         let brain = Brain::new(cfg);
-        
+
         // Each unit should have exactly 2 connections.
         for i in 0..8 {
             let count = brain.neighbors(i).count();
             assert_eq!(count, 2, "unit {} should have 2 neighbors", i);
         }
-        
+
         // Total connections = 8 * 2 = 16.
         assert_eq!(brain.total_connection_count(), 16);
     }
@@ -2634,29 +3424,29 @@ mod tests {
         };
 
         let mut brain = Brain::new(cfg);
-        
+
         // Default tier is Scalar.
         assert_eq!(brain.execution_tier(), ExecutionTier::Scalar);
-        
+
         // Step with scalar.
         for _ in 0..10 {
             brain.step();
         }
         let _scalar_amp = brain.diagnostics().avg_amp;
-        
+
         // Switch to SIMD (falls back to scalar if feature not enabled).
         brain.set_execution_tier(ExecutionTier::Simd);
         assert_eq!(brain.execution_tier(), ExecutionTier::Simd);
-        
+
         // Switch to Parallel (falls back to scalar if feature not enabled).
         brain.set_execution_tier(ExecutionTier::Parallel);
         assert_eq!(brain.execution_tier(), ExecutionTier::Parallel);
-        
+
         // Step with parallel.
         for _ in 0..10 {
             brain.step();
         }
-        
+
         // Should still be functioning.
         let parallel_amp = brain.diagnostics().avg_amp;
         assert!(parallel_amp.is_finite());
@@ -2681,8 +3471,14 @@ mod tests {
 
         // Verify cloned state matches
         assert_eq!(cloned.age_steps(), brain.age_steps());
-        assert_eq!(cloned.diagnostics().unit_count, brain.diagnostics().unit_count);
-        assert_eq!(cloned.diagnostics().connection_count, brain.diagnostics().connection_count);
+        assert_eq!(
+            cloned.diagnostics().unit_count,
+            brain.diagnostics().unit_count
+        );
+        assert_eq!(
+            cloned.diagnostics().connection_count,
+            brain.diagnostics().connection_count
+        );
         assert_eq!(cloned.execution_tier(), brain.execution_tier());
 
         // Verify they evolve independently
@@ -2782,5 +3578,385 @@ mod tests {
     #[should_panic(expected = "connectivity_per_unit must be < unit_count")]
     fn config_rejects_overconnected() {
         let _ = BrainConfig::with_size(16, 20);
+    }
+
+    // =========================================================================
+    // Neurogenesis Tests
+    // =========================================================================
+
+    #[test]
+    fn neurogenesis_grow_single_unit() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+
+        let initial_count = brain.units.len();
+        let new_id = brain.grow_unit(4);
+
+        assert_eq!(new_id, initial_count);
+        assert_eq!(brain.units.len(), initial_count + 1);
+        assert_eq!(brain.reserved.len(), brain.units.len());
+        assert_eq!(brain.learning_enabled.len(), brain.units.len());
+        assert_eq!(brain.pending_input.len(), brain.units.len());
+
+        // New unit should have connections
+        let conn_count = brain.neighbors(new_id).count();
+        assert_eq!(conn_count, 4, "New unit should have 4 outgoing connections");
+
+        // Check births counter
+        assert_eq!(brain.births_last_step, 1);
+    }
+
+    #[test]
+    fn neurogenesis_grow_multiple_units() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+
+        let initial_count = brain.units.len();
+        let range = brain.grow_units(8, 4);
+
+        assert_eq!(range.start, initial_count);
+        assert_eq!(range.end, initial_count + 8);
+        assert_eq!(brain.units.len(), initial_count + 8);
+
+        // Each new unit should have connections
+        for id in range {
+            let conn_count = brain.neighbors(id).count();
+            assert!(
+                conn_count >= 4,
+                "Unit {} should have at least 4 connections",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn neurogenesis_maybe_grow_when_saturated() {
+        let cfg = BrainConfig::with_size(16, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+
+        // Initially, weights are small (~0.15), so should NOT grow
+        let grown = brain.maybe_neurogenesis(0.5, 4, 100);
+        assert_eq!(grown, 0, "Should not grow when not saturated");
+
+        // Artificially saturate the network
+        for w in &mut brain.connections.weights {
+            *w = 0.8;
+        }
+
+        // Now it should grow
+        let grown = brain.maybe_neurogenesis(0.5, 4, 100);
+        assert_eq!(grown, 4, "Should grow 4 units when saturated");
+        assert_eq!(brain.units.len(), 20);
+    }
+
+    #[test]
+    fn neurogenesis_respects_max_units() {
+        let cfg = BrainConfig::with_size(16, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+
+        // Saturate
+        for w in &mut brain.connections.weights {
+            *w = 0.9;
+        }
+
+        // Try to grow more than allowed
+        let grown = brain.maybe_neurogenesis(0.5, 100, 20);
+        assert_eq!(grown, 4, "Should only grow up to max_units");
+        assert_eq!(brain.units.len(), 20);
+
+        // At max, should not grow further
+        let grown = brain.maybe_neurogenesis(0.5, 100, 20);
+        assert_eq!(grown, 0, "Should not grow beyond max_units");
+    }
+
+    #[test]
+    fn neurogenesis_targeted_for_group() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("vision", 4);
+
+        let initial_count = brain.units.len();
+        let new_ids = brain.grow_for_group("sensor", "vision", 2);
+
+        assert_eq!(new_ids.len(), 2);
+        assert_eq!(brain.units.len(), initial_count + 2);
+
+        // New units should be connected to vision group
+        let vision_units = brain.sensor_units("vision").unwrap();
+        for &new_id in &new_ids {
+            // Check incoming connections from vision units
+            let mut has_incoming = false;
+            for &vision_id in vision_units {
+                for (target, _) in brain.neighbors(vision_id) {
+                    if target == new_id {
+                        has_incoming = true;
+                        break;
+                    }
+                }
+            }
+            assert!(
+                has_incoming,
+                "New unit should receive connections from vision group"
+            );
+        }
+    }
+
+    #[test]
+    fn neurogenesis_diagnostics_include_births() {
+        let cfg = BrainConfig::with_size(16, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+
+        brain.grow_unit(4);
+        brain.grow_unit(4);
+
+        let diag = brain.diagnostics();
+        assert_eq!(diag.births_last_step, 2);
+        assert_eq!(diag.unit_count, 18);
+    }
+
+    #[test]
+    fn neurogenesis_units_can_integrate() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("stim", 4);
+        brain.define_action("act", 4);
+
+        // Add some new units
+        let new_ids = brain.grow_units(4, 4);
+
+        // Run some steps to let them integrate
+        for _ in 0..50 {
+            brain.apply_stimulus(Stimulus::new("stim", 1.0));
+            brain.set_neuromodulator(0.5);
+            brain.step();
+        }
+
+        // New units should have some activity (not all zero)
+        let mut any_active = false;
+        for id in new_ids {
+            if brain.units[id].amp.abs() > 0.01 {
+                any_active = true;
+                break;
+            }
+        }
+        assert!(any_active, "At least one new unit should become active");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Accelerated Learning Mechanism Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn attention_gate_focuses_learning() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+
+        // Manually set some units to be active
+        brain.units[0].amp = 1.5;
+        brain.units[1].amp = 1.2;
+        brain.units[2].amp = 0.9;
+        brain.units[3].amp = 0.1;
+        brain.units[4].amp = 0.05;
+
+        // Apply attention gating to top 10%
+        let enabled = brain.attention_gate(0.1);
+
+        // Should enable learning for ~3 units (10% of 32 = 3.2, ceil = 4)
+        assert!(
+            (3..=5).contains(&enabled),
+            "Expected 3-5 units enabled, got {}",
+            enabled
+        );
+
+        // Top amplitude units should have learning enabled
+        assert!(
+            brain.learning_enabled[0],
+            "Highest amp unit should have learning enabled"
+        );
+        assert!(
+            brain.learning_enabled[1],
+            "Second highest amp unit should have learning enabled"
+        );
+
+        // Low amplitude units should have learning disabled
+        assert!(
+            !brain.learning_enabled[4],
+            "Lowest amp unit should have learning disabled"
+        );
+
+        // Reset and verify
+        brain.reset_learning_gates();
+        for enabled in &brain.learning_enabled {
+            assert!(*enabled, "All learning gates should be reset");
+        }
+    }
+
+    #[test]
+    fn dream_consolidates_memories() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("stim", 4);
+
+        // Learn something during "waking"
+        for _ in 0..20 {
+            brain.apply_stimulus(Stimulus::new("stim", 1.0));
+            brain.set_neuromodulator(0.5);
+            brain.step();
+        }
+
+        // Get weights before dreaming
+        let weights_before: Vec<f32> = brain.connections.weights.clone();
+
+        // Dream
+        let avg_amp = brain.dream(50, 3.0, 2.0);
+
+        // Should have had some activity during dreaming
+        assert!(avg_amp > 0.0, "Dream should have activity");
+
+        // Weights should have changed during dreaming
+        let weights_after = &brain.connections.weights;
+        let mut changed = false;
+        for (before, after) in weights_before.iter().zip(weights_after.iter()) {
+            if (before - after).abs() > 0.001 {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "Weights should change during dream consolidation");
+
+        // Config should be restored
+        assert!(
+            brain.cfg.hebb_rate < 0.1,
+            "Hebb rate should be restored after dream"
+        );
+    }
+
+    #[test]
+    fn burst_learning_detects_spikes() {
+        let cfg = BrainConfig::with_size(16, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+
+        // Set up "before" state - units are quiet
+        let prev_amps = brain.get_amplitudes();
+
+        // Simulate dramatic activity spike
+        brain.units[0].amp = 1.8;
+        brain.units[1].amp = 1.5;
+        brain.units[5].amp = 1.2; // Target for connections
+
+        // Apply burst learning
+        let burst_count = brain.apply_burst_learning(&prev_amps, 0.8, 10.0);
+
+        // Should detect bursts
+        assert!(
+            burst_count >= 2,
+            "Should detect at least 2 burst units, got {}",
+            burst_count
+        );
+    }
+
+    #[test]
+    fn force_associate_creates_connections() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("cue", 4);
+        brain.define_action("response", 4);
+
+        let cue_ids: Vec<UnitId> = brain.sensor_units("cue").unwrap().to_vec();
+        let resp_ids: Vec<UnitId> = brain.action_units("response").unwrap().to_vec();
+
+        // Force association
+        brain.force_associate(&cue_ids, &resp_ids, 0.6);
+
+        // Check connections exist from cue to response
+        let mut cue_to_resp = 0;
+        for &cue_id in &cue_ids {
+            for (target, weight) in brain.neighbors(cue_id) {
+                if resp_ids.contains(&target) && weight > 0.3 {
+                    cue_to_resp += 1;
+                }
+            }
+        }
+
+        assert!(
+            cue_to_resp > 0,
+            "Should have created cue->response connections"
+        );
+
+        // Check reverse connections
+        let mut resp_to_cue = 0;
+        for &resp_id in &resp_ids {
+            for (target, weight) in brain.neighbors(resp_id) {
+                if cue_ids.contains(&target) && weight > 0.2 {
+                    resp_to_cue += 1;
+                }
+            }
+        }
+
+        assert!(
+            resp_to_cue > 0,
+            "Should have created response->cue connections"
+        );
+    }
+
+    #[test]
+    fn force_associate_groups_by_name() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("light", 4);
+        brain.define_action("lever", 4);
+
+        // Use convenience method
+        let success = brain.force_associate_groups("light", "lever", 0.5);
+        assert!(success, "Should find both groups and associate them");
+
+        // Try with non-existent group
+        let fail = brain.force_associate_groups("nonexistent", "lever", 0.5);
+        assert!(!fail, "Should fail for non-existent groups");
+    }
+
+    #[test]
+    fn combined_mechanisms_workflow() {
+        let cfg = BrainConfig::with_size(64, 8).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("input", 8);
+        brain.define_action("output", 4);
+
+        // 1. Learn with attention gating
+        for step in 0..100 {
+            let prev_amps = brain.get_amplitudes();
+
+            brain.apply_stimulus(Stimulus::new("input", 1.0));
+            brain.set_neuromodulator(0.3);
+
+            // Apply attention gating every 10 steps
+            if step % 10 == 0 {
+                brain.attention_gate(0.2);
+            }
+
+            brain.step();
+
+            // Apply burst learning
+            brain.apply_burst_learning(&prev_amps, 0.8, 5.0);
+
+            // Reset gates for next cycle
+            if step % 10 == 9 {
+                brain.reset_learning_gates();
+            }
+        }
+
+        // 2. Check for neurogenesis need
+        let _grown = brain.maybe_neurogenesis(0.5, 4, 100);
+
+        // 3. Dream to consolidate
+        brain.dream(20, 3.0, 2.0);
+
+        // 4. Force a specific association
+        brain.force_associate_groups("input", "output", 0.5);
+
+        // Should have a working network
+        let diag = brain.diagnostics();
+        assert!(diag.unit_count >= 64, "Should have at least initial units");
+        assert!(diag.connection_count > 0, "Should have connections");
     }
 }

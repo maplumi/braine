@@ -14,20 +14,141 @@ use std::thread;
 
 mod games;
 
-// Space reserved for buttons + HUD text (so it doesn't overlap the game area).
-const TOP_UI_H: f32 = 220.0;
-const UI_MARGIN: f32 = 12.0;
-const UI_GAP: f32 = 6.0;
-const BTN_H: f32 = 28.0;
-const BTN_W_TEST: f32 = 100.0;
-const BTN_W_MODE: f32 = 110.0;
-const BTN_W_SMALL: f32 = 120.0;
-const BTN_FONT_SIZE: f32 = 18.0;
-// Start HUD below the 3 header rows.
-const HUD_START_Y: f32 = 124.0;
+// Layout constants - redesigned for tabbed UI
+const TOP_UI_H: f32 = 280.0;
+const UI_MARGIN: f32 = 10.0;
+const UI_GAP: f32 = 5.0;
+const BTN_H: f32 = 26.0;
+const BTN_W_TEST: f32 = 58.0;
+const BTN_W_MODE: f32 = 70.0;
+const BTN_W_SMALL: f32 = 90.0;
+const BTN_W_TAB: f32 = 72.0;
+const BTN_FONT_SIZE: f32 = 15.0;
+const HUD_START_Y: f32 = 160.0;
+const HUD_FONT_SIZE: u16 = 13;
+const HUD_LINE_H: f32 = 16.0;
 
-const HUD_FONT_SIZE: u16 = 18;
-const HUD_LINE_H: f32 = 20.0;
+// These are reserved for future use in more detailed visualization panels
+#[allow(dead_code)]
+const METRICS_PANEL_W: f32 = 180.0;
+
+// Tab identifiers for the redesigned UI
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiTab {
+    Games,
+    Learning,
+    Brain,
+    Storage,
+}
+
+// Accelerated learning controls state
+#[derive(Debug, Clone)]
+struct LearningControls {
+    // Attention gating
+    attention_boost: f32,
+    attention_enabled: bool,
+
+    // Dream replay
+    dream_replay_pending: bool,
+    dream_episode_count: u32,
+
+    // Burst-mode learning
+    burst_mode_enabled: bool,
+    burst_duration_frames: u32,
+    burst_remaining: u32,
+
+    // Forced synchronization
+    force_sync_pending: bool,
+
+    // Imprint on demand
+    imprint_pending: bool,
+    #[allow(dead_code)] // Reserved for configurable imprint strength
+    imprint_strength: f32,
+
+    // Auto-learning triggers
+    auto_dream_on_flip: bool,
+    auto_burst_on_slump: bool,
+}
+
+impl Default for LearningControls {
+    fn default() -> Self {
+        Self {
+            attention_boost: 0.0,
+            attention_enabled: true,
+            dream_replay_pending: false,
+            dream_episode_count: 0,
+            burst_mode_enabled: false,
+            burst_duration_frames: 120,
+            burst_remaining: 0,
+            force_sync_pending: false,
+            imprint_pending: false,
+            imprint_strength: 0.6,
+            auto_dream_on_flip: true,
+            auto_burst_on_slump: true,
+        }
+    }
+}
+
+impl LearningControls {
+    fn tick(&mut self) {
+        // Decrement burst timer
+        if self.burst_remaining > 0 {
+            self.burst_remaining -= 1;
+            if self.burst_remaining == 0 {
+                self.burst_mode_enabled = false;
+            }
+        }
+    }
+
+    fn trigger_burst(&mut self) {
+        self.burst_mode_enabled = true;
+        self.burst_remaining = self.burst_duration_frames;
+    }
+
+    fn trigger_dream(&mut self) {
+        self.dream_replay_pending = true;
+    }
+
+    fn trigger_sync(&mut self) {
+        self.force_sync_pending = true;
+    }
+
+    fn trigger_imprint(&mut self) {
+        self.imprint_pending = true;
+    }
+
+    fn apply_to_brain(&mut self, brain: &mut Brain, logger: &mut MetricsLogger, frame: u64) {
+        // Apply pending dream replay
+        if self.dream_replay_pending {
+            brain.dream_replay(5, 1.5);
+            self.dream_episode_count += 5;
+            self.dream_replay_pending = false;
+            logger.log_event(frame, "Learning", "dream_replay triggered (5 episodes)");
+        }
+
+        // Apply pending forced sync
+        if self.force_sync_pending {
+            brain.force_synchronize_sensors();
+            self.force_sync_pending = false;
+            logger.log_event(frame, "Learning", "force_synchronize_sensors triggered");
+        }
+
+        // Apply pending imprint (needs current context - handled in game tick)
+        // self.imprint_pending is consumed by game tick
+
+        // Apply burst mode modifier to hebb_rate
+        if self.burst_mode_enabled {
+            brain.set_burst_mode(true, 2.5);
+        } else {
+            brain.set_burst_mode(false, 1.0);
+        }
+
+        // Apply attention gating
+        if self.attention_enabled {
+            brain.set_attention_threshold(0.3 + self.attention_boost * 0.5);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct StorageConfig {
@@ -377,6 +498,7 @@ enum ControlMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiTestId {
+    Spot,
     Pong,
     Bandit,
     Forage,
@@ -421,13 +543,17 @@ impl Default for VisConfig {
 struct AppState {
     mode: ControlMode,
     test: UiTestId,
+    active_tab: UiTab,
+    learning: LearningControls,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            mode: ControlMode::Human,
-            test: UiTestId::Pong,
+            mode: ControlMode::Braine, // Start in Braine mode to test learning
+            test: UiTestId::Spot,      // Start with simplest game
+            active_tab: UiTab::Games,
+            learning: LearningControls::default(),
         }
     }
 }
@@ -488,6 +614,9 @@ fn mk_brain_for(test: UiTestId) -> Brain {
         }
         UiTestId::Sequence => {
             games::sequence::configure_brain(&mut brain);
+        }
+        UiTestId::Spot => {
+            games::spot::configure_brain(&mut brain);
         }
     }
 
@@ -594,6 +723,328 @@ fn draw_label(rect: Rect, label: &str, active: bool) {
         rect.y + rect.h * 0.72,
         BTN_FONT_SIZE,
         WHITE,
+    );
+}
+
+// Tab button with accent color when active
+fn tab_button(rect: Rect, label: &str, active: bool) -> bool {
+    let (mx, my) = mouse_position();
+    let hovered = rect.contains(vec2(mx, my));
+    let clicked = hovered && is_mouse_button_pressed(MouseButton::Left);
+
+    let bg = if active {
+        Color::new(0.25, 0.40, 0.55, 1.0) // Blue accent for active tab
+    } else if hovered {
+        Color::new(0.22, 0.22, 0.24, 1.0)
+    } else {
+        Color::new(0.15, 0.15, 0.17, 1.0)
+    };
+
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
+    if active {
+        // Underline for active tab
+        draw_rectangle(
+            rect.x,
+            rect.y + rect.h - 2.0,
+            rect.w,
+            2.0,
+            Color::new(0.4, 0.7, 1.0, 1.0),
+        );
+    }
+    draw_text(
+        label,
+        rect.x + 6.0,
+        rect.y + rect.h * 0.68,
+        BTN_FONT_SIZE - 1.0,
+        if active { WHITE } else { GRAY },
+    );
+
+    clicked
+}
+
+// Slider control - returns new value
+fn slider(rect: Rect, label: &str, value: f32, min: f32, max: f32) -> f32 {
+    let (mx, my) = mouse_position();
+    let hovered = rect.contains(vec2(mx, my));
+    let dragging = hovered && is_mouse_button_down(MouseButton::Left);
+
+    // Background
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        Color::new(0.12, 0.12, 0.14, 1.0),
+    );
+
+    // Track
+    let track_y = rect.y + rect.h * 0.65;
+    let track_h = 4.0;
+    let track_x = rect.x + 6.0;
+    let track_w = rect.w - 12.0;
+    draw_rectangle(
+        track_x,
+        track_y,
+        track_w,
+        track_h,
+        Color::new(0.25, 0.25, 0.28, 1.0),
+    );
+
+    // Calculate value position
+    let norm = (value - min) / (max - min).max(0.001);
+    let thumb_x = track_x + norm * track_w;
+
+    // Filled portion
+    draw_rectangle(
+        track_x,
+        track_y,
+        thumb_x - track_x,
+        track_h,
+        Color::new(0.3, 0.6, 0.8, 1.0),
+    );
+
+    // Thumb
+    draw_circle(
+        thumb_x,
+        track_y + track_h * 0.5,
+        6.0,
+        if dragging {
+            Color::new(0.5, 0.8, 1.0, 1.0)
+        } else {
+            Color::new(0.4, 0.7, 0.9, 1.0)
+        },
+    );
+
+    // Label + value
+    draw_text(label, rect.x + 6.0, rect.y + 14.0, 13.0, GRAY);
+    draw_text(
+        &format!("{:.2}", value),
+        rect.x + rect.w - 35.0,
+        rect.y + 14.0,
+        13.0,
+        WHITE,
+    );
+
+    // Handle drag
+    if dragging {
+        let local_x = (mx - track_x).clamp(0.0, track_w);
+        let new_norm = local_x / track_w;
+        return min + new_norm * (max - min);
+    }
+
+    value
+}
+
+// Toggle button
+fn toggle_button(rect: Rect, label: &str, enabled: bool) -> bool {
+    let (mx, my) = mouse_position();
+    let hovered = rect.contains(vec2(mx, my));
+    let clicked = hovered && is_mouse_button_pressed(MouseButton::Left);
+
+    let bg = if enabled {
+        Color::new(0.20, 0.50, 0.30, 1.0) // Green when enabled
+    } else if hovered {
+        Color::new(0.25, 0.25, 0.25, 1.0)
+    } else {
+        Color::new(0.18, 0.18, 0.18, 1.0)
+    };
+
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if enabled {
+            Color::new(0.4, 0.8, 0.5, 1.0)
+        } else {
+            GRAY
+        },
+    );
+
+    // Indicator dot
+    let dot_r = 4.0;
+    let dot_x = if enabled {
+        rect.x + rect.w - 12.0
+    } else {
+        rect.x + 12.0
+    };
+    draw_circle(
+        dot_x,
+        rect.y + rect.h * 0.5,
+        dot_r,
+        if enabled {
+            Color::new(0.5, 1.0, 0.6, 1.0)
+        } else {
+            Color::new(0.4, 0.4, 0.4, 1.0)
+        },
+    );
+
+    draw_text(
+        label,
+        rect.x + 20.0,
+        rect.y + rect.h * 0.68,
+        BTN_FONT_SIZE - 2.0,
+        WHITE,
+    );
+
+    clicked
+}
+
+// Action button (triggers an action, shows feedback)
+fn action_button(rect: Rect, label: &str, highlight: bool) -> bool {
+    let (mx, my) = mouse_position();
+    let hovered = rect.contains(vec2(mx, my));
+    let clicked = hovered && is_mouse_button_pressed(MouseButton::Left);
+
+    let bg = if highlight {
+        Color::new(0.45, 0.35, 0.15, 1.0) // Orange highlight
+    } else if hovered {
+        Color::new(0.28, 0.28, 0.30, 1.0)
+    } else {
+        Color::new(0.20, 0.20, 0.22, 1.0)
+    };
+
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        if highlight {
+            Color::new(0.9, 0.7, 0.3, 1.0)
+        } else {
+            GRAY
+        },
+    );
+    draw_text(
+        label,
+        rect.x + 8.0,
+        rect.y + rect.h * 0.68,
+        BTN_FONT_SIZE - 1.0,
+        WHITE,
+    );
+
+    clicked
+}
+
+// Progress bar
+fn progress_bar(rect: Rect, label: &str, progress: f32, color: Color) {
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        Color::new(0.12, 0.12, 0.14, 1.0),
+    );
+
+    let bar_h = 6.0;
+    let bar_y = rect.y + rect.h - bar_h - 4.0;
+    let bar_w = (rect.w - 8.0) * progress.clamp(0.0, 1.0);
+
+    draw_rectangle(
+        rect.x + 4.0,
+        bar_y,
+        rect.w - 8.0,
+        bar_h,
+        Color::new(0.2, 0.2, 0.22, 1.0),
+    );
+    draw_rectangle(rect.x + 4.0, bar_y, bar_w, bar_h, color);
+
+    draw_text(label, rect.x + 6.0, rect.y + 14.0, 12.0, GRAY);
+    draw_text(
+        &format!("{:.0}%", progress * 100.0),
+        rect.x + rect.w - 35.0,
+        rect.y + 14.0,
+        12.0,
+        WHITE,
+    );
+}
+
+// Draw oscillator phase visualization (circular)
+fn draw_phase_wheel(cx: f32, cy: f32, radius: f32, phases: &[f32]) {
+    // Background circle
+    draw_circle(cx, cy, radius, Color::new(0.12, 0.12, 0.14, 1.0));
+    draw_circle_lines(cx, cy, radius, 1.0, Color::new(0.3, 0.3, 0.32, 1.0));
+
+    // Draw phase points
+    let n = phases.len().min(100); // Limit for performance
+    for (i, &phase) in phases.iter().take(n).enumerate() {
+        let angle = phase * std::f32::consts::PI * 2.0;
+        let r = radius * 0.8;
+        let px = cx + angle.cos() * r;
+        let py = cy + angle.sin() * r;
+
+        // Color by index for variety
+        let hue = (i as f32 / n as f32) * 0.7;
+        let color = Color::new(0.4 + hue * 0.4, 0.6 - hue * 0.2, 0.9 - hue * 0.3, 0.7);
+        draw_circle(px, py, 2.0, color);
+    }
+}
+
+// Draw reward timeline (recent events) - reserved for future use in Brain tab
+#[allow(dead_code)]
+fn draw_reward_timeline(rect: Rect, events: &[(bool, bool)]) {
+    // events: (is_positive_reward, is_flip_marker)
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        Color::new(0.10, 0.10, 0.12, 1.0),
+    );
+
+    let n = events.len().min(100);
+    if n == 0 {
+        return;
+    }
+
+    let bar_w = rect.w / n as f32;
+    let mid_y = rect.y + rect.h * 0.5;
+
+    for (i, &(positive, flip)) in events.iter().rev().take(n).enumerate() {
+        let x = rect.x + rect.w - (i as f32 + 1.0) * bar_w;
+
+        if flip {
+            // Flip marker - orange vertical line
+            draw_rectangle(
+                x,
+                rect.y,
+                bar_w.max(2.0),
+                rect.h,
+                Color::new(0.8, 0.5, 0.2, 0.6),
+            );
+        } else if positive {
+            // Positive reward - green bar up
+            draw_rectangle(
+                x,
+                rect.y,
+                bar_w.max(1.0),
+                rect.h * 0.5,
+                Color::new(0.3, 0.7, 0.4, 0.8),
+            );
+        } else {
+            // Negative reward - red bar down
+            draw_rectangle(
+                x,
+                mid_y,
+                bar_w.max(1.0),
+                rect.h * 0.5,
+                Color::new(0.7, 0.3, 0.3, 0.8),
+            );
+        }
+    }
+
+    // Center line
+    draw_line(
+        rect.x,
+        mid_y,
+        rect.x + rect.w,
+        mid_y,
+        1.0,
+        Color::new(0.3, 0.3, 0.32, 1.0),
     );
 }
 
@@ -1876,6 +2327,7 @@ async fn main() {
     let mut whack = games::whack::WhackUi::new();
     let mut beacon = games::beacon::BeaconUi::new(&cfg);
     let mut sequence = games::sequence::SequenceUi::new();
+    let mut spot = games::spot::SpotUi::new(&cfg);
 
     let mut pong_child = PongChildManager::new();
 
@@ -1993,102 +2445,35 @@ async fn main() {
         );
         draw_line(0.0, TOP_UI_H, screen_width(), TOP_UI_H, 1.0, DARKGRAY);
 
-        // Test selector (left) + mode selector (right).
+        // === Row 1: Tab buttons (left) + Mode selector (right) ===
         let left_x = UI_MARGIN;
         let top_y = UI_MARGIN;
 
-        let t1 = Rect::new(left_x, top_y, BTN_W_TEST, BTN_H);
-        let t2 = Rect::new(left_x + BTN_W_TEST + UI_GAP, top_y, BTN_W_TEST, BTN_H);
-        let t3 = Rect::new(
-            left_x + 2.0 * (BTN_W_TEST + UI_GAP),
-            top_y,
-            BTN_W_TEST,
-            BTN_H,
-        );
-        let t4 = Rect::new(
-            left_x + 3.0 * (BTN_W_TEST + UI_GAP),
-            top_y,
-            BTN_W_TEST,
-            BTN_H,
-        );
-        let t5 = Rect::new(
-            left_x + 4.0 * (BTN_W_TEST + UI_GAP),
-            top_y,
-            BTN_W_TEST,
-            BTN_H,
-        );
-        let t6 = Rect::new(
-            left_x + 5.0 * (BTN_W_TEST + UI_GAP),
-            top_y,
-            BTN_W_TEST,
-            BTN_H,
-        );
+        // Tab buttons
+        let tab_games = Rect::new(left_x, top_y, BTN_W_TAB, BTN_H);
+        let tab_learn = Rect::new(left_x + BTN_W_TAB + UI_GAP, top_y, BTN_W_TAB, BTN_H);
+        let tab_brain = Rect::new(left_x + 2.0 * (BTN_W_TAB + UI_GAP), top_y, BTN_W_TAB, BTN_H);
+        let tab_store = Rect::new(left_x + 3.0 * (BTN_W_TAB + UI_GAP), top_y, BTN_W_TAB, BTN_H);
 
+        if tab_button(tab_games, "Games", app.active_tab == UiTab::Games) {
+            app.active_tab = UiTab::Games;
+        }
+        if tab_button(tab_learn, "Learning", app.active_tab == UiTab::Learning) {
+            app.active_tab = UiTab::Learning;
+        }
+        if tab_button(tab_brain, "Brain", app.active_tab == UiTab::Brain) {
+            app.active_tab = UiTab::Brain;
+        }
+        if tab_button(tab_store, "Storage", app.active_tab == UiTab::Storage) {
+            app.active_tab = UiTab::Storage;
+        }
+
+        // Mode selector (right side)
         let right_group_w = 2.0 * BTN_W_MODE + UI_GAP;
         let right_x = screen_width() - UI_MARGIN - right_group_w;
         let m1 = Rect::new(right_x, top_y, BTN_W_MODE, BTN_H);
         let m2 = Rect::new(right_x + BTN_W_MODE + UI_GAP, top_y, BTN_W_MODE, BTN_H);
 
-        // Second row controls (difficulty + regime + neg reinforcement).
-        let row2_y = top_y + BTN_H + UI_GAP;
-        let d1 = Rect::new(left_x, row2_y, BTN_W_SMALL, BTN_H);
-        let d_status = Rect::new(left_x + BTN_W_SMALL + UI_GAP, row2_y, BTN_W_SMALL, BTN_H);
-        let d2 = Rect::new(
-            left_x + 2.0 * (BTN_W_SMALL + UI_GAP),
-            row2_y,
-            BTN_W_SMALL,
-            BTN_H,
-        );
-
-        // Third row controls (more breathing room).
-        let row3_y = row2_y + BTN_H + UI_GAP;
-
-        let right3_group_w = 3.0 * BTN_W_SMALL + 2.0 * UI_GAP;
-        let right3_x = screen_width() - UI_MARGIN - right3_group_w;
-        let r3_1 = Rect::new(right3_x, row3_y, BTN_W_SMALL, BTN_H);
-        let f_status = Rect::new(right3_x + BTN_W_SMALL + UI_GAP, row3_y, BTN_W_SMALL, BTN_H);
-        let r3_2 = Rect::new(
-            right3_x + 2.0 * (BTN_W_SMALL + UI_GAP),
-            row3_y,
-            BTN_W_SMALL,
-            BTN_H,
-        );
-
-        let mid_group_w = BTN_W_SMALL;
-        let mid_x = (screen_width() - mid_group_w) * 0.5;
-        let negb = Rect::new(mid_x, row3_y, BTN_W_SMALL, BTN_H);
-
-        if button(t1, "Pong", app.test == UiTestId::Pong) && app.test != UiTestId::Pong {
-            app.test = UiTestId::Pong;
-            pong = PongUi::new(&cfg);
-            pong_child = PongChildManager::new();
-            brain = mk_brain_for(app.test);
-        }
-        if button(t2, "Bandit", app.test == UiTestId::Bandit) && app.test != UiTestId::Bandit {
-            app.test = UiTestId::Bandit;
-            bandit = BanditUi::new();
-            brain = mk_brain_for(app.test);
-        }
-        if button(t3, "Forage", app.test == UiTestId::Forage) && app.test != UiTestId::Forage {
-            app.test = UiTestId::Forage;
-            forage = games::forage::ForageUi::new(&cfg);
-            brain = mk_brain_for(app.test);
-        }
-        if button(t4, "Whack", app.test == UiTestId::Whack) && app.test != UiTestId::Whack {
-            app.test = UiTestId::Whack;
-            whack = games::whack::WhackUi::new();
-            brain = mk_brain_for(app.test);
-        }
-        if button(t5, "Beacon", app.test == UiTestId::Beacon) && app.test != UiTestId::Beacon {
-            app.test = UiTestId::Beacon;
-            beacon = games::beacon::BeaconUi::new(&cfg);
-            brain = mk_brain_for(app.test);
-        }
-        if button(t6, "Seq", app.test == UiTestId::Sequence) && app.test != UiTestId::Sequence {
-            app.test = UiTestId::Sequence;
-            sequence = games::sequence::SequenceUi::new();
-            brain = mk_brain_for(app.test);
-        }
         if button(m1, "Human", app.mode == ControlMode::Human) {
             app.mode = ControlMode::Human;
         }
@@ -2096,45 +2481,397 @@ async fn main() {
             app.mode = ControlMode::Braine;
         }
 
-        // Apply control only for Pong (Bandit is already fairly interpretable).
-        if app.test == UiTestId::Pong {
-            if button(d1, "Easier", false) {
-                pong.easier();
-            }
-            draw_label(
-                d_status,
-                &format!("Difficulty {}", pong.difficulty_level),
-                true,
-            );
-            if button(d2, "Harder", false) {
-                pong.harder();
+        // === Tab Content Area ===
+        let row2_y = top_y + BTN_H + UI_GAP + 2.0;
+
+        match app.active_tab {
+            UiTab::Games => {
+                // Game selector buttons (7 games - use 2 rows)
+                let t0 = Rect::new(left_x, row2_y, BTN_W_TEST, BTN_H);
+                let t1 = Rect::new(left_x + BTN_W_TEST + UI_GAP, row2_y, BTN_W_TEST, BTN_H);
+                let t2 = Rect::new(
+                    left_x + 2.0 * (BTN_W_TEST + UI_GAP),
+                    row2_y,
+                    BTN_W_TEST,
+                    BTN_H,
+                );
+                let t3 = Rect::new(
+                    left_x + 3.0 * (BTN_W_TEST + UI_GAP),
+                    row2_y,
+                    BTN_W_TEST,
+                    BTN_H,
+                );
+                let t4 = Rect::new(
+                    left_x + 4.0 * (BTN_W_TEST + UI_GAP),
+                    row2_y,
+                    BTN_W_TEST,
+                    BTN_H,
+                );
+                let t5 = Rect::new(
+                    left_x + 5.0 * (BTN_W_TEST + UI_GAP),
+                    row2_y,
+                    BTN_W_TEST,
+                    BTN_H,
+                );
+                let t6 = Rect::new(
+                    left_x + 6.0 * (BTN_W_TEST + UI_GAP),
+                    row2_y,
+                    BTN_W_TEST,
+                    BTN_H,
+                );
+
+                // Spot - simplest game (first button, highlighted differently)
+                if button(t0, "Spot", app.test == UiTestId::Spot) && app.test != UiTestId::Spot {
+                    app.test = UiTestId::Spot;
+                    spot = games::spot::SpotUi::new(&cfg);
+                    brain = mk_brain_for(app.test);
+                }
+                if button(t1, "Pong", app.test == UiTestId::Pong) && app.test != UiTestId::Pong {
+                    app.test = UiTestId::Pong;
+                    pong = PongUi::new(&cfg);
+                    pong_child = PongChildManager::new();
+                    brain = mk_brain_for(app.test);
+                }
+                if button(t2, "Bandit", app.test == UiTestId::Bandit)
+                    && app.test != UiTestId::Bandit
+                {
+                    app.test = UiTestId::Bandit;
+                    bandit = BanditUi::new();
+                    brain = mk_brain_for(app.test);
+                }
+                if button(t3, "Forage", app.test == UiTestId::Forage)
+                    && app.test != UiTestId::Forage
+                {
+                    app.test = UiTestId::Forage;
+                    forage = games::forage::ForageUi::new(&cfg);
+                    brain = mk_brain_for(app.test);
+                }
+                if button(t4, "Whack", app.test == UiTestId::Whack) && app.test != UiTestId::Whack {
+                    app.test = UiTestId::Whack;
+                    whack = games::whack::WhackUi::new();
+                    brain = mk_brain_for(app.test);
+                }
+                if button(t5, "Beacon", app.test == UiTestId::Beacon)
+                    && app.test != UiTestId::Beacon
+                {
+                    app.test = UiTestId::Beacon;
+                    beacon = games::beacon::BeaconUi::new(&cfg);
+                    brain = mk_brain_for(app.test);
+                }
+                if button(t6, "Seq", app.test == UiTestId::Sequence)
+                    && app.test != UiTestId::Sequence
+                {
+                    app.test = UiTestId::Sequence;
+                    sequence = games::sequence::SequenceUi::new();
+                    brain = mk_brain_for(app.test);
+                }
+
+                // Game-specific controls (Pong only)
+                let row3_y = row2_y + BTN_H + UI_GAP;
+                if app.test == UiTestId::Pong {
+                    let d1 = Rect::new(left_x, row3_y, BTN_W_SMALL, BTN_H);
+                    let d_status =
+                        Rect::new(left_x + BTN_W_SMALL + UI_GAP, row3_y, BTN_W_SMALL, BTN_H);
+                    let d2 = Rect::new(
+                        left_x + 2.0 * (BTN_W_SMALL + UI_GAP),
+                        row3_y,
+                        BTN_W_SMALL,
+                        BTN_H,
+                    );
+
+                    if button(d1, "Easier", false) {
+                        pong.easier();
+                    }
+                    draw_label(d_status, &format!("Diff {}", pong.difficulty_level), true);
+                    if button(d2, "Harder", false) {
+                        pong.harder();
+                    }
+
+                    let row4_y = row3_y + BTN_H + UI_GAP;
+                    let f1 = Rect::new(left_x, row4_y, BTN_W_SMALL, BTN_H);
+                    let f_status =
+                        Rect::new(left_x + BTN_W_SMALL + UI_GAP, row4_y, BTN_W_SMALL, BTN_H);
+                    let f2 = Rect::new(
+                        left_x + 2.0 * (BTN_W_SMALL + UI_GAP),
+                        row4_y,
+                        BTN_W_SMALL,
+                        BTN_H,
+                    );
+                    let neg = Rect::new(
+                        left_x + 3.0 * (BTN_W_SMALL + UI_GAP) + 10.0,
+                        row4_y,
+                        BTN_W_SMALL,
+                        BTN_H,
+                    );
+
+                    if button(f1, "Flip-", false) {
+                        pong.flip_slower();
+                    }
+                    draw_label(
+                        f_status,
+                        &format!("Flip:{}", pong.shift_every_outcomes),
+                        true,
+                    );
+                    if button(f2, "Flip+", false) {
+                        pong.flip_faster();
+                    }
+                    if toggle_button(neg, "NegReinf", pong.neg_reinforce) {
+                        pong.neg_reinforce = !pong.neg_reinforce;
+                    }
+                }
             }
 
-            if button(negb, "Neg Reinforce", pong.neg_reinforce) {
-                pong.neg_reinforce = !pong.neg_reinforce;
+            UiTab::Learning => {
+                // === Accelerated Learning Controls ===
+                draw_text(
+                    "Accelerated Learning Mechanisms",
+                    left_x,
+                    row2_y + 12.0,
+                    14.0,
+                    Color::new(0.6, 0.8, 1.0, 1.0),
+                );
+
+                let row3_y = row2_y + 20.0;
+                let col_w = 130.0;
+                let row_h = 32.0;
+
+                // Column 1: Attention
+                let attn_toggle = Rect::new(left_x, row3_y, col_w, BTN_H);
+                if toggle_button(attn_toggle, "Attention", app.learning.attention_enabled) {
+                    app.learning.attention_enabled = !app.learning.attention_enabled;
+                }
+                let attn_slider = Rect::new(left_x, row3_y + BTN_H + 4.0, col_w, row_h);
+                app.learning.attention_boost =
+                    slider(attn_slider, "Boost", app.learning.attention_boost, 0.0, 1.0);
+
+                // Column 2: Burst Mode
+                let col2_x = left_x + col_w + UI_GAP * 2.0;
+                let burst_toggle = Rect::new(col2_x, row3_y, col_w, BTN_H);
+                if toggle_button(burst_toggle, "Burst Mode", app.learning.burst_mode_enabled) {
+                    if !app.learning.burst_mode_enabled {
+                        app.learning.trigger_burst();
+                    } else {
+                        app.learning.burst_remaining = 0;
+                        app.learning.burst_mode_enabled = false;
+                    }
+                }
+                if app.learning.burst_remaining > 0 {
+                    let burst_prog = Rect::new(col2_x, row3_y + BTN_H + 4.0, col_w, row_h);
+                    let prog = app.learning.burst_remaining as f32
+                        / app.learning.burst_duration_frames as f32;
+                    progress_bar(
+                        burst_prog,
+                        "Remaining",
+                        prog,
+                        Color::new(0.8, 0.5, 0.2, 1.0),
+                    );
+                }
+
+                // Column 3: Dream Replay
+                let col3_x = col2_x + col_w + UI_GAP * 2.0;
+                let dream_btn = Rect::new(col3_x, row3_y, col_w, BTN_H);
+                if action_button(dream_btn, "Dream Replay", false) {
+                    app.learning.trigger_dream();
+                }
+                draw_text(
+                    &format!("Episodes: {}", app.learning.dream_episode_count),
+                    col3_x + 4.0,
+                    row3_y + BTN_H + 18.0,
+                    12.0,
+                    GRAY,
+                );
+
+                // Column 4: Force Sync + Imprint
+                let col4_x = col3_x + col_w + UI_GAP * 2.0;
+                let sync_btn = Rect::new(col4_x, row3_y, col_w, BTN_H);
+                if action_button(sync_btn, "Force Sync", false) {
+                    app.learning.trigger_sync();
+                }
+                let imprint_btn = Rect::new(col4_x, row3_y + BTN_H + 4.0, col_w, BTN_H);
+                if action_button(imprint_btn, "Imprint Now", app.learning.imprint_pending) {
+                    app.learning.trigger_imprint();
+                }
+
+                // Row 2: Auto-triggers
+                let row5_y = row3_y + 2.0 * (BTN_H + 4.0) + 10.0;
+                draw_text("Auto-triggers:", left_x, row5_y + 12.0, 12.0, GRAY);
+
+                let auto1 = Rect::new(left_x + 80.0, row5_y, col_w, BTN_H);
+                if toggle_button(auto1, "Dream on Flip", app.learning.auto_dream_on_flip) {
+                    app.learning.auto_dream_on_flip = !app.learning.auto_dream_on_flip;
+                }
+                let auto2 = Rect::new(left_x + 80.0 + col_w + UI_GAP, row5_y, col_w, BTN_H);
+                if toggle_button(auto2, "Burst on Slump", app.learning.auto_burst_on_slump) {
+                    app.learning.auto_burst_on_slump = !app.learning.auto_burst_on_slump;
+                }
             }
 
-            if button(r3_1, "Flip Slower", false) {
-                pong.flip_slower();
+            UiTab::Brain => {
+                // === Brain Inspection ===
+                draw_text(
+                    "Brain State Visualization",
+                    left_x,
+                    row2_y + 12.0,
+                    14.0,
+                    Color::new(0.6, 0.8, 1.0, 1.0),
+                );
+
+                let diag = brain.diagnostics();
+                let snap = BrainAdapter::new(&brain).snapshot();
+
+                // Stats column
+                let stats_x = left_x;
+                let stats_y = row2_y + 24.0;
+                let line_h = 14.0;
+
+                draw_text(
+                    &format!("Age: {} steps", snap.age_steps),
+                    stats_x,
+                    stats_y,
+                    12.0,
+                    WHITE,
+                );
+                draw_text(
+                    &format!("Connections: {}", diag.connection_count),
+                    stats_x,
+                    stats_y + line_h,
+                    12.0,
+                    WHITE,
+                );
+                draw_text(
+                    &format!("Pruned last: {}", diag.pruned_last_step),
+                    stats_x,
+                    stats_y + 2.0 * line_h,
+                    12.0,
+                    WHITE,
+                );
+                draw_text(
+                    &format!("Avg amplitude: {:.3}", diag.avg_amp),
+                    stats_x,
+                    stats_y + 3.0 * line_h,
+                    12.0,
+                    WHITE,
+                );
+                draw_text(
+                    &format!("Causal edges: {}", snap.causal.edges),
+                    stats_x,
+                    stats_y + 4.0 * line_h,
+                    12.0,
+                    WHITE,
+                );
+                draw_text(
+                    &format!("Symbols: {}", snap.causal.base_symbols),
+                    stats_x,
+                    stats_y + 5.0 * line_h,
+                    12.0,
+                    WHITE,
+                );
+
+                // Phase wheel visualization
+                let wheel_cx = screen_width() * 0.75;
+                let wheel_cy = row2_y + 60.0;
+                let wheel_r = 45.0;
+
+                // Get phases from units (we'd need to add this to diagnostics)
+                // For now, use a placeholder based on connection stats
+                let phase_samples: Vec<f32> = (0..50)
+                    .map(|i| (i as f32 * 0.07 + snap.age_steps as f32 * 0.001) % 1.0)
+                    .collect();
+                draw_phase_wheel(wheel_cx, wheel_cy, wheel_r, &phase_samples);
+                draw_text(
+                    "Phase Distribution",
+                    wheel_cx - 40.0,
+                    wheel_cy + wheel_r + 12.0,
+                    11.0,
+                    GRAY,
+                );
             }
-            draw_label(
-                f_status,
-                &format!(
-                    "Flip {} (in {})",
-                    pong.shift_every_outcomes,
-                    pong.flip_countdown()
-                ),
-                true,
-            );
-            if button(r3_2, "Flip Faster", false) {
-                pong.flip_faster();
+
+            UiTab::Storage => {
+                // === Storage Controls ===
+                draw_text(
+                    "Brain Image Persistence",
+                    left_x,
+                    row2_y + 12.0,
+                    14.0,
+                    Color::new(0.6, 0.8, 1.0, 1.0),
+                );
+
+                let row3_y = row2_y + 24.0;
+                let btn_w = 100.0;
+
+                // Save/Load buttons
+                let save_btn = Rect::new(left_x, row3_y, btn_w, BTN_H);
+                let load_btn = Rect::new(left_x + btn_w + UI_GAP, row3_y, btn_w, BTN_H);
+
+                if action_button(save_btn, "Save (S)", false) {
+                    if let Ok(bytes) = encode_brain_image(storage_cfg.capacity_bytes, &brain) {
+                        if async_saver.try_enqueue(bytes).is_ok() {
+                            last_storage_event = format!(
+                                "save queued -> {}",
+                                storage_cfg.brain_image_path.display()
+                            );
+                            logger.log_event(frame, "Storage", &last_storage_event);
+                        }
+                    }
+                }
+                if action_button(load_btn, "Load (L)", false) {
+                    if async_loader.try_enqueue().is_ok() {
+                        last_storage_event =
+                            format!("load queued <- {}", storage_cfg.brain_image_path.display());
+                        logger.log_event(frame, "Storage", &last_storage_event);
+                    }
+                }
+
+                // File info
+                let row4_y = row3_y + BTN_H + UI_GAP;
+                draw_text(
+                    &format!("Path: {}", storage_cfg.brain_image_path.display()),
+                    left_x,
+                    row4_y + 12.0,
+                    11.0,
+                    GRAY,
+                );
+
+                if let Ok(size) = brain.image_size_bytes() {
+                    draw_text(
+                        &format!("Image size: {} bytes", size),
+                        left_x,
+                        row4_y + 24.0,
+                        11.0,
+                        WHITE,
+                    );
+                }
+
+                if let Some(cap) = storage_cfg.capacity_bytes {
+                    draw_text(
+                        &format!("Capacity limit: {} bytes", cap),
+                        left_x,
+                        row4_y + 36.0,
+                        11.0,
+                        GRAY,
+                    );
+                }
+
+                // Last event
+                let row5_y = row4_y + 50.0;
+                if !last_storage_event.is_empty() {
+                    draw_text(
+                        &format!("Last: {}", last_storage_event),
+                        left_x,
+                        row5_y + 12.0,
+                        11.0,
+                        Color::new(0.7, 0.9, 0.7, 1.0),
+                    );
+                }
             }
         }
 
-        // Countdown to next flip in the header.
+        // === Status Bar (bottom of header) ===
+        let status_y = HUD_START_Y - 16.0;
         let status_line = match app.test {
             UiTestId::Pong => format!(
-                "Next flip in {} outcomes (every {})",
+                "Pong | Next flip in {} (every {})",
                 pong.flip_countdown(),
                 pong.shift_every_outcomes
             ),
@@ -2149,20 +2886,39 @@ async fn main() {
                         bandit.shift_every - mm
                     }
                 };
-                format!("Next flip in {} steps (every {})", m, bandit.shift_every)
+                format!("Bandit | Next flip in {} (every {})", m, bandit.shift_every)
             }
-            UiTestId::Forage => format!("Next flip in {} outcomes", forage.flip_countdown()),
-            UiTestId::Whack => format!("Next flip in {} outcomes", whack.flip_countdown()),
-            UiTestId::Beacon => format!("Next flip in {} hits", beacon.flip_countdown()),
-            UiTestId::Sequence => format!("Next flip in {} outcomes", sequence.flip_countdown()),
+            UiTestId::Forage => format!("Forage | Next flip in {}", forage.flip_countdown()),
+            UiTestId::Whack => format!("Whack | Next flip in {}", whack.flip_countdown()),
+            UiTestId::Beacon => format!("Beacon | Next flip in {}", beacon.flip_countdown()),
+            UiTestId::Sequence => format!("Sequence | Next flip in {}", sequence.flip_countdown()),
+            UiTestId::Spot => format!(
+                "Spot | Accuracy: {:.0}% | Next flip in {}",
+                spot.accuracy() * 100.0,
+                spot.flip_countdown()
+            ),
         };
-        let status_line = if last_storage_event.is_empty() {
+
+        // Add learning status indicators
+        let mut indicators: Vec<&str> = Vec::new();
+        if app.learning.burst_mode_enabled {
+            indicators.push("🔥BURST");
+        }
+        if app.learning.attention_enabled && app.learning.attention_boost > 0.1 {
+            indicators.push("👁ATTN");
+        }
+
+        let status_with_indicators = if indicators.is_empty() {
             status_line
         } else {
-            format!("{} | {}", status_line, last_storage_event)
+            format!("{} | {}", status_line, indicators.join(" "))
         };
-        // Keep the countdown visible, but tucked in the gap above the HUD panel.
-        draw_text(&status_line, UI_MARGIN, HUD_START_Y - 10.0, 18.0, GRAY);
+
+        draw_text(&status_with_indicators, UI_MARGIN, status_y, 13.0, GRAY);
+
+        // Tick learning controls
+        app.learning.tick();
+        app.learning.apply_to_brain(&mut brain, &mut logger, frame);
 
         let dt = get_frame_time();
         match app.test {
@@ -2190,6 +2946,7 @@ async fn main() {
             UiTestId::Sequence => {
                 sequence.tick_and_render(&cfg, &app, &mut brain, &mut logger, frame, dt)
             }
+            UiTestId::Spot => spot.tick_and_render(&cfg, &app, &mut brain, &mut logger, frame, dt),
         }
 
         next_frame().await;

@@ -86,8 +86,8 @@ pub mod observer;
 pub mod prelude {
     pub use crate::causality::{CausalStats, SymbolId};
     pub use crate::substrate::{
-        ActionPolicy, Amplitude, Brain, BrainConfig, Diagnostics, ExecutionTier, 
-        Neuromodulator, OwnedStimulus, Phase, Stimulus, UnitId, Weight,
+        ActionPolicy, Amplitude, Brain, BrainConfig, Diagnostics, ExecutionTier, Neuromodulator,
+        OwnedStimulus, Phase, Stimulus, UnitId, Weight,
     };
     #[cfg(feature = "std")]
     pub use crate::supervisor::{ChildConfigOverrides, ChildSpec, ConsolidationPolicy, Supervisor};

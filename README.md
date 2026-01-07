@@ -76,3 +76,22 @@ security-hardened component.
 - Interaction + I/O: [doc/interaction.md](doc/interaction.md)
 - Persistence + storage adapters: [doc/brain-image.md](doc/brain-image.md)
 - Visualizer games (what each measures): [doc/visualizer-games.md](doc/visualizer-games.md)
+- **Accelerated Learning**: [doc/accelerated-learning.md](doc/accelerated-learning.md)
+
+## Accelerated Learning Mechanisms (9 of 13 implemented)
+
+| Mechanism | Status | Description |
+|-----------|--------|-------------|
+| Three-Factor Hebbian | ✅ | Core learning rule (pre × post × neuromodulator) |
+| One-Shot Imprinting | ✅ | Instant concept formation on novel stimuli |
+| Neurogenesis | ✅ | Dynamic capacity expansion when saturated |
+| Pruning | ✅ | Structural forgetting of weak connections |
+| Child Brains | ✅ | Parallel exploration via brain cloning |
+| Attention Gating | ✅ | Focus learning on most active units |
+| Burst-Mode Learning | ✅ | Enhanced plasticity on activity spikes |
+| Dream Replay | ✅ | Offline memory consolidation |
+| Forced Synchronization | ✅ | One-shot supervised learning (teacher mode) |
+| STDP | 📋 | Spike-timing dependent plasticity |
+| BCM Homeostasis | 📋 | Self-tuning activity thresholds |
+| Meta-Learning | 📋 | Per-connection learning rate adaptation |
+| Predictive Shortcut | 📋 | Direct wiring from causal memory |

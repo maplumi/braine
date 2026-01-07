@@ -84,8 +84,8 @@ fn main() {
 
         brain.apply_stimulus(stim);
 
-        // Simple reinforcement: food -> reward approach, threat -> reward avoid.
-        let reward_signal = if stim.name == "vision_food" { 0.6 } else { 0.6 };
+        // Simple reinforcement signal for learning
+        let reward_signal = 0.6;
         brain.set_neuromodulator(reward_signal);
 
         brain.step();

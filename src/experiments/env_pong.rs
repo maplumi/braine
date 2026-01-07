@@ -112,14 +112,13 @@ pub fn run_pong_demo(brain: &mut Brain, cfg: PongConfig) {
         brain.step();
 
         let (action, _score) = if s.steps <= bootstrap_steps {
-            if s.steps == bootstrap_steps {
-                if out_line(format_args!(
+            if s.steps == bootstrap_steps
+                && out_line(format_args!(
                     "switching to autonomous control (bootstrap complete)"
                 ))
                 .is_err()
-                {
-                    return;
-                }
+            {
+                return;
             }
             let a = if rel < 0 {
                 "left"
@@ -199,7 +198,7 @@ pub fn run_pong_demo(brain: &mut Brain, cfg: PongConfig) {
             }
         }
 
-        if cfg.render_every > 0 && (s.steps % cfg.render_every == 0) {
+        if cfg.render_every > 0 && s.steps.is_multiple_of(cfg.render_every) {
             let hit_rate = if s.hits + s.misses == 0 {
                 0.0
             } else {
