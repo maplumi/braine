@@ -15,7 +15,7 @@ use std::thread;
 mod games;
 
 // Layout constants - redesigned for tabbed UI
-const TOP_UI_H: f32 = 280.0;
+const TOP_UI_H: f32 = 360.0;
 const UI_MARGIN: f32 = 10.0;
 const UI_GAP: f32 = 5.0;
 const BTN_H: f32 = 26.0;
@@ -25,8 +25,8 @@ const BTN_W_SMALL: f32 = 90.0;
 const BTN_W_TAB: f32 = 72.0;
 const BTN_FONT_SIZE: f32 = 15.0;
 const HUD_START_Y: f32 = 160.0;
-const HUD_FONT_SIZE: u16 = 13;
-const HUD_LINE_H: f32 = 16.0;
+const HUD_FONT_SIZE: u16 = 15;
+const HUD_LINE_H: f32 = 18.0;
 
 // These are reserved for future use in more detailed visualization panels
 #[allow(dead_code)]
@@ -71,6 +71,10 @@ struct LearningControls {
     // Auto-learning triggers
     auto_dream_on_flip: bool,
     auto_burst_on_slump: bool,
+
+    // Predictive action selection (P3)
+    prediction_enabled: bool,
+    prediction_weight: f32,
 }
 
 impl Default for LearningControls {
@@ -89,6 +93,8 @@ impl Default for LearningControls {
             imprint_strength: 0.6,
             auto_dream_on_flip: true,
             auto_burst_on_slump: true,
+            prediction_enabled: true,
+            prediction_weight: 2.0,
         }
     }
 }
@@ -326,21 +332,21 @@ fn load_brain_image(path: &Path) -> io::Result<Brain> {
 }
 
 fn draw_panel(rect: Rect) {
-    // Subtle panel background for readability.
+    // Darker panel background for better text contrast.
     draw_rectangle(
         rect.x,
         rect.y,
         rect.w,
         rect.h,
-        Color::new(0.10, 0.10, 0.12, 0.88),
+        Color::new(0.05, 0.05, 0.08, 0.95),
     );
     draw_rectangle_lines(
         rect.x,
         rect.y,
         rect.w,
         rect.h,
-        1.0,
-        Color::new(0.28, 0.28, 0.30, 1.0),
+        1.5,
+        Color::new(0.35, 0.35, 0.40, 1.0),
     );
 }
 
@@ -402,12 +408,15 @@ fn draw_hud_lines_wrapped(lines: &[String], rect: Rect, base_color: Color) {
 
     let max_w = (rect.w - 2.0 * UI_GAP).max(1.0);
     let mut y = rect.y + UI_GAP + (HUD_FONT_SIZE as f32);
+    let shadow_color = Color::new(0.0, 0.0, 0.0, 0.7);
 
     for line in lines {
         for seg in wrap_text_to_width(line, max_w, HUD_FONT_SIZE) {
             if y > rect.y + rect.h - UI_GAP {
                 return;
             }
+            // Draw shadow for better readability
+            draw_text(&seg, rect.x + UI_GAP + 1.0, y + 1.0, HUD_FONT_SIZE as f32, shadow_color);
             draw_text(&seg, rect.x + UI_GAP, y, HUD_FONT_SIZE as f32, base_color);
             y += HUD_LINE_H;
         }
@@ -1114,6 +1123,10 @@ struct PongUi {
     last_flip_at_frame: u64,
     last_flip_recent_before: f32,
     last_flip_recovered_in_outcomes: Option<u32>,
+
+    // Prediction (P3): last predicted next context and bonus
+    last_pred_ctx: String,
+    last_pred_bonus: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1204,10 +1217,12 @@ impl PongUi {
             neg_reinforce: true,
             neg_reinforce_action: 0.25,
             neg_reinforce_pair: 0.45,
-            difficulty_level: 2,
+            difficulty_level: 0, // Start in Tutorial mode
             last_flip_at_frame: 0,
             last_flip_recent_before: 0.0,
             last_flip_recovered_in_outcomes: None,
+            last_pred_ctx: String::new(),
+            last_pred_bonus: 0.0,
         };
         // Ensure initial parameters match the difficulty mapping.
         s.apply_difficulty();
@@ -1217,23 +1232,36 @@ impl PongUi {
     }
 
     fn apply_difficulty(&mut self) {
-        // Difficulty levels: 0 easiest .. 3 hardest.
+        // Difficulty levels: 0 = Tutorial (trivial), 1-4 = Easy to Hard.
         match self.difficulty_level {
             0 => {
+                // TUTORIAL: Ball spawns above paddle, no drift, no noise, no flips.
+                // Pure associative learning: ctx_left → left, ctx_right → right.
+                self.misbucket_p = 0.00;
+                self.rel_jitter = 0.0;
+                self.decoy_enabled = false;
+                self.explore_p = 0.12;
+                self.neg_reinforce = true;
+                self.shift_every_outcomes = 9999; // Effectively no flips
+            }
+            1 => {
+                // EASY: No noise, no decoy, low drift, slow flips.
                 self.misbucket_p = 0.00;
                 self.rel_jitter = 0.0;
                 self.decoy_enabled = false;
                 self.explore_p = 0.10;
                 self.shift_every_outcomes = self.shift_every_outcomes.max(240);
             }
-            1 => {
+            2 => {
+                // MEDIUM: Small noise, no decoy, moderate drift.
                 self.misbucket_p = 0.04;
                 self.rel_jitter = 10.0;
                 self.decoy_enabled = false;
                 self.explore_p = 0.08;
                 self.shift_every_outcomes = self.shift_every_outcomes.max(200);
             }
-            2 => {
+            3 => {
+                // HARD: Noise + decoy + faster flips.
                 self.misbucket_p = 0.08;
                 self.rel_jitter = 18.0;
                 self.decoy_enabled = true;
@@ -1241,6 +1269,7 @@ impl PongUi {
                 self.shift_every_outcomes = self.shift_every_outcomes.max(160);
             }
             _ => {
+                // EXPERT: High noise, decoy, fast flips.
                 self.misbucket_p = 0.12;
                 self.rel_jitter = 26.0;
                 self.decoy_enabled = true;
@@ -1258,7 +1287,7 @@ impl PongUi {
     }
 
     fn harder(&mut self) {
-        if self.difficulty_level < 3 {
+        if self.difficulty_level < 4 {
             self.difficulty_level += 1;
             self.apply_difficulty();
         }
@@ -1296,24 +1325,33 @@ impl PongUi {
             .wrapping_add(1);
         let u = (self.rng_seed >> 11) as u32;
         let x01 = (u as f32) / (u32::MAX as f32);
-        self.ball_x = cfg.ball_r + x01 * (cfg.world_w - 2.0 * cfg.ball_r);
-        self.ball_y = 40.0;
 
-        // Randomize horizontal drift a bit so the task isn't trivial.
-        self.rng_seed = self
-            .rng_seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
-        let u2 = (self.rng_seed >> 11) as u32;
-        let s01 = (u2 as f32) / (u32::MAX as f32);
-        // Slightly increase drift at higher difficulties.
-        let drift = match self.difficulty_level {
-            0 => 90.0,
-            1 => 120.0,
-            2 => 140.0,
-            _ => 170.0,
-        };
-        self.ball_vx = (s01 * 2.0 - 1.0) * drift;
+        // TUTORIAL (level 0): Ball spawns above paddle with small offset.
+        // This makes the task pure associative learning.
+        if self.difficulty_level == 0 {
+            let offset = (x01 - 0.5) * 60.0; // ±30px from paddle center
+            self.ball_x = (self.paddle_x + offset).clamp(cfg.ball_r, cfg.world_w - cfg.ball_r);
+            self.ball_vx = 0.0; // No horizontal drift
+        } else {
+            self.ball_x = cfg.ball_r + x01 * (cfg.world_w - 2.0 * cfg.ball_r);
+
+            // Randomize horizontal drift a bit so the task isn't trivial.
+            self.rng_seed = self
+                .rng_seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
+            let u2 = (self.rng_seed >> 11) as u32;
+            let s01 = (u2 as f32) / (u32::MAX as f32);
+            // Slightly increase drift at higher difficulties.
+            let drift = match self.difficulty_level {
+                1 => 90.0,
+                2 => 120.0,
+                3 => 140.0,
+                _ => 170.0,
+            };
+            self.ball_vx = (s01 * 2.0 - 1.0) * drift;
+        }
+        self.ball_y = 40.0;
         self.ball_vy = cfg.ball_speed_y;
     }
 
@@ -1395,6 +1433,8 @@ impl PongUi {
         brain: &mut Brain,
         dt: f32,
         explore_p: f32,
+        prediction_enabled: bool,
+        prediction_weight: f32,
     ) -> PongTickResult {
         self.steps_since_hit = self.steps_since_hit.saturating_add(1);
         // Decay meta exploration boost slowly so it's a temporary adaptation lever.
@@ -1451,8 +1491,32 @@ impl PongUi {
                         1 => "right",
                         _ => "stay",
                     }
+                } else if prediction_enabled && prediction_weight > 0.0 {
+                    // P3: Use predictive action selection
+                    let (a, _score, pred_bonus) = brain.select_action_predictive(
+                        ctx,
+                        6.0,
+                        prediction_weight,
+                        "pong_ctx_",
+                    );
+                    // Store prediction info for HUD
+                    let predicted = brain.predict_next_context(ctx, &a, "pong_ctx_", 1);
+                    self.last_pred_ctx = predicted
+                        .first()
+                        .map(|(n, _)| n.clone())
+                        .unwrap_or_default();
+                    self.last_pred_bonus = pred_bonus;
+                    if a == "left" {
+                        "left"
+                    } else if a == "right" {
+                        "right"
+                    } else {
+                        "stay"
+                    }
                 } else {
                     let (a, _score) = brain.select_action_with_meaning(ctx, 6.0);
+                    self.last_pred_ctx.clear();
+                    self.last_pred_bonus = 0.0;
                     if a == "left" {
                         "left"
                     } else if a == "right" {
@@ -1548,8 +1612,10 @@ impl PongUi {
         // Paddle collision (bounce on hit).
         let paddle_left = self.paddle_x - half;
         let paddle_right = self.paddle_x + half;
-        let hit_zone_left = paddle_left - cfg.catch_margin;
-        let hit_zone_right = paddle_right + cfg.catch_margin;
+        // Tutorial mode (level 0) has a larger catch margin to be more forgiving.
+        let margin = if self.difficulty_level == 0 { 25.0 } else { cfg.catch_margin };
+        let hit_zone_left = paddle_left - margin;
+        let hit_zone_right = paddle_right + margin;
         let paddle_top = cfg.paddle_y;
 
         let ball_reached_paddle = self.ball_vy > 0.0 && (self.ball_y + cfg.ball_r) >= paddle_top;
@@ -1670,7 +1736,15 @@ impl PongUi {
         dt: f32,
     ) {
         let recent_before = self.recent_rate_n(32);
-        let step = self.tick(cfg, app.mode, brain, dt, self.explore_p);
+        let step = self.tick(
+            cfg,
+            app.mode,
+            brain,
+            dt,
+            self.explore_p,
+            app.learning.prediction_enabled,
+            app.learning.prediction_weight,
+        );
         let outcomes_after = self.outcomes();
 
         if step.just_flipped {
@@ -1769,6 +1843,8 @@ impl PongUi {
                     &mut t.brain,
                     sandbox_dt,
                     t.explore_p,
+                    app.learning.prediction_enabled,
+                    app.learning.prediction_weight,
                 );
                 t.total_reward += r.reward;
                 t.steps_left = t.steps_left.saturating_sub(1);
@@ -1900,8 +1976,15 @@ impl PongUi {
                 self.meta_explore_add,
             ),
             format!(
-                "difficulty={} terminal_reward_only misbucket_p={:.2} rel_jitter={:.1} decoy={} explore_p={:.2}",
+                "difficulty={} ({}) misbucket_p={:.2} rel_jitter={:.1} decoy={} explore_p={:.2}",
                 self.difficulty_level,
+                match self.difficulty_level {
+                    0 => "Tutorial",
+                    1 => "Easy",
+                    2 => "Medium",
+                    3 => "Hard",
+                    _ => "Expert",
+                },
                 self.misbucket_p,
                 self.rel_jitter,
                 self.decoy_enabled,
@@ -1968,6 +2051,12 @@ impl PongUi {
                     .collect::<Vec<_>>()
                     .join("  ")
             ),
+            format!(
+                "prediction: enabled={} pred_ctx={} bonus={:+.3}",
+                app.learning.prediction_enabled,
+                if self.last_pred_ctx.is_empty() { "-" } else { &self.last_pred_ctx },
+                self.last_pred_bonus
+            ),
         ];
 
         logger.log_snapshot(
@@ -1981,20 +2070,23 @@ impl PongUi {
 
         // HUD: keep the exact content, but render it in a panel with word-wrapping
         // so it looks more like a real dashboard.
-        let hud_rect = Rect::new(
-            UI_MARGIN,
-            HUD_START_Y,
-            screen_width() - 2.0 * UI_MARGIN,
-            TOP_UI_H - HUD_START_Y - UI_MARGIN,
-        );
-        let mut hud_lines: Vec<String> = hud.into_iter().collect();
-        if !snap.last_reinforced_actions.is_empty() {
-            hud_lines.push("reinforce:".to_string());
-            for (name, delta) in snap.last_reinforced_actions.iter().take(5) {
-                hud_lines.push(format!("  {} {:+.2}", name, delta));
+        // Only draw HUD when on Games tab to avoid overlapping with other tab content.
+        if app.active_tab == UiTab::Games {
+            let hud_rect = Rect::new(
+                UI_MARGIN,
+                HUD_START_Y,
+                screen_width() - 2.0 * UI_MARGIN,
+                TOP_UI_H - HUD_START_Y - UI_MARGIN,
+            );
+            let mut hud_lines: Vec<String> = hud.into_iter().collect();
+            if !snap.last_reinforced_actions.is_empty() {
+                hud_lines.push("reinforce:".to_string());
+                for (name, delta) in snap.last_reinforced_actions.iter().take(5) {
+                    hud_lines.push(format!("  {} {:+.2}", name, delta));
+                }
             }
+            draw_hud_lines_wrapped(&hud_lines, hud_rect, WHITE);
         }
-        draw_hud_lines_wrapped(&hud_lines, hud_rect, WHITE);
     }
 }
 
@@ -2300,20 +2392,23 @@ impl BanditUi {
             &snap.last_reinforced_actions,
         );
 
-        let hud_rect = Rect::new(
-            UI_MARGIN,
-            HUD_START_Y,
-            screen_width() - 2.0 * UI_MARGIN,
-            TOP_UI_H - HUD_START_Y - UI_MARGIN,
-        );
-        let mut hud_lines: Vec<String> = hud.into_iter().collect();
-        if !snap.last_reinforced_actions.is_empty() {
-            hud_lines.push("reinforce:".to_string());
-            for (name, delta) in snap.last_reinforced_actions.iter().take(5) {
-                hud_lines.push(format!("  {} {:+.2}", name, delta));
+        // Only draw HUD when on Games tab to avoid overlapping with other tab content.
+        if app.active_tab == UiTab::Games {
+            let hud_rect = Rect::new(
+                UI_MARGIN,
+                HUD_START_Y,
+                screen_width() - 2.0 * UI_MARGIN,
+                TOP_UI_H - HUD_START_Y - UI_MARGIN,
+            );
+            let mut hud_lines: Vec<String> = hud.into_iter().collect();
+            if !snap.last_reinforced_actions.is_empty() {
+                hud_lines.push("reinforce:".to_string());
+                for (name, delta) in snap.last_reinforced_actions.iter().take(5) {
+                    hud_lines.push(format!("  {} {:+.2}", name, delta));
+                }
             }
+            draw_hud_lines_wrapped(&hud_lines, hud_rect, WHITE);
         }
-        draw_hud_lines_wrapped(&hud_lines, hud_rect, WHITE);
     }
 }
 
@@ -2772,6 +2867,18 @@ async fn main() {
                 if toggle_button(auto2, "Burst on Slump", app.learning.auto_burst_on_slump) {
                     app.learning.auto_burst_on_slump = !app.learning.auto_burst_on_slump;
                 }
+
+                // Row 3: Prediction (P3)
+                let row6_y = row5_y + BTN_H + 8.0;
+                draw_text("Prediction (P3):", left_x, row6_y + 12.0, 12.0, GRAY);
+
+                let pred_toggle = Rect::new(left_x + 100.0, row6_y, col_w, BTN_H);
+                if toggle_button(pred_toggle, "Predictive", app.learning.prediction_enabled) {
+                    app.learning.prediction_enabled = !app.learning.prediction_enabled;
+                }
+                let pred_slider = Rect::new(left_x + 100.0 + col_w + UI_GAP, row6_y, col_w + 20.0, BTN_H);
+                app.learning.prediction_weight =
+                    slider(pred_slider, "Weight", app.learning.prediction_weight, 0.0, 5.0);
             }
 
             UiTab::Brain => {

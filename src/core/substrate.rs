@@ -1742,6 +1742,133 @@ impl Brain {
             .collect()
     }
 
+    /// Predict the most likely next context symbols given `(stimulus, action)`.
+    ///
+    /// Uses the `pair::<stimulus>::<action>` symbol's outgoing causal edges to context symbols.
+    /// Returns a ranked list of `(context_name, causal_strength)`.
+    ///
+    /// `ctx_prefix` filters which symbols count as contexts (e.g., `"ctx_"` or `"bucket_"`).
+    pub fn predict_next_context(
+        &self,
+        stimulus: &str,
+        action: &str,
+        ctx_prefix: &str,
+        top_n: usize,
+    ) -> Vec<(String, f32)> {
+        let pair_name = format!("pair::{}::{}", stimulus, action);
+        let Some(pair_id) = self.symbol_id(&pair_name) else {
+            return Vec::new();
+        };
+
+        // Gather all known symbols that start with ctx_prefix
+        let ctx_ids: Vec<SymbolId> = self
+            .symbols
+            .iter()
+            .filter(|(name, _)| name.starts_with(ctx_prefix))
+            .map(|(_, &id)| id)
+            .collect();
+
+        self.causal
+            .top_outgoing_filtered(pair_id, &ctx_ids, top_n)
+            .into_iter()
+            .filter_map(|(bid, s)| self.symbol_name(bid).map(|name| (name.to_string(), s)))
+            .collect()
+    }
+
+    /// Compute a "prediction bonus" for an action: expected value of the predicted next context.
+    ///
+    /// This can be used as a tie-breaker in action selection.
+    /// Returns `Sum_i(P(ctx_i | pair) * value(ctx_i))` where value is reward association.
+    fn prediction_bonus(&self, stimulus: &str, action: &str, ctx_prefix: &str) -> f32 {
+        let pair_name = format!("pair::{}::{}", stimulus, action);
+        let Some(pair_id) = self.symbol_id(&pair_name) else {
+            return 0.0;
+        };
+
+        // Gather context symbol IDs
+        let ctx_ids: Vec<SymbolId> = self
+            .symbols
+            .iter()
+            .filter(|(name, _)| name.starts_with(ctx_prefix))
+            .map(|(_, &id)| id)
+            .collect();
+
+        let mut bonus = 0.0f32;
+        for &ctx_id in &ctx_ids {
+            // How strongly does (stimulus, action) predict this ctx?
+            let pred_strength = self.causal.causal_strength(pair_id, ctx_id);
+            if pred_strength.abs() < 0.001 {
+                continue;
+            }
+            // What's the value of this ctx? (association with reward)
+            let ctx_value = self.causal.causal_strength(ctx_id, self.reward_pos_symbol)
+                - self.causal.causal_strength(ctx_id, self.reward_neg_symbol);
+            bonus += pred_strength * ctx_value;
+        }
+        bonus
+    }
+
+    /// Select an action using meaning + prediction bonus.
+    ///
+    /// `pred_weight` controls how much the prediction bonus matters (0 = disabled).
+    /// `ctx_prefix` specifies which symbols are contexts for prediction (e.g., `"bucket_"`).
+    pub fn select_action_predictive(
+        &mut self,
+        stimulus: &str,
+        alpha: f32,
+        pred_weight: f32,
+        ctx_prefix: &str,
+    ) -> (String, f32, f32) {
+        let alpha = alpha.clamp(0.0, 20.0);
+        let pred_weight = pred_weight.clamp(0.0, 10.0);
+        let stimulus_id = self.symbol_id(stimulus);
+
+        let mut best: Option<(String, f32, f32)> = None; // (action, total_score, pred_bonus)
+        for g in &self.action_groups {
+            // Habit readout
+            let habit = g
+                .units
+                .iter()
+                .map(|&id| self.units[id].amp.max(0.0))
+                .sum::<f32>();
+            let habit_norm = if g.units.is_empty() {
+                0.0
+            } else {
+                (habit / (g.units.len() as f32 * 2.0)).clamp(0.0, 1.0)
+            };
+
+            // Meaning (same as select_action_with_meaning)
+            let meaning = if let Some(aid) = self.symbol_id(&g.name) {
+                let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
+                    - self.causal.causal_strength(aid, self.reward_neg_symbol);
+                let conditional = if stimulus_id.is_some() {
+                    let pair_name = format!("pair::{stimulus}::{}", g.name);
+                    if let Some(pid) = self.symbol_id(&pair_name) {
+                        self.causal.causal_strength(pid, self.reward_pos_symbol)
+                            - self.causal.causal_strength(pid, self.reward_neg_symbol)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                conditional * 1.0 + global * 0.15
+            } else {
+                0.0
+            };
+
+            // Prediction bonus
+            let pred_bonus = self.prediction_bonus(stimulus, &g.name, ctx_prefix);
+
+            let score = habit_norm * 0.5 + alpha * meaning + pred_weight * pred_bonus;
+            if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
+                best = Some((g.name.clone(), score, pred_bonus));
+            }
+        }
+
+        best.unwrap_or_else(|| ("idle".to_string(), 0.0, 0.0))
+    }
+
     /// Set the neuromodulator (reward/salience) level.
     ///
     /// Positive values increase learning rate; negative values decrease it.

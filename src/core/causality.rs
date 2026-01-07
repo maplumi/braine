@@ -180,6 +180,27 @@ impl CausalMemory {
         out
     }
 
+    /// Return strongest outgoing edges from `a` to symbols in `candidates`.
+    ///
+    /// Useful for predicting next context when you have a known set of context symbol IDs.
+    pub fn top_outgoing_filtered(
+        &self,
+        a: SymbolId,
+        candidates: &[SymbolId],
+        top_n: usize,
+    ) -> Vec<(SymbolId, f32)> {
+        let mut out: Vec<(SymbolId, f32)> = Vec::with_capacity(candidates.len());
+        for &b in candidates {
+            let s = self.causal_strength(a, b);
+            if s.abs() > 0.001 {
+                out.push((b, s));
+            }
+        }
+        out.sort_by(|x, y| y.1.total_cmp(&x.1));
+        out.truncate(top_n);
+        out
+    }
+
     #[cfg(feature = "std")]
     pub(crate) fn image_payload_len_bytes(&self) -> u32 {
         let base_n = self.base.len() as u64;
