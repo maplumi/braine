@@ -15,6 +15,7 @@ impl Prng {
         Self { state: seed }
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn from_state(state: u64) -> Self {
         // Avoid a zero state.
         let state = if state == 0 {
@@ -25,6 +26,7 @@ impl Prng {
         Self { state }
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn state(&self) -> u64 {
         self.state
     }

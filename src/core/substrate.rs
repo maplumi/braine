@@ -1,32 +1,112 @@
+// no_std support: use core and alloc when std is not available
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(feature = "std")]
 use std::collections::HashMap;
+#[cfg(feature = "std")]
 use std::io::{self, Read, Write};
+
+#[cfg(not(feature = "std"))]
+use alloc::{format, string::String, string::ToString, vec, vec::Vec};
+#[cfg(not(feature = "std"))]
+use hashbrown::HashMap;
+
+use core::ops::Range;
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+#[cfg(feature = "simd")]
+use wide::{f32x4, CmpGt, CmpLt};
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::causality::{CausalMemory, SymbolId};
 use crate::prng::Prng;
+#[cfg(feature = "std")]
 use crate::storage;
 
 pub type UnitId = usize;
 
+/// Type alias for connection weights (range: -1.5 to 1.5).
+pub type Weight = f32;
+
+/// Type alias for unit amplitudes (activity level).
+pub type Amplitude = f32;
+
+/// Type alias for unit phases (radians, -π to π).
+pub type Phase = f32;
+
+/// Type alias for neuromodulator signal (reward/salience scaling).
+pub type Neuromodulator = f32;
+
+/// Sentinel value for pruned/invalid connections in CSR storage.
+pub const INVALID_UNIT: UnitId = UnitId::MAX;
+
+/// Execution tier for step() and learning updates.
+/// 
+/// Allows seamless scaling from edge devices to servers:
+/// - `Scalar`: Single-threaded, no SIMD (MCU, WASM, baseline)
+/// - `Simd`: Single-threaded with manual SIMD (ARM NEON, x86 SSE/AVX)
+/// - `Parallel`: Multi-threaded via rayon (desktop/server)
+/// - `Gpu`: GPU compute shaders via wgpu (requires `gpu` feature)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ExecutionTier {
+    /// Single-threaded scalar execution (default, works everywhere).
+    #[default]
+    Scalar,
+    /// Single-threaded with SIMD vectorization (requires `simd` feature).
+    Simd,
+    /// Multi-threaded parallel execution (requires `parallel` feature).
+    Parallel,
+    /// GPU compute shader execution (requires `gpu` feature).
+    Gpu,
+}
+
+/// Legacy struct kept for API compatibility in some contexts.
+/// Internal storage now uses CSR format.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Connection {
     pub target: UnitId,
-    pub weight: f32,
+    pub weight: Weight,
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Unit {
     // "Wave" state: amplitude + phase.
-    pub amp: f32,
-    pub phase: f32,
+    pub amp: Amplitude,
+    pub phase: Phase,
 
     pub bias: f32,
     pub decay: f32,
+}
 
-    // Sparse local couplings.
-    pub connections: Vec<Connection>,
+/// CSR (Compressed Sparse Row) connection storage for cache-friendly iteration.
+/// 
+/// For unit `i`, its connections are stored at indices `conn_offsets[i]..conn_offsets[i+1]`.
+/// This layout enables:
+/// - Sequential memory access during dynamics updates
+/// - SIMD-friendly weight arrays
+/// - Efficient parallel iteration
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CsrConnections {
+    /// Flat array of all connection targets.
+    pub targets: Vec<UnitId>,
+    /// Parallel array of connection weights.
+    pub weights: Vec<Weight>,
+    /// Offset indices: unit i owns connections at [offsets[i]..offsets[i+1]).
+    /// Length = unit_count + 1.
+    pub offsets: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BrainConfig {
     pub unit_count: usize,
     pub connectivity_per_unit: usize,
@@ -61,10 +141,157 @@ pub struct BrainConfig {
     pub causal_decay: f32,
 }
 
+impl Default for BrainConfig {
+    /// Returns a sensible default configuration for edge devices.
+    ///
+    /// - 256 units with 12 connections each
+    /// - Moderate noise for exploration
+    /// - Conservative learning/forgetting rates
+    fn default() -> Self {
+        Self {
+            unit_count: 256,
+            connectivity_per_unit: 12,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.02,
+            noise_phase: 0.01,
+            global_inhibition: 0.2,
+            hebb_rate: 0.08,
+            forget_rate: 0.0005,
+            prune_below: 0.01,
+            coactive_threshold: 0.3,
+            phase_lock_threshold: 0.7,
+            imprint_rate: 0.5,
+            seed: None,
+            causal_decay: 0.002,
+        }
+    }
+}
+
+impl BrainConfig {
+    /// Minimum allowed unit count.
+    pub const MIN_UNITS: usize = 4;
+    /// Maximum allowed unit count (prevents OOM on 32-bit systems).
+    pub const MAX_UNITS: usize = 1 << 24; // 16M units
+    /// Maximum connectivity per unit.
+    pub const MAX_CONNECTIVITY: usize = 1024;
+
+    /// Create a new config with specified size and connectivity.
+    ///
+    /// # Panics
+    /// Panics if `unit_count` or `connectivity_per_unit` are out of valid range.
+    pub fn with_size(unit_count: usize, connectivity_per_unit: usize) -> Self {
+        assert!(
+            unit_count >= Self::MIN_UNITS,
+            "unit_count must be >= {}",
+            Self::MIN_UNITS
+        );
+        assert!(
+            unit_count <= Self::MAX_UNITS,
+            "unit_count must be <= {}",
+            Self::MAX_UNITS
+        );
+        assert!(
+            connectivity_per_unit <= Self::MAX_CONNECTIVITY,
+            "connectivity_per_unit must be <= {}",
+            Self::MAX_CONNECTIVITY
+        );
+        assert!(
+            connectivity_per_unit < unit_count,
+            "connectivity_per_unit must be < unit_count"
+        );
+
+        Self {
+            unit_count,
+            connectivity_per_unit,
+            ..Default::default()
+        }
+    }
+
+    /// Validate the configuration, returning an error message if invalid.
+    #[must_use]
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.unit_count < Self::MIN_UNITS {
+            return Err("unit_count too small");
+        }
+        if self.unit_count > Self::MAX_UNITS {
+            return Err("unit_count too large");
+        }
+        if self.connectivity_per_unit >= self.unit_count {
+            return Err("connectivity_per_unit must be < unit_count");
+        }
+        if self.connectivity_per_unit > Self::MAX_CONNECTIVITY {
+            return Err("connectivity_per_unit too large");
+        }
+        if self.dt <= 0.0 || self.dt > 1.0 {
+            return Err("dt must be in (0, 1]");
+        }
+        if self.hebb_rate < 0.0 || self.hebb_rate > 1.0 {
+            return Err("hebb_rate must be in [0, 1]");
+        }
+        if self.forget_rate < 0.0 || self.forget_rate > 1.0 {
+            return Err("forget_rate must be in [0, 1]");
+        }
+        if self.causal_decay < 0.0 || self.causal_decay > 1.0 {
+            return Err("causal_decay must be in [0, 1]");
+        }
+        Ok(())
+    }
+
+    /// Estimated memory usage in bytes for a brain with this config.
+    #[must_use]
+    pub fn estimated_memory_bytes(&self) -> usize {
+        let units_size = self.unit_count * core::mem::size_of::<Unit>();
+        let conns = self.unit_count * self.connectivity_per_unit;
+        let targets_size = conns * core::mem::size_of::<UnitId>();
+        let weights_size = conns * core::mem::size_of::<Weight>();
+        let offsets_size = (self.unit_count + 1) * core::mem::size_of::<usize>();
+        
+        units_size + targets_size + weights_size + offsets_size
+    }
+
+    /// Set the random seed for reproducibility.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
+    /// Set the learning rate.
+    pub fn with_hebb_rate(mut self, rate: f32) -> Self {
+        self.hebb_rate = rate;
+        self
+    }
+
+    /// Set the noise levels for exploration.
+    pub fn with_noise(mut self, amp: f32, phase: f32) -> Self {
+        self.noise_amp = amp;
+        self.noise_phase = phase;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Stimulus<'a> {
     pub name: &'a str,
     pub strength: f32,
+}
+
+/// Owned version of Stimulus for serialization.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct OwnedStimulus {
+    pub name: String,
+    pub strength: f32,
+}
+
+impl OwnedStimulus {
+    /// Convert to a borrowed Stimulus.
+    pub fn as_stimulus(&self) -> Stimulus<'_> {
+        Stimulus {
+            name: &self.name,
+            strength: self.strength,
+        }
+    }
 }
 
 impl<'a> Stimulus<'a> {
@@ -74,17 +301,28 @@ impl<'a> Stimulus<'a> {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ActionPolicy {
     Deterministic,
     EpsilonGreedy { epsilon: f32 },
 }
 
+/// Runtime diagnostics about the brain's current state.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Diagnostics {
+    /// Total number of units in the substrate.
     pub unit_count: usize,
+    /// Total number of active (non-pruned) connections.
     pub connection_count: usize,
+    /// Connections pruned in the last step.
     pub pruned_last_step: usize,
-    pub avg_amp: f32,
+    /// Average amplitude across all units.
+    pub avg_amp: Amplitude,
+    /// Estimated memory usage in bytes.
+    pub memory_bytes: usize,
+    /// Current execution tier.
+    pub execution_tier: ExecutionTier,
 }
 
 #[derive(Debug, Clone)]
@@ -93,9 +331,41 @@ struct NamedGroup {
     units: Vec<UnitId>,
 }
 
+/// A dynamical brain-like substrate with local learning.
+///
+/// `Brain` is the core cognitive substrate: a collection of oscillating units
+/// with sparse connections that learn through local Hebbian plasticity.
+///
+/// # Key Features
+/// - **Sparse local dynamics**: No matrices, no backprop
+/// - **Continuous learning**: Hebbian updates every step
+/// - **Meaning/causality**: Tracks temporal relationships between symbols
+/// - **Tiered execution**: Scalar, SIMD, parallel, or GPU
+///
+/// # Example
+/// ```
+/// use braine::substrate::{Brain, BrainConfig, Stimulus, ActionPolicy};
+///
+/// let cfg = BrainConfig::with_size(256, 12).with_seed(42);
+/// let mut brain = Brain::new(cfg);
+///
+/// brain.define_sensor("vision", 8);
+/// brain.define_action("move", 4);
+///
+/// brain.apply_stimulus(Stimulus::new("vision", 1.0));
+/// brain.step();
+/// let (action, score) = brain.select_action(&mut ActionPolicy::Deterministic);
+/// ```
+#[derive(Clone)]
 pub struct Brain {
     cfg: BrainConfig,
     units: Vec<Unit>,
+
+    /// CSR-format connection storage for cache-friendly iteration.
+    connections: CsrConnections,
+
+    /// Execution tier for step/learning (Scalar, Simd, or Parallel).
+    tier: ExecutionTier,
 
     rng: Prng,
 
@@ -151,23 +421,35 @@ impl Brain {
                 phase: rng.gen_range_f32(-core::f32::consts::PI, core::f32::consts::PI),
                 bias: 0.0,
                 decay: 0.12,
-                connections: Vec::new(),
             });
         }
 
-        // Random sparse wiring (no matrices, no dense ops).
+        // Build CSR connection storage with random sparse wiring.
+        // Total connections = unit_count * connectivity_per_unit
+        let total_conns = cfg.unit_count * cfg.connectivity_per_unit;
+        let mut conn_targets = Vec::with_capacity(total_conns);
+        let mut conn_weights = Vec::with_capacity(total_conns);
+        let mut conn_offsets = Vec::with_capacity(cfg.unit_count + 1);
+
         for i in 0..cfg.unit_count {
-            let mut conns = Vec::with_capacity(cfg.connectivity_per_unit);
+            conn_offsets.push(conn_targets.len());
             for _ in 0..cfg.connectivity_per_unit {
                 let mut target = rng.gen_range_usize(0, cfg.unit_count);
                 if target == i {
                     target = (target + 1) % cfg.unit_count;
                 }
                 let weight = rng.gen_range_f32(-0.15, 0.15);
-                conns.push(Connection { target, weight });
+                conn_targets.push(target);
+                conn_weights.push(weight);
             }
-            units[i].connections = conns;
         }
+        conn_offsets.push(conn_targets.len()); // sentinel for last unit
+
+        let connections = CsrConnections {
+            targets: conn_targets,
+            weights: conn_weights,
+            offsets: conn_offsets,
+        };
 
         let pending_input = vec![0.0; cfg.unit_count];
         let reserved = vec![false; cfg.unit_count];
@@ -185,6 +467,8 @@ impl Brain {
         Self {
             cfg,
             units,
+            connections,
+            tier: ExecutionTier::default(),
             sensor_groups: Vec::new(),
             action_groups: Vec::new(),
             pending_input,
@@ -205,6 +489,133 @@ impl Brain {
             telemetry: Telemetry::default(),
         }
     }
+
+    // =========================================================================
+    // Execution Tier Configuration
+    // =========================================================================
+
+    /// Set the execution tier for step() and learning updates.
+    /// 
+    /// - `Scalar`: Default, works everywhere (MCU, WASM, desktop)
+    /// - `Simd`: Single-threaded SIMD (requires `simd` feature)
+    /// - `Parallel`: Multi-threaded (requires `parallel` feature)
+    pub fn set_execution_tier(&mut self, tier: ExecutionTier) {
+        self.tier = tier;
+    }
+
+    /// Get the current execution tier.
+    pub fn execution_tier(&self) -> ExecutionTier {
+        self.tier
+    }
+
+    // =========================================================================
+    // CSR Connection Helpers
+    // =========================================================================
+
+    /// Returns an iterator over (target, weight) for unit `i`'s outgoing connections.
+    #[inline]
+    pub fn neighbors(&self, i: UnitId) -> impl Iterator<Item = (UnitId, f32)> + '_ {
+        let start = self.connections.offsets[i];
+        let end = self.connections.offsets[i + 1];
+        self.connections.targets[start..end]
+            .iter()
+            .copied()
+            .zip(self.connections.weights[start..end].iter().copied())
+            .filter(|(t, _)| *t != INVALID_UNIT)
+    }
+
+    /// Returns the range of indices in the CSR arrays for unit `i`'s connections.
+    #[inline]
+    fn conn_range(&self, i: UnitId) -> Range<usize> {
+        self.connections.offsets[i]..self.connections.offsets[i + 1]
+    }
+
+    /// Count of valid (non-pruned) connections for unit `i`.
+    #[allow(dead_code)]
+    fn conn_count(&self, i: UnitId) -> usize {
+        self.neighbors(i).count()
+    }
+
+    /// Total connection count across all units.
+    fn total_connection_count(&self) -> usize {
+        self.connections
+            .targets
+            .iter()
+            .filter(|&&t| t != INVALID_UNIT)
+            .count()
+    }
+
+    /// Add or bump a connection from `from` to `target` by `bump`.
+    /// If connection exists, bumps weight. Otherwise appends to CSR (may require realloc).
+    fn add_or_bump_csr(&mut self, from: UnitId, target: UnitId, bump: f32) {
+        let range = self.conn_range(from);
+        
+        // First, try to find existing connection or a tombstone slot
+        for idx in range.clone() {
+            if self.connections.targets[idx] == target {
+                // Existing connection: bump weight
+                self.connections.weights[idx] = 
+                    (self.connections.weights[idx] + bump).clamp(-1.5, 1.5);
+                return;
+            }
+        }
+        
+        // Try to reuse a tombstone slot within this unit's range
+        for idx in range {
+            if self.connections.targets[idx] == INVALID_UNIT {
+                self.connections.targets[idx] = target;
+                self.connections.weights[idx] = bump.clamp(-1.5, 1.5);
+                return;
+            }
+        }
+        
+        // No slot available: must append (requires CSR rebuild).
+        // This is expensive but rare after initial wiring stabilizes.
+        self.append_connection(from, target, bump.clamp(-1.5, 1.5));
+    }
+
+    /// Append a new connection (rebuilds CSR structure - expensive, use sparingly).
+    fn append_connection(&mut self, from: UnitId, target: UnitId, weight: f32) {
+        // Insert at the end of `from`'s segment, shifting later units.
+        let insert_pos = self.connections.offsets[from + 1];
+        
+        self.connections.targets.insert(insert_pos, target);
+        self.connections.weights.insert(insert_pos, weight);
+        
+        // Update offsets for all units after `from`.
+        for i in (from + 1)..self.connections.offsets.len() {
+            self.connections.offsets[i] += 1;
+        }
+    }
+
+    /// Compact the CSR by removing tombstoned entries. Call periodically.
+    fn compact_connections(&mut self) {
+        let unit_count = self.units.len();
+        let mut new_targets = Vec::with_capacity(self.connections.targets.len());
+        let mut new_weights = Vec::with_capacity(self.connections.weights.len());
+        let mut new_offsets = Vec::with_capacity(unit_count + 1);
+
+        for i in 0..unit_count {
+            new_offsets.push(new_targets.len());
+            let range = self.conn_range(i);
+            for idx in range {
+                let t = self.connections.targets[idx];
+                if t != INVALID_UNIT {
+                    new_targets.push(t);
+                    new_weights.push(self.connections.weights[idx]);
+                }
+            }
+        }
+        new_offsets.push(new_targets.len());
+
+        self.connections.targets = new_targets;
+        self.connections.weights = new_weights;
+        self.connections.offsets = new_offsets;
+    }
+
+    // =========================================================================
+    // Public API
+    // =========================================================================
 
     /// Enable/disable observer telemetry.
     /// When enabled, the brain records a small summary of what happened each loop.
@@ -228,42 +639,73 @@ impl Brain {
         }
     }
 
+    /// Returns the number of simulation steps since creation.
+    #[must_use]
     pub fn age_steps(&self) -> u64 {
         self.age_steps
     }
 
+    /// Returns the current neuromodulator (reward/salience) level.
+    ///
+    /// Neuromodulator scales learning rate: positive values increase plasticity.
+    #[must_use]
     pub fn neuromodulator(&self) -> f32 {
         self.neuromod
     }
 
+    /// Returns statistics about the causal memory.
+    #[must_use]
     pub fn causal_stats(&self) -> crate::causality::CausalStats {
         self.causal.stats()
     }
 
+    /// Looks up a symbol name by its ID.
+    #[must_use]
     pub fn symbol_name(&self, id: SymbolId) -> Option<&str> {
         self.symbols_rev.get(id as usize).map(|s| s.as_str())
     }
 
+    /// Returns the symbol IDs of stimuli applied in the last step.
+    ///
+    /// Requires telemetry to be enabled via [`set_observer_telemetry`].
+    #[must_use]
     pub fn last_stimuli_symbols(&self) -> &[SymbolId] {
         &self.telemetry.last_stimuli
     }
 
+    /// Returns the symbol IDs of actions noted in the last step.
+    ///
+    /// Requires telemetry to be enabled via [`set_observer_telemetry`].
+    #[must_use]
     pub fn last_action_symbols(&self) -> &[SymbolId] {
         &self.telemetry.last_actions
     }
 
+    /// Returns the symbol IDs and delta biases of reinforced actions.
+    ///
+    /// Requires telemetry to be enabled via [`set_observer_telemetry`].
+    #[must_use]
     pub fn last_reinforced_action_symbols(&self) -> &[(SymbolId, f32)] {
         &self.telemetry.last_reinforced_actions
     }
 
+    /// Returns all symbol IDs committed to causal memory in the last observation.
+    ///
+    /// Requires telemetry to be enabled via [`set_observer_telemetry`].
+    #[must_use]
     pub fn last_committed_symbols(&self) -> &[SymbolId] {
         &self.telemetry.last_committed_symbols
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Serialization (std-only)
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// Serialize a versioned, chunked "brain image".
     ///
     /// This is std-only and intended to be capacity-aware when paired with
     /// `storage::CapacityWriter`.
+    #[cfg(feature = "std")]
     pub fn save_image_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(storage::MAGIC)?;
         storage::write_u32_le(w, storage::VERSION_V1)?;
@@ -283,6 +725,7 @@ impl Brain {
     /// Load a versioned, chunked "brain image".
     ///
     /// Unknown chunks are skipped for forward-compatibility.
+    #[cfg(feature = "std")]
     pub fn load_image_from<R: Read>(r: &mut R) -> io::Result<Self> {
         let magic = storage::read_exact::<8, _>(r)?;
         if &magic != storage::MAGIC {
@@ -304,6 +747,7 @@ impl Brain {
         let mut rng_state: Option<u64> = None;
         let mut age_steps: Option<u64> = None;
         let mut units: Option<Vec<Unit>> = None;
+        let mut connections: Option<CsrConnections> = None;
         let mut reserved: Option<Vec<bool>> = None;
         let mut learning_enabled: Option<Vec<bool>> = None;
         let mut sensor_groups: Option<Vec<NamedGroup>> = None;
@@ -330,7 +774,9 @@ impl Brain {
                     age_steps = Some(storage::read_u64_le(&mut take)?);
                 }
                 b"UNIT" => {
-                    units = Some(Self::read_unit_payload(&mut take)?);
+                    let (u, c) = Self::read_unit_payload(&mut take)?;
+                    units = Some(u);
+                    connections = Some(c);
                 }
                 b"MASK" => {
                     let (rsv, learn) = Self::read_mask_payload(&mut take)?;
@@ -361,6 +807,8 @@ impl Brain {
         let unit_count = cfg.unit_count;
         let units =
             units.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing UNIT"))?;
+        let connections = connections
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing UNIT connections"))?;
         if units.len() != unit_count {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -399,6 +847,8 @@ impl Brain {
         Ok(Self {
             cfg,
             units,
+            connections,
+            tier: ExecutionTier::default(),
             rng: Prng::from_state(rng_state),
             reserved,
             learning_enabled,
@@ -419,12 +869,14 @@ impl Brain {
     }
 
     /// Exact serialized size in bytes for the current brain image.
+    #[cfg(feature = "std")]
     pub fn image_size_bytes(&self) -> io::Result<usize> {
         let mut cw = storage::CountingWriter::new();
         self.save_image_to(&mut cw)?;
         Ok(cw.written())
     }
 
+    #[cfg(feature = "std")]
     fn write_cfg_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let payload_len = Self::cfg_payload_len_bytes();
         w.write_all(b"CFG0")?;
@@ -432,6 +884,7 @@ impl Brain {
         self.write_cfg_payload(w)
     }
 
+    #[cfg(feature = "std")]
     fn cfg_payload_len_bytes() -> u32 {
         // Bytes based on exact write order below.
         4  // unit_count
@@ -452,6 +905,7 @@ impl Brain {
             + 4 // causal_decay
     }
 
+    #[cfg(feature = "std")]
     fn write_cfg_payload<W: Write>(&self, w: &mut W) -> io::Result<()> {
         storage::write_u32_le(w, self.cfg.unit_count as u32)?;
         storage::write_u32_le(w, self.cfg.connectivity_per_unit as u32)?;
@@ -472,6 +926,7 @@ impl Brain {
         Ok(())
     }
 
+    #[cfg(feature = "std")]
     fn read_cfg_payload<R: Read>(r: &mut R) -> io::Result<BrainConfig> {
         let unit_count = storage::read_u32_le(r)? as usize;
         let connectivity_per_unit = storage::read_u32_le(r)? as usize;
@@ -510,80 +965,119 @@ impl Brain {
         })
     }
 
+    #[cfg(feature = "std")]
     fn write_prng_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"PRNG")?;
         storage::write_u32_le(w, 8)?;
         storage::write_u64_le(w, self.rng.state())
     }
 
+    #[cfg(feature = "std")]
     fn write_stat_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"STAT")?;
         storage::write_u32_le(w, 8)?;
         storage::write_u64_le(w, self.age_steps)
     }
 
+    #[cfg(feature = "std")]
     fn unit_payload_len_bytes(&self) -> io::Result<u32> {
         let mut len: u64 = 0;
         len += 4; // unit_count
-        for u in &self.units {
-            len += 4 * 4; // amp,phase,bias,decay
-            len += 4; // conn_count
-            for _ in &u.connections {
-                len += 4; // target
-                len += 4; // weight
-            }
-        }
+        // Unit scalar state: amp, phase, bias, decay (4 floats per unit).
+        len += (self.units.len() as u64) * 4 * 4;
+        // CSR connections: offsets, targets, weights.
+        len += 4; // total_connections count
+        len += (self.connections.offsets.len() as u64) * 4; // offsets (unit_count + 1)
+        // Only count valid (non-tombstoned) connections.
+        let valid_count = self.total_connection_count() as u64;
+        len += valid_count * 4; // targets
+        len += valid_count * 4; // weights
         Ok(u32::try_from(len)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UNIT chunk too large"))?)
     }
 
+    #[cfg(feature = "std")]
     fn write_unit_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let payload_len = self.unit_payload_len_bytes()?;
         w.write_all(b"UNIT")?;
         storage::write_u32_le(w, payload_len)?;
 
+        // Write unit scalars.
         storage::write_u32_le(w, self.units.len() as u32)?;
         for u in &self.units {
             storage::write_f32_le(w, u.amp)?;
             storage::write_f32_le(w, u.phase)?;
             storage::write_f32_le(w, u.bias)?;
             storage::write_f32_le(w, u.decay)?;
-            storage::write_u32_le(w, u.connections.len() as u32)?;
-            for c in &u.connections {
-                storage::write_u32_le(w, c.target as u32)?;
-                storage::write_f32_le(w, c.weight)?;
+        }
+
+        // Write CSR connections (compacted: skip tombstones).
+        // First, compute compacted offsets and collect valid connections.
+        let mut compact_offsets: Vec<usize> = Vec::with_capacity(self.units.len() + 1);
+        let mut compact_targets: Vec<UnitId> = Vec::new();
+        let mut compact_weights: Vec<f32> = Vec::new();
+
+        for i in 0..self.units.len() {
+            compact_offsets.push(compact_targets.len());
+            for (target, weight) in self.neighbors(i) {
+                compact_targets.push(target);
+                compact_weights.push(weight);
             }
+        }
+        compact_offsets.push(compact_targets.len());
+
+        // Write connection count and offsets.
+        storage::write_u32_le(w, compact_targets.len() as u32)?;
+        for &off in &compact_offsets {
+            storage::write_u32_le(w, off as u32)?;
+        }
+        // Write targets and weights.
+        for &t in &compact_targets {
+            storage::write_u32_le(w, t as u32)?;
+        }
+        for &wt in &compact_weights {
+            storage::write_f32_le(w, wt)?;
         }
 
         Ok(())
     }
 
-    fn read_unit_payload<R: Read>(r: &mut R) -> io::Result<Vec<Unit>> {
+    #[cfg(feature = "std")]
+    fn read_unit_payload<R: Read>(r: &mut R) -> io::Result<(Vec<Unit>, CsrConnections)> {
         let unit_count = storage::read_u32_le(r)? as usize;
+        
+        // Read unit scalars.
         let mut units: Vec<Unit> = Vec::with_capacity(unit_count);
         for _ in 0..unit_count {
             let amp = storage::read_f32_le(r)?;
             let phase = storage::read_f32_le(r)?;
             let bias = storage::read_f32_le(r)?;
             let decay = storage::read_f32_le(r)?;
-            let conn_n = storage::read_u32_le(r)? as usize;
-            let mut connections = Vec::with_capacity(conn_n);
-            for _ in 0..conn_n {
-                let target = storage::read_u32_le(r)? as usize;
-                let weight = storage::read_f32_le(r)?;
-                connections.push(Connection { target, weight });
-            }
-            units.push(Unit {
-                amp,
-                phase,
-                bias,
-                decay,
-                connections,
-            });
+            units.push(Unit { amp, phase, bias, decay });
         }
-        Ok(units)
+
+        // Read CSR connections.
+        let total_conns = storage::read_u32_le(r)? as usize;
+        let mut offsets: Vec<usize> = Vec::with_capacity(unit_count + 1);
+        for _ in 0..(unit_count + 1) {
+            offsets.push(storage::read_u32_le(r)? as usize);
+        }
+
+        let mut targets: Vec<UnitId> = Vec::with_capacity(total_conns);
+        for _ in 0..total_conns {
+            targets.push(storage::read_u32_le(r)? as usize);
+        }
+
+        let mut weights: Vec<f32> = Vec::with_capacity(total_conns);
+        for _ in 0..total_conns {
+            weights.push(storage::read_f32_le(r)?);
+        }
+
+        let connections = CsrConnections { targets, weights, offsets };
+        Ok((units, connections))
     }
 
+    #[cfg(feature = "std")]
     fn mask_payload_len_bytes(&self) -> u32 {
         let n = self.units.len() as u32;
         let bytes_len = ((n as usize) + 7) / 8;
@@ -591,6 +1085,7 @@ impl Brain {
         4 + 4 + bytes_len as u32 + 4 + bytes_len as u32
     }
 
+    #[cfg(feature = "std")]
     fn write_mask_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let payload_len = self.mask_payload_len_bytes();
         w.write_all(b"MASK")?;
@@ -609,6 +1104,7 @@ impl Brain {
         Ok(())
     }
 
+    #[cfg(feature = "std")]
     fn write_bool_bits<W: Write>(w: &mut W, bits: &[bool]) -> io::Result<()> {
         let mut i = 0usize;
         while i < bits.len() {
@@ -628,6 +1124,7 @@ impl Brain {
         Ok(())
     }
 
+    #[cfg(feature = "std")]
     fn read_mask_payload<R: Read>(r: &mut R) -> io::Result<(Vec<bool>, Vec<bool>)> {
         let n = storage::read_u32_le(r)? as usize;
 
@@ -665,6 +1162,7 @@ impl Brain {
         ))
     }
 
+    #[cfg(feature = "std")]
     fn unpack_bool_bits(n: usize, bytes: &[u8]) -> Vec<bool> {
         let mut out = vec![false; n];
         for i in 0..n {
@@ -675,6 +1173,7 @@ impl Brain {
         out
     }
 
+    #[cfg(feature = "std")]
     fn groups_payload_len_bytes(&self) -> io::Result<u32> {
         let mut len: u64 = 0;
         len += 4; // sensor group count
@@ -695,6 +1194,7 @@ impl Brain {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "GRPS chunk too large"))?)
     }
 
+    #[cfg(feature = "std")]
     fn write_groups_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let payload_len = self.groups_payload_len_bytes()?;
         w.write_all(b"GRPS")?;
@@ -721,6 +1221,7 @@ impl Brain {
         Ok(())
     }
 
+    #[cfg(feature = "std")]
     fn read_groups_payload<R: Read>(r: &mut R) -> io::Result<(Vec<NamedGroup>, Vec<NamedGroup>)> {
         let sg_n = storage::read_u32_le(r)? as usize;
         let mut sensor_groups: Vec<NamedGroup> = Vec::with_capacity(sg_n);
@@ -749,6 +1250,7 @@ impl Brain {
         Ok((sensor_groups, action_groups))
     }
 
+    #[cfg(feature = "std")]
     fn symbols_payload_len_bytes(&self) -> io::Result<u32> {
         let mut len: u64 = 0;
         len += 4; // count
@@ -759,6 +1261,7 @@ impl Brain {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "SYMB chunk too large"))?)
     }
 
+    #[cfg(feature = "std")]
     fn write_symbols_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let payload_len = self.symbols_payload_len_bytes()?;
         w.write_all(b"SYMB")?;
@@ -771,6 +1274,7 @@ impl Brain {
         Ok(())
     }
 
+    #[cfg(feature = "std")]
     fn read_symbols_payload<R: Read>(r: &mut R) -> io::Result<Vec<String>> {
         let n = storage::read_u32_le(r)? as usize;
         let mut out: Vec<String> = Vec::with_capacity(n);
@@ -780,6 +1284,7 @@ impl Brain {
         Ok(out)
     }
 
+    #[cfg(feature = "std")]
     fn rebuild_symbol_tables(
         symbols_rev: &[String],
     ) -> io::Result<(HashMap<String, SymbolId>, SymbolId, SymbolId)> {
@@ -813,12 +1318,14 @@ impl Brain {
         Ok((symbols, reward_pos, reward_neg))
     }
 
+    #[cfg(feature = "std")]
     fn write_causality_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let payload_len = self.causal.image_payload_len_bytes();
         w.write_all(b"CAUS")?;
         storage::write_u32_le(w, payload_len)?;
         self.causal.write_image_payload(w)
     }
+
     /// Ensure a sensor group exists; if missing, create it.
     pub fn ensure_sensor(&mut self, name: &str, width: usize) {
         if self.sensor_groups.iter().any(|g| g.name == name) {
@@ -837,6 +1344,7 @@ impl Brain {
     /// - child inherits structure (couplings + causal memory)
     /// - child can explore with different noise/plasticity
     /// - child cannot mutate a protected identity subset (action groups by default)
+    #[cfg(feature = "std")]
     pub fn spawn_child(
         &self,
         seed: u64,
@@ -853,6 +1361,7 @@ impl Brain {
 
         // Copy substrate state.
         child.units = self.units.clone();
+        child.connections = self.connections.clone();
         child.sensor_groups = self.sensor_groups.clone();
         child.action_groups = self.action_groups.clone();
         child.reserved = self.reserved.clone();
@@ -863,6 +1372,9 @@ impl Brain {
         child.reward_pos_symbol = self.reward_pos_symbol;
         child.reward_neg_symbol = self.reward_neg_symbol;
         child.causal = self.causal.clone();
+
+        // Inherit execution tier from parent.
+        child.tier = self.tier;
 
         // Protect parent identity subset: action-group units.
         let mut mask = vec![true; child.units.len()];
@@ -878,6 +1390,7 @@ impl Brain {
 
     /// Consolidate structural/casual knowledge from a child back into self.
     /// Only merges strong, non-identity couplings.
+    #[cfg(feature = "std")]
     pub fn consolidate_from(
         &mut self,
         child: &Brain,
@@ -894,29 +1407,37 @@ impl Brain {
             }
         }
 
-        // Merge couplings.
+        // Merge couplings from child into parent.
         for i in 0..self.units.len() {
             if protected[i] {
                 continue;
             }
 
-            // For each child connection above threshold, pull parent weight toward child.
-            for c_child in &child.units[i].connections {
-                if c_child.weight.abs() < thr {
+            // Iterate child's connections for unit i.
+            for (c_target, c_weight) in child.neighbors(i) {
+                if c_weight.abs() < thr {
                     continue;
                 }
-                if c_child.target < protected.len() && protected[c_child.target] {
+                if c_target < protected.len() && protected[c_target] {
                     continue;
                 }
 
-                if let Some(c_parent) = self.units[i]
-                    .connections
-                    .iter_mut()
-                    .find(|c| c.target == c_child.target)
-                {
-                    c_parent.weight = (1.0 - rate) * c_parent.weight + rate * c_child.weight;
-                } else {
-                    self.units[i].connections.push(c_child.clone());
+                // Find parent's connection to same target.
+                let parent_range = self.conn_range(i);
+                let mut found = false;
+                for idx in parent_range.clone() {
+                    if self.connections.targets[idx] == c_target {
+                        // Blend weights.
+                        self.connections.weights[idx] = 
+                            (1.0 - rate) * self.connections.weights[idx] + rate * c_weight;
+                        found = true;
+                        break;
+                    }
+                }
+
+                // If not found, add new connection.
+                if !found {
+                    self.add_or_bump_csr(i, c_target, c_weight);
                 }
             }
         }
@@ -925,6 +1446,13 @@ impl Brain {
         self.causal.merge_from(&child.causal, 0.25);
     }
 
+    /// Define a named sensor group with the specified number of units.
+    ///
+    /// Sensor groups receive external stimuli via [`apply_stimulus`].
+    ///
+    /// # Arguments
+    /// * `name` - Unique name for this sensor group
+    /// * `width` - Number of units in the group
     pub fn define_sensor(&mut self, name: &str, width: usize) {
         let units = self.allocate_units(width);
         self.sensor_groups.push(NamedGroup {
@@ -935,6 +1463,13 @@ impl Brain {
         self.intern(name);
     }
 
+    /// Define a named action group with the specified number of units.
+    ///
+    /// Action groups are used by [`select_action`] to determine behavior.
+    ///
+    /// # Arguments
+    /// * `name` - Unique name for this action group
+    /// * `width` - Number of units in the group
     pub fn define_action(&mut self, name: &str, width: usize) {
         let units = self.allocate_units(width);
         // Slight positive bias so actions can become stable attractors.
@@ -949,6 +1484,22 @@ impl Brain {
         self.intern(name);
     }
 
+    /// Apply a stimulus to the named sensor group.
+    ///
+    /// This injects input current into the sensor group's units and may trigger
+    /// one-shot imprinting if the stimulus is novel.
+    ///
+    /// # Arguments
+    /// * `stimulus` - The stimulus name and strength to apply
+    ///
+    /// # Example
+    /// ```
+    /// # use braine::substrate::{Brain, BrainConfig, Stimulus};
+    /// # let cfg = BrainConfig::default();
+    /// # let mut brain = Brain::new(cfg);
+    /// brain.define_sensor("vision", 8);
+    /// brain.apply_stimulus(Stimulus::new("vision", 1.0));
+    /// ```
     pub fn apply_stimulus(&mut self, stimulus: Stimulus<'_>) {
         let group_units = self
             .sensor_groups
@@ -1173,11 +1724,25 @@ impl Brain {
             .collect()
     }
 
+    /// Set the neuromodulator (reward/salience) level.
+    ///
+    /// Positive values increase learning rate; negative values decrease it.
+    /// The value is clamped to [-1.0, 1.0].
+    ///
+    /// # Arguments
+    /// * `value` - The neuromodulator level
     pub fn set_neuromodulator(&mut self, value: f32) {
         // Clamp to a reasonable range.
         self.neuromod = value.clamp(-1.0, 1.0);
     }
 
+    /// Reinforce an action by adjusting the bias of its units.
+    ///
+    /// This provides a direct reward signal to encourage/discourage actions.
+    ///
+    /// # Arguments
+    /// * `action` - Name of the action group to reinforce
+    /// * `delta_bias` - Bias adjustment (positive = encourage, negative = discourage)
     pub fn reinforce_action(&mut self, action: &str, delta_bias: f32) {
         if let Some(group) = self.action_groups.iter().find(|g| g.name == action) {
             if self.telemetry.enabled {
@@ -1193,6 +1758,16 @@ impl Brain {
         }
     }
 
+    /// Advance the simulation by one timestep.
+    ///
+    /// This is the main update loop that:
+    /// 1. Updates unit dynamics (amp/phase) based on connections and inputs
+    /// 2. Applies global inhibition for competition
+    /// 3. Runs Hebbian learning on co-active, phase-aligned units
+    /// 4. Prunes weak connections (structural forgetting)
+    ///
+    /// Call this once per control cycle after applying stimuli and setting
+    /// the neuromodulator.
     pub fn step(&mut self) {
         self.pruned_last_step = 0;
 
@@ -1203,7 +1778,35 @@ impl Brain {
             self.telemetry.last_reinforced_actions.clear();
         }
 
-        // Compute global inhibition target as mean activity.
+        // Dispatch based on execution tier.
+        match self.tier {
+            ExecutionTier::Scalar => self.step_dynamics_scalar(),
+            ExecutionTier::Simd => self.step_dynamics_simd(),
+            ExecutionTier::Parallel => self.step_dynamics_parallel(),
+            ExecutionTier::Gpu => self.step_dynamics_gpu(),
+        }
+
+        // Clear one-tick inputs.
+        for x in &mut self.pending_input {
+            *x = 0.0;
+        }
+
+        // Learning dispatch.
+        // Note: SIMD/GPU learning uses scalar path as Hebbian update operates on sparse
+        // graph structure with irregular memory access. The SIMD/GPU gains come from
+        // the vectorized dynamics update phase.
+        match self.tier {
+            ExecutionTier::Scalar | ExecutionTier::Simd | ExecutionTier::Gpu => {
+                self.learn_hebbian_scalar()
+            }
+            ExecutionTier::Parallel => self.learn_hebbian_parallel(),
+        }
+
+        self.forget_and_prune();
+    }
+
+    /// Scalar (baseline) dynamics update.
+    fn step_dynamics_scalar(&mut self) {
         let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32;
         let inhibition = self.cfg.global_inhibition * avg_amp;
 
@@ -1215,14 +1818,10 @@ impl Brain {
             let mut influence_amp = 0.0;
             let mut influence_phase = 0.0;
 
-            for c in &u.connections {
-                let v = &self.units[c.target];
-                // Wave-flavored coupling:
-                // - amplitude is pulled by neighbor amplitude
-                // - phase is gently pulled toward neighbor phase
-                // These are local scalar ops; no matrices, no global objective.
-                influence_amp += c.weight * v.amp;
-                influence_phase += c.weight * angle_diff(v.phase, u.phase);
+            for (target, weight) in self.neighbors(i) {
+                let v = &self.units[target];
+                influence_amp += weight * v.amp;
+                influence_phase += weight * angle_diff(v.phase, u.phase);
             }
 
             let noise_a = self
@@ -1233,8 +1832,6 @@ impl Brain {
                 .gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase);
 
             let input = self.pending_input[i];
-
-            // Continuous-time-ish update.
             let damp = u.decay * u.amp;
             let d_amp =
                 (u.bias + input + influence_amp - inhibition - damp + noise_a) * self.cfg.dt;
@@ -1248,16 +1845,301 @@ impl Brain {
             self.units[i].amp = next_amp[i];
             self.units[i].phase = next_phase[i];
         }
-
-        // Clear one-tick inputs.
-        for x in &mut self.pending_input {
-            *x = 0.0;
-        }
-
-        self.learn_hebbian();
-        self.forget_and_prune();
     }
 
+    /// SIMD-optimized dynamics using the wide crate.
+    /// 
+    /// Vectorizes the amplitude/phase update loop while keeping the sparse
+    /// neighbor accumulation scalar (irregular memory access patterns).
+    #[cfg(feature = "simd")]
+    fn step_dynamics_simd(&mut self) {
+        let n = self.units.len();
+        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / n as f32;
+        let inhibition = self.cfg.global_inhibition * avg_amp;
+
+        // Accumulate influences (sparse, hard to vectorize efficiently).
+        let mut influence_amp = vec![0.0f32; n];
+        let mut influence_phase = vec![0.0f32; n];
+
+        for i in 0..n {
+            let u_phase = self.units[i].phase;
+            for (target, weight) in self.neighbors(i) {
+                let v = &self.units[target];
+                influence_amp[i] += weight * v.amp;
+                influence_phase[i] += weight * angle_diff(v.phase, u_phase);
+            }
+        }
+
+        // Pre-generate noise.
+        let noise_a: Vec<f32> = (0..n)
+            .map(|_| self.rng.gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp))
+            .collect();
+        let noise_p: Vec<f32> = (0..n)
+            .map(|_| self.rng.gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase))
+            .collect();
+
+        // Extract SoA views for vectorization.
+        let mut amps: Vec<f32> = self.units.iter().map(|u| u.amp).collect();
+        let mut phases: Vec<f32> = self.units.iter().map(|u| u.phase).collect();
+        let biases: Vec<f32> = self.units.iter().map(|u| u.bias).collect();
+        let decays: Vec<f32> = self.units.iter().map(|u| u.decay).collect();
+
+        let dt = f32x4::splat(self.cfg.dt);
+        let base_freq = f32x4::splat(self.cfg.base_freq);
+        let inhibition_v = f32x4::splat(inhibition);
+        let min_clamp = f32x4::splat(-2.0);
+        let max_clamp = f32x4::splat(2.0);
+        let pi = f32x4::splat(std::f32::consts::PI);
+        let two_pi = f32x4::splat(std::f32::consts::TAU);
+
+        // Process 4 units at a time.
+        let simd_end = n - (n % 4);
+        for i in (0..simd_end).step_by(4) {
+            let amp = f32x4::from([amps[i], amps[i + 1], amps[i + 2], amps[i + 3]]);
+            let phase = f32x4::from([phases[i], phases[i + 1], phases[i + 2], phases[i + 3]]);
+            let bias = f32x4::from([biases[i], biases[i + 1], biases[i + 2], biases[i + 3]]);
+            let decay = f32x4::from([decays[i], decays[i + 1], decays[i + 2], decays[i + 3]]);
+            let inf_a = f32x4::from([
+                influence_amp[i],
+                influence_amp[i + 1],
+                influence_amp[i + 2],
+                influence_amp[i + 3],
+            ]);
+            let inf_p = f32x4::from([
+                influence_phase[i],
+                influence_phase[i + 1],
+                influence_phase[i + 2],
+                influence_phase[i + 3],
+            ]);
+            let n_a = f32x4::from([noise_a[i], noise_a[i + 1], noise_a[i + 2], noise_a[i + 3]]);
+            let n_p = f32x4::from([noise_p[i], noise_p[i + 1], noise_p[i + 2], noise_p[i + 3]]);
+            let input = f32x4::from([
+                self.pending_input[i],
+                self.pending_input[i + 1],
+                self.pending_input[i + 2],
+                self.pending_input[i + 3],
+            ]);
+
+            let damp = decay * amp;
+            let d_amp = (bias + input + inf_a - inhibition_v - damp + n_a) * dt;
+            let d_phase = (base_freq + inf_p + n_p) * dt;
+
+            let new_amp = (amp + d_amp).max(min_clamp).min(max_clamp);
+            let mut new_phase = phase + d_phase;
+
+            // wrap_angle for SIMD: normalize to [-PI, PI]
+            // while new_phase > PI: new_phase -= TAU
+            // while new_phase < -PI: new_phase += TAU
+            // Approximation: one iteration usually sufficient for small dt
+            let too_high = new_phase.cmp_gt(pi);
+            let too_low = new_phase.cmp_lt(-pi);
+            new_phase = too_high.blend(new_phase - two_pi, new_phase);
+            new_phase = too_low.blend(new_phase + two_pi, new_phase);
+
+            let new_amp_arr = new_amp.to_array();
+            let new_phase_arr = new_phase.to_array();
+            for j in 0..4 {
+                amps[i + j] = new_amp_arr[j];
+                phases[i + j] = new_phase_arr[j];
+            }
+        }
+
+        // Handle remainder (tail elements).
+        for i in simd_end..n {
+            let u = &self.units[i];
+            let damp = u.decay * amps[i];
+            let d_amp = (u.bias + self.pending_input[i] + influence_amp[i] - inhibition - damp
+                + noise_a[i])
+                * self.cfg.dt;
+            let d_phase = (self.cfg.base_freq + influence_phase[i] + noise_p[i]) * self.cfg.dt;
+            amps[i] = (amps[i] + d_amp).clamp(-2.0, 2.0);
+            phases[i] = wrap_angle(phases[i] + d_phase);
+        }
+
+        // Write back to units.
+        for i in 0..n {
+            self.units[i].amp = amps[i];
+            self.units[i].phase = phases[i];
+        }
+    }
+
+    #[cfg(not(feature = "simd"))]
+    fn step_dynamics_simd(&mut self) {
+        self.step_dynamics_scalar();
+    }
+
+    /// Parallel dynamics update using rayon.
+    #[cfg(feature = "parallel")]
+    fn step_dynamics_parallel(&mut self) {
+        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32;
+        let inhibition = self.cfg.global_inhibition * avg_amp;
+
+        // Pre-generate noise (RNG is not thread-safe).
+        let noise: Vec<(f32, f32)> = (0..self.units.len())
+            .map(|_| {
+                (
+                    self.rng.gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp),
+                    self.rng.gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase),
+                )
+            })
+            .collect();
+
+        // Parallel computation of next state.
+        let units = &self.units;
+        let connections = &self.connections;
+        let pending_input = &self.pending_input;
+        let cfg = &self.cfg;
+
+        let next: Vec<(f32, f32)> = (0..units.len())
+            .into_par_iter()
+            .map(|i| {
+                let u = &units[i];
+                let mut influence_amp = 0.0;
+                let mut influence_phase = 0.0;
+
+                let start = connections.offsets[i];
+                let end = connections.offsets[i + 1];
+                for idx in start..end {
+                    let target = connections.targets[idx];
+                    if target == INVALID_UNIT {
+                        continue;
+                    }
+                    let weight = connections.weights[idx];
+                    let v = &units[target];
+                    influence_amp += weight * v.amp;
+                    influence_phase += weight * angle_diff(v.phase, u.phase);
+                }
+
+                let (noise_a, noise_p) = noise[i];
+                let input = pending_input[i];
+                let damp = u.decay * u.amp;
+                let d_amp =
+                    (u.bias + input + influence_amp - inhibition - damp + noise_a) * cfg.dt;
+                let d_phase = (cfg.base_freq + influence_phase + noise_p) * cfg.dt;
+
+                (
+                    (u.amp + d_amp).clamp(-2.0, 2.0),
+                    wrap_angle(u.phase + d_phase),
+                )
+            })
+            .collect();
+
+        for (i, (amp, phase)) in next.into_iter().enumerate() {
+            self.units[i].amp = amp;
+            self.units[i].phase = phase;
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    fn step_dynamics_parallel(&mut self) {
+        self.step_dynamics_scalar();
+    }
+
+    /// GPU compute shader dynamics update.
+    /// 
+    /// The sparse neighbor accumulation is done on CPU (irregular memory access),
+    /// then the dense amp/phase update is offloaded to GPU compute shaders.
+    /// Only beneficial for very large substrates (10k+ units).
+    #[cfg(feature = "gpu")]
+    fn step_dynamics_gpu(&mut self) {
+        use crate::gpu::{GpuContext, GpuInfluence, GpuParams, GpuUnit};
+
+        // Lazily initialize GPU context (stored in thread-local for simplicity).
+        // A production implementation would store this in Brain.
+        thread_local! {
+            static GPU_CTX: std::cell::OnceCell<Option<GpuContext>> = const { std::cell::OnceCell::new() };
+        }
+
+        let n = self.units.len();
+
+        // CPU: compute influences (sparse graph traversal).
+        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / n as f32;
+        let inhibition = self.cfg.global_inhibition * avg_amp;
+
+        let mut influences: Vec<GpuInfluence> = Vec::with_capacity(n);
+        for i in 0..n {
+            let u_phase = self.units[i].phase;
+            let mut inf_amp = 0.0f32;
+            let mut inf_phase = 0.0f32;
+
+            for (target, weight) in self.neighbors(i) {
+                let v = &self.units[target];
+                inf_amp += weight * v.amp;
+                inf_phase += weight * angle_diff(v.phase, u_phase);
+            }
+
+            influences.push(GpuInfluence {
+                amp: inf_amp,
+                phase: inf_phase,
+                noise_amp: self.rng.gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp),
+                noise_phase: self.rng.gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase),
+            });
+        }
+
+        // Prepare unit data for GPU.
+        let mut gpu_units: Vec<GpuUnit> = self
+            .units
+            .iter()
+            .map(|u| GpuUnit {
+                amp: u.amp,
+                phase: u.phase,
+                bias: u.bias,
+                decay: u.decay,
+            })
+            .collect();
+
+        let params = GpuParams {
+            dt: self.cfg.dt,
+            base_freq: self.cfg.base_freq,
+            inhibition,
+            unit_count: n as u32,
+        };
+
+        // Try GPU, fallback to scalar if unavailable or on error.
+        let used_gpu = GPU_CTX.with(|cell| {
+            let ctx = cell.get_or_init(|| GpuContext::new(65536));
+            if let Some(gpu) = ctx {
+                // Handle Result: if GPU fails, we'll fall back to scalar
+                gpu.step_dynamics(&mut gpu_units, &influences, &self.pending_input, params)
+                    .is_ok()
+            } else {
+                false
+            }
+        });
+
+        if used_gpu {
+            // Write back from GPU.
+            for (i, gu) in gpu_units.into_iter().enumerate() {
+                self.units[i].amp = gu.amp;
+                self.units[i].phase = gu.phase;
+            }
+        } else {
+            // Fallback to scalar if no GPU.
+            self.step_dynamics_scalar();
+        }
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    fn step_dynamics_gpu(&mut self) {
+        self.step_dynamics_scalar();
+    }
+
+    /// Select an action based on current unit activations.
+    ///
+    /// Returns the action name and its score (sum of unit amplitudes).
+    ///
+    /// # Arguments
+    /// * `policy` - Selection strategy (deterministic or epsilon-greedy)
+    ///
+    /// # Example
+    /// ```
+    /// # use braine::substrate::{Brain, BrainConfig, ActionPolicy};
+    /// # let cfg = BrainConfig::default();
+    /// # let mut brain = Brain::new(cfg);
+    /// brain.define_action("move", 4);
+    /// let (action, score) = brain.select_action(&mut ActionPolicy::Deterministic);
+    /// ```
+    #[must_use]
     pub fn select_action(&mut self, policy: &mut ActionPolicy) -> (String, f32) {
         let mut scores: Vec<(String, f32)> = self
             .action_groups
@@ -1285,27 +2167,134 @@ impl Brain {
         }
     }
 
+    /// Returns diagnostic information about the brain's current state.
+    ///
+    /// Useful for monitoring and visualization.
+    #[must_use]
     pub fn diagnostics(&self) -> Diagnostics {
-        let connection_count = self
-            .units
-            .iter()
-            .map(|u| u.connections.len())
-            .sum::<usize>();
-        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32;
+        let connection_count = self.total_connection_count();
+        let avg_amp = self.units.iter().map(|u| u.amp).sum::<Amplitude>() / self.units.len() as Amplitude;
+        let memory_bytes = self.cfg.estimated_memory_bytes();
         Diagnostics {
             unit_count: self.units.len(),
             connection_count,
             pruned_last_step: self.pruned_last_step,
             avg_amp,
+            memory_bytes,
+            execution_tier: self.tier,
         }
     }
 
-    fn learn_hebbian(&mut self) {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Introspection API for visualization and debugging
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Returns a slice of all unit amplitudes.
+    ///
+    /// Useful for heatmap visualization of brain activity.
+    #[must_use]
+    pub fn unit_amplitudes(&self) -> Vec<f32> {
+        self.units.iter().map(|u| u.amp).collect()
+    }
+
+    /// Returns a slice of all unit phases.
+    ///
+    /// Phase values are in radians (-π to π).
+    #[must_use]
+    pub fn unit_phases(&self) -> Vec<f32> {
+        self.units.iter().map(|u| u.phase).collect()
+    }
+
+    /// Returns all connection weights as a flat array.
+    ///
+    /// The weights correspond to the CSR storage order.
+    /// Use `connection_matrix()` for a dense representation.
+    #[must_use]
+    pub fn connection_weights(&self) -> &[f32] {
+        &self.connections.weights
+    }
+
+    /// Returns all connection targets as a flat array.
+    ///
+    /// Invalid connections (pruned) have target = `INVALID_UNIT`.
+    #[must_use]
+    pub fn connection_targets(&self) -> &[UnitId] {
+        &self.connections.targets
+    }
+
+    /// Returns the CSR offset array for connection indexing.
+    ///
+    /// For unit `i`, its connections are at indices `offsets[i]..offsets[i+1]`.
+    #[must_use]
+    pub fn connection_offsets(&self) -> &[usize] {
+        &self.connections.offsets
+    }
+
+    /// Returns a dense connection weight matrix (unit_count × unit_count).
+    ///
+    /// **Warning**: O(n²) memory for large brains. Use only for small networks.
+    #[must_use]
+    pub fn connection_matrix(&self) -> Vec<Vec<f32>> {
+        let n = self.units.len();
+        let mut matrix = vec![vec![0.0f32; n]; n];
+        
+        for i in 0..n {
+            let range = self.conn_range(i);
+            for idx in range {
+                let target = self.connections.targets[idx];
+                if target != INVALID_UNIT {
+                    matrix[i][target] = self.connections.weights[idx];
+                }
+            }
+        }
+        matrix
+    }
+
+    /// Returns the top N most active units by amplitude.
+    ///
+    /// Returns pairs of (unit_id, amplitude), sorted descending.
+    #[must_use]
+    pub fn top_active_units(&self, n: usize) -> Vec<(UnitId, f32)> {
+        let mut indexed: Vec<_> = self.units.iter().enumerate()
+            .map(|(i, u)| (i, u.amp))
+            .collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+        indexed.truncate(n);
+        indexed
+    }
+
+    /// Returns unit indices for a named sensor group.
+    #[must_use]
+    pub fn sensor_units(&self, name: &str) -> Option<&[UnitId]> {
+        self.sensor_groups.iter()
+            .find(|g| g.name == name)
+            .map(|g| g.units.as_slice())
+    }
+
+    /// Returns unit indices for a named action group.
+    #[must_use]
+    pub fn action_units(&self, name: &str) -> Option<&[UnitId]> {
+        self.action_groups.iter()
+            .find(|g| g.name == name)
+            .map(|g| g.units.as_slice())
+    }
+
+    /// Returns the current configuration (read-only).
+    #[must_use]
+    pub fn config(&self) -> &BrainConfig {
+        &self.cfg
+    }
+
+    /// Scalar Hebbian learning (baseline).
+    fn learn_hebbian_scalar(&mut self) {
         let thr = self.cfg.coactive_threshold;
         let lr = self.cfg.hebb_rate * (1.0 + self.neuromod.max(0.0));
+        let phase_thr = self.cfg.phase_lock_threshold;
 
-        // Local rule: if i and j are co-active and phase-aligned, strengthen i->j.
-        // Otherwise very slight anti-Hebb decay (encourages specialization).
+        // Phase 1: Compute weight deltas.
+        let total_conns = self.connections.weights.len();
+        let mut deltas = vec![0.0f32; total_conns];
+
         for i in 0..self.units.len() {
             if !self.learning_enabled[i] {
                 continue;
@@ -1315,50 +2304,124 @@ impl Brain {
                 continue;
             }
 
-            // Borrow-safely access unit i mutably and other units immutably.
-            let (left, right) = self.units.split_at_mut(i);
-            let (unit_i, right_rest) = right
-                .split_first_mut()
-                .expect("split_at_mut with valid index");
+            let a_phase = self.units[i].phase;
+            let range = self.conn_range(i);
 
-            let a_phase = unit_i.phase;
-            for c in &mut unit_i.connections {
-                let (b_amp, b_phase) = if c.target < i {
-                    let b = &left[c.target];
-                    (b.amp, b.phase)
-                } else if c.target == i {
-                    (unit_i.amp, unit_i.phase)
-                } else {
-                    let idx = c.target - i - 1;
-                    let b = &right_rest[idx];
-                    (b.amp, b.phase)
-                };
+            for idx in range {
+                let target = self.connections.targets[idx];
+                if target == INVALID_UNIT {
+                    continue;
+                }
+
+                let b_amp = self.units[target].amp;
+                let b_phase = self.units[target].phase;
 
                 if b_amp > thr {
                     let align = phase_alignment(a_phase, b_phase);
-                    if align > self.cfg.phase_lock_threshold {
-                        c.weight += lr * align;
+                    if align > phase_thr {
+                        deltas[idx] = lr * align;
                     } else {
-                        c.weight -= lr * 0.05;
+                        deltas[idx] = -lr * 0.05;
                     }
                 }
-
-                c.weight = c.weight.clamp(-1.5, 1.5);
             }
         }
+
+        // Phase 2: Apply deltas.
+        for (w, d) in self.connections.weights.iter_mut().zip(deltas) {
+            *w = (*w + d).clamp(-1.5, 1.5);
+        }
+    }
+
+    /// Parallel Hebbian learning using rayon.
+    #[cfg(feature = "parallel")]
+    fn learn_hebbian_parallel(&mut self) {
+        let thr = self.cfg.coactive_threshold;
+        let lr = self.cfg.hebb_rate * (1.0 + self.neuromod.max(0.0));
+        let phase_thr = self.cfg.phase_lock_threshold;
+
+        let total_conns = self.connections.weights.len();
+
+        // Phase 1: Parallel delta computation.
+        let units = &self.units;
+        let connections = &self.connections;
+        let learning_enabled = &self.learning_enabled;
+
+        let deltas: Vec<f32> = (0..total_conns)
+            .into_par_iter()
+            .map(|idx| {
+                let target = connections.targets[idx];
+                if target == INVALID_UNIT {
+                    return 0.0;
+                }
+
+                // Find which unit owns this connection.
+                let owner = connections.offsets
+                    .iter()
+                    .position(|&off| off > idx)
+                    .unwrap_or(1)
+                    .saturating_sub(1);
+
+                if !learning_enabled[owner] {
+                    return 0.0;
+                }
+
+                let a_amp = units[owner].amp;
+                if a_amp <= thr {
+                    return 0.0;
+                }
+
+                let b_amp = units[target].amp;
+                if b_amp <= thr {
+                    return 0.0;
+                }
+
+                let a_phase = units[owner].phase;
+                let b_phase = units[target].phase;
+                let align = phase_alignment(a_phase, b_phase);
+
+                if align > phase_thr {
+                    lr * align
+                } else {
+                    -lr * 0.05
+                }
+            })
+            .collect();
+
+        // Phase 2: Apply deltas (sequential, fast).
+        for (w, d) in self.connections.weights.iter_mut().zip(deltas) {
+            *w = (*w + d).clamp(-1.5, 1.5);
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    fn learn_hebbian_parallel(&mut self) {
+        self.learn_hebbian_scalar();
     }
 
     fn forget_and_prune(&mut self) {
         let decay = 1.0 - self.cfg.forget_rate;
         let prune_below = self.cfg.prune_below;
 
-        for u in &mut self.units {
-            for c in &mut u.connections {
-                c.weight *= decay;
+        // Apply decay to all weights.
+        for w in &mut self.connections.weights {
+            *w *= decay;
+        }
+
+        // Mark tiny weights as pruned (tombstone).
+        for idx in 0..self.connections.weights.len() {
+            if self.connections.weights[idx].abs() < prune_below 
+                && self.connections.targets[idx] != INVALID_UNIT 
+            {
+                self.connections.targets[idx] = INVALID_UNIT;
+                self.connections.weights[idx] = 0.0;
+                self.pruned_last_step += 1;
             }
-            let before = u.connections.len();
-            u.connections.retain(|c| c.weight.abs() >= prune_below);
-            self.pruned_last_step += before - u.connections.len();
+        }
+
+        // Compact periodically to reclaim tombstones.
+        if self.age_steps % 1000 == 0 {
+            self.compact_connections();
         }
     }
 
@@ -1389,11 +2452,9 @@ impl Brain {
         // Detect novelty by checking whether sensor units already have strong outgoing couplings.
         let mut existing_strength = 0.0;
         for &id in group_units {
-            existing_strength += self.units[id]
-                .connections
-                .iter()
-                .map(|c| c.weight.abs())
-                .sum::<f32>();
+            for (_, weight) in self.neighbors(id) {
+                existing_strength += weight.abs();
+            }
         }
 
         if existing_strength > 3.0 {
@@ -1416,16 +2477,8 @@ impl Brain {
 
         // Connect sensor units to the concept (and back) so it can be recalled.
         for &sid in group_units {
-            add_or_bump_connection(
-                &mut self.units[sid].connections,
-                concept_id,
-                self.cfg.imprint_rate,
-            );
-            add_or_bump_connection(
-                &mut self.units[concept_id].connections,
-                sid,
-                self.cfg.imprint_rate * 0.7,
-            );
+            self.add_or_bump_csr(sid, concept_id, self.cfg.imprint_rate);
+            self.add_or_bump_csr(concept_id, sid, self.cfg.imprint_rate * 0.7);
         }
 
         // Make the concept slightly excitable.
@@ -1458,17 +2511,6 @@ fn intern_symbol(
     rev.push(name.to_string());
     map.insert(name.to_string(), id);
     id
-}
-
-fn add_or_bump_connection(conns: &mut Vec<Connection>, target: UnitId, bump: f32) {
-    if let Some(c) = conns.iter_mut().find(|c| c.target == target) {
-        c.weight = (c.weight + bump).clamp(-1.5, 1.5);
-    } else {
-        conns.push(Connection {
-            target,
-            weight: bump.clamp(-1.5, 1.5),
-        });
-    }
 }
 
 fn wrap_angle(mut x: f32) -> f32 {
@@ -1533,5 +2575,212 @@ mod tests {
         assert_eq!(loaded.reserved.len(), brain.reserved.len());
         assert_eq!(loaded.learning_enabled.len(), brain.learning_enabled.len());
         assert_eq!(loaded.symbols_rev, brain.symbols_rev);
+        
+        // Verify CSR connections match.
+        assert_eq!(loaded.connections.offsets.len(), brain.connections.offsets.len());
+        assert_eq!(loaded.total_connection_count(), brain.total_connection_count());
+    }
+
+    #[test]
+    fn csr_neighbors_iteration() {
+        let cfg = BrainConfig {
+            unit_count: 8,
+            connectivity_per_unit: 2,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.01,
+            forget_rate: 0.0,
+            prune_below: 0.0,
+            coactive_threshold: 0.2,
+            phase_lock_threshold: 0.2,
+            imprint_rate: 0.0,
+            seed: Some(42),
+            causal_decay: 0.01,
+        };
+
+        let brain = Brain::new(cfg);
+        
+        // Each unit should have exactly 2 connections.
+        for i in 0..8 {
+            let count = brain.neighbors(i).count();
+            assert_eq!(count, 2, "unit {} should have 2 neighbors", i);
+        }
+        
+        // Total connections = 8 * 2 = 16.
+        assert_eq!(brain.total_connection_count(), 16);
+    }
+
+    #[test]
+    fn execution_tier_switch() {
+        let cfg = BrainConfig {
+            unit_count: 16,
+            connectivity_per_unit: 2,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.01,
+            noise_phase: 0.01,
+            global_inhibition: 0.02,
+            hebb_rate: 0.01,
+            forget_rate: 0.001,
+            prune_below: 0.0001,
+            coactive_threshold: 0.2,
+            phase_lock_threshold: 0.2,
+            imprint_rate: 0.0,
+            seed: Some(99),
+            causal_decay: 0.01,
+        };
+
+        let mut brain = Brain::new(cfg);
+        
+        // Default tier is Scalar.
+        assert_eq!(brain.execution_tier(), ExecutionTier::Scalar);
+        
+        // Step with scalar.
+        for _ in 0..10 {
+            brain.step();
+        }
+        let _scalar_amp = brain.diagnostics().avg_amp;
+        
+        // Switch to SIMD (falls back to scalar if feature not enabled).
+        brain.set_execution_tier(ExecutionTier::Simd);
+        assert_eq!(brain.execution_tier(), ExecutionTier::Simd);
+        
+        // Switch to Parallel (falls back to scalar if feature not enabled).
+        brain.set_execution_tier(ExecutionTier::Parallel);
+        assert_eq!(brain.execution_tier(), ExecutionTier::Parallel);
+        
+        // Step with parallel.
+        for _ in 0..10 {
+            brain.step();
+        }
+        
+        // Should still be functioning.
+        let parallel_amp = brain.diagnostics().avg_amp;
+        assert!(parallel_amp.is_finite());
+    }
+
+    #[test]
+    fn brain_clone() {
+        let cfg = BrainConfig::with_size(32, 4).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("stim", 4);
+        brain.define_action("act", 4);
+
+        // Run a few steps
+        brain.apply_stimulus(Stimulus::new("stim", 1.0));
+        brain.set_neuromodulator(0.5);
+        for _ in 0..10 {
+            brain.step();
+        }
+
+        // Clone the brain
+        let cloned = brain.clone();
+
+        // Verify cloned state matches
+        assert_eq!(cloned.age_steps(), brain.age_steps());
+        assert_eq!(cloned.diagnostics().unit_count, brain.diagnostics().unit_count);
+        assert_eq!(cloned.diagnostics().connection_count, brain.diagnostics().connection_count);
+        assert_eq!(cloned.execution_tier(), brain.execution_tier());
+
+        // Verify they evolve independently
+        brain.step();
+        assert_eq!(cloned.age_steps() + 1, brain.age_steps());
+    }
+
+    #[test]
+    fn brain_config_default() {
+        let cfg = BrainConfig::default();
+        assert_eq!(cfg.unit_count, 256);
+        assert_eq!(cfg.connectivity_per_unit, 12);
+        assert!(cfg.seed.is_none());
+    }
+
+    #[test]
+    fn brain_config_builder() {
+        let cfg = BrainConfig::with_size(512, 16)
+            .with_seed(42)
+            .with_hebb_rate(0.1)
+            .with_noise(0.05, 0.025);
+
+        assert_eq!(cfg.unit_count, 512);
+        assert_eq!(cfg.connectivity_per_unit, 16);
+        assert_eq!(cfg.seed, Some(42));
+        assert_eq!(cfg.hebb_rate, 0.1);
+        assert_eq!(cfg.noise_amp, 0.05);
+        assert_eq!(cfg.noise_phase, 0.025);
+    }
+
+    #[test]
+    fn introspection_methods() {
+        let cfg = BrainConfig::with_size(64, 8).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("vision", 4);
+        brain.define_action("move", 4);
+
+        // Test unit_amplitudes
+        let amps = brain.unit_amplitudes();
+        assert_eq!(amps.len(), 64);
+
+        // Test unit_phases
+        let phases = brain.unit_phases();
+        assert_eq!(phases.len(), 64);
+
+        // Test connection accessors
+        assert!(!brain.connection_weights().is_empty());
+        assert!(!brain.connection_targets().is_empty());
+        assert_eq!(brain.connection_offsets().len(), 65); // unit_count + 1
+
+        // Test connection_matrix
+        let matrix = brain.connection_matrix();
+        assert_eq!(matrix.len(), 64);
+        assert_eq!(matrix[0].len(), 64);
+
+        // Test top_active_units
+        brain.apply_stimulus(Stimulus::new("vision", 1.0));
+        brain.step();
+        let top = brain.top_active_units(5);
+        assert!(top.len() <= 5);
+
+        // Test sensor/action unit accessors
+        assert!(brain.sensor_units("vision").is_some());
+        assert!(brain.action_units("move").is_some());
+        assert!(brain.sensor_units("nonexistent").is_none());
+
+        // Test config accessor
+        let cfg_ref = brain.config();
+        assert_eq!(cfg_ref.unit_count, 64);
+    }
+
+    #[test]
+    fn config_validation() {
+        // Valid config
+        let cfg = BrainConfig::with_size(64, 8);
+        assert!(cfg.validate().is_ok());
+
+        // Test estimated memory
+        let mem = cfg.estimated_memory_bytes();
+        assert!(mem > 0);
+        assert!(mem < 1024 * 1024); // Should be < 1MB for 64 units
+
+        // Test diagnostics includes new fields
+        let brain = Brain::new(cfg);
+        let diag = brain.diagnostics();
+        assert!(diag.memory_bytes > 0);
+        assert_eq!(diag.execution_tier, ExecutionTier::Scalar);
+    }
+
+    #[test]
+    #[should_panic(expected = "unit_count must be >= 4")]
+    fn config_rejects_tiny_network() {
+        let _ = BrainConfig::with_size(2, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "connectivity_per_unit must be < unit_count")]
+    fn config_rejects_overconnected() {
+        let _ = BrainConfig::with_size(16, 20);
     }
 }

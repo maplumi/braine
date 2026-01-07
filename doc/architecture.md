@@ -33,7 +33,11 @@ Each `Unit` holds only scalars:
 - phase `phase`
 - bias `bias`
 - decay `decay`
-- sparse outgoing `connections: Vec<(target, weight)>`
+
+Connections are stored in **CSR (Compressed Sparse Row)** format for cache efficiency:
+- `offsets: Vec<usize>` — index into targets/weights for each unit
+- `targets: Vec<UnitId>` — target unit IDs (INVALID_UNIT for pruned)
+- `weights: Vec<f32>` — connection weights
 
 No vectors, no matrices.
 
@@ -179,3 +183,44 @@ This system:
 - learns online, locally, and immediately
 
 Important caveat: many ingredients (attractors, local plasticity, oscillations) exist in prior research. The novelty claim should be framed as the **specific combination** aimed at edge constraints and “memory=state” design goals, not as inventing oscillators or Hebbian learning.
+## 7) Execution tiers (scalability)
+
+The substrate supports multiple execution backends via `ExecutionTier`:
+
+| Tier | Feature Flag | Use Case | Implementation |
+|------|-------------|----------|----------------|
+| `Scalar` | (default) | MCU, WASM, baseline | Single-threaded, no SIMD |
+| `Simd` | `--features simd` | ARM NEON, x86 SSE/AVX | Vectorized amp/phase updates (4-wide f32x4) |
+| `Parallel` | `--features parallel` | Desktop/server | Multi-threaded via rayon |
+| `Gpu` | `--features gpu` | Large substrates (10k+ units) | wgpu compute shaders |
+
+### Tier selection
+```rust
+brain.set_execution_tier(ExecutionTier::Parallel);
+```
+
+### Performance characteristics
+- **Scalar**: ~100μs for 512 units, works everywhere
+- **SIMD**: ~30% faster than scalar for dense updates
+- **Parallel**: Better for >1024 units with high connectivity
+- **GPU**: Amortizes at 10k+ units (CPU-GPU transfer overhead)
+
+The sparse neighbor accumulation (graph traversal) runs on CPU for all tiers. Only the dense amplitude/phase update loop is vectorized or offloaded.
+
+## 8) Benchmarking
+
+Run performance benchmarks with criterion:
+
+```bash
+cargo bench                                    # Scalar baseline
+cargo bench --features simd                    # With SIMD
+cargo bench --features parallel                # With rayon
+cargo bench --features "simd,parallel,gpu"     # All features
+```
+
+Benchmarks measure:
+- `step_sizes/*`: step() at 64/128/256/512 units
+- `step_tier/*`: Scalar vs SIMD vs Parallel vs GPU at fixed size
+- `learning/*`: Hebbian update performance
+- `serialization/*`: Save/load round-trip
+- `csr_ops/*`: CSR neighbor iteration

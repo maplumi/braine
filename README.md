@@ -26,6 +26,35 @@ If you want a longer version, see [doc/research-landscape.md](doc/research-lands
 - Capability assays: `cargo run -- assays`
 - Layman-visible environment: `cargo run -- pong-demo`
 
+## Feature flags
+
+| Feature | Dependency | Use Case |
+|---------|------------|----------|
+| `parallel` | rayon | Multi-threaded execution for desktop/server |
+| `simd` | wide | SIMD vectorization (ARM NEON, x86 SSE/AVX) |
+| `gpu` | wgpu | GPU compute shaders for large substrates (10k+ units) |
+
+```bash
+# Build with all optimizations
+cargo build --release --features "simd,parallel"
+
+# Run benchmarks
+cargo bench --features "simd,parallel"
+```
+
+## Execution tiers
+
+The substrate supports tiered execution for scaling from MCUs to servers:
+
+```rust
+use braine::substrate::{Brain, ExecutionTier};
+
+let mut brain = Brain::new(1024, 16, 42);
+brain.set_execution_tier(ExecutionTier::Parallel);  // Use rayon
+brain.set_execution_tier(ExecutionTier::Simd);      // Use SIMD
+brain.set_execution_tier(ExecutionTier::Gpu);       // Use GPU compute
+```
+
 ## 2D visualizer (macroquad)
 - Run the interactive 2D demo: `cargo run -p braine_viz`
 

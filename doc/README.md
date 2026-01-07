@@ -13,7 +13,8 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 - Dense vector embeddings, matrix multiplications, gradient descent, or pretraining.
 
 ## How to navigate
-- [Architecture](architecture.md): core substrate + “body/frame” interface.
+- [Architecture](architecture.md): core substrate + "body/frame" interface + execution tiers.
+- [Performance](performance.md): execution tiers, SIMD, GPU, and benchmarking.
 - [Metrics](metrics.md): simple capability measurements to track progress.
 - [Experiments](experiments.md): experiment log template + current backlog.
 - [Brain image format](brain-image.md): custom persistence format + storage adapters.

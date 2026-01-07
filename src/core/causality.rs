@@ -1,11 +1,27 @@
+// no_std support
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(feature = "std")]
 use std::collections::HashMap;
+#[cfg(feature = "std")]
 use std::io::{self, Read, Write};
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use hashbrown::HashMap;
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "std")]
 use crate::storage;
 
 pub type SymbolId = u32;
 
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct CausalStats {
     pub base_symbols: usize,
     pub edges: usize,
@@ -14,6 +30,7 @@ pub struct CausalStats {
 }
 
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct EdgeStats {
     // Exponentially decayed co-occurrence counts.
     // This is a very cheap proxy for temporal causality on edge devices.
@@ -21,6 +38,7 @@ struct EdgeStats {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct CausalMemory {
     decay: f32,
 
@@ -162,6 +180,7 @@ impl CausalMemory {
         out
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn image_payload_len_bytes(&self) -> u32 {
         let base_n = self.base.len() as u64;
         let edge_n = self.edges.len() as u64;
@@ -179,6 +198,7 @@ impl CausalMemory {
         u32::try_from(len).unwrap_or(u32::MAX)
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn write_image_payload<W: Write>(&self, w: &mut W) -> io::Result<()> {
         storage::write_f32_le(w, self.decay)?;
 
@@ -202,6 +222,7 @@ impl CausalMemory {
         Ok(())
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn read_image_payload<R: Read>(r: &mut R) -> io::Result<Self> {
         let decay = storage::read_f32_le(r)?;
 
@@ -240,4 +261,132 @@ impl CausalMemory {
 
 fn pack(a: SymbolId, b: SymbolId) -> u64 {
     ((a as u64) << 32) | (b as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn causal_memory_observe_updates_base_counts() {
+        let mut mem = CausalMemory::new(0.0); // No decay for predictable testing
+        
+        mem.observe(&[1, 2, 3]);
+        
+        let stats = mem.stats();
+        assert_eq!(stats.base_symbols, 3);
+        assert!(stats.edges > 0); // Co-occurrence edges
+    }
+
+    #[test]
+    fn causal_memory_directed_edges() {
+        let mut mem = CausalMemory::new(0.0);
+        
+        // First observation sets prev_symbols
+        mem.observe(&[1]);
+        // Second observation creates directed edge 1->2
+        mem.observe(&[2]);
+        
+        let stats = mem.stats();
+        assert!(stats.last_directed_edge_updates > 0);
+        
+        // Causal strength should be positive (1 precedes 2)
+        let strength = mem.causal_strength(1, 2);
+        assert!(strength > 0.0, "Expected positive causal strength, got {}", strength);
+    }
+
+    #[test]
+    fn causal_memory_decay() {
+        let mut mem = CausalMemory::new(0.5); // 50% decay
+        
+        mem.observe(&[1]);
+        mem.observe(&[2]);
+        
+        // After decay, base counts should be reduced
+        let _stats1 = mem.stats();
+        
+        mem.observe(&[3]); // This applies decay
+        
+        // Strength of 1->2 should decrease after decay
+        let strength_after = mem.causal_strength(1, 2);
+        assert!(strength_after < 1.0, "Strength should decay");
+    }
+
+    #[test]
+    fn causal_memory_merge() {
+        let mut mem1 = CausalMemory::new(0.0);
+        let mut mem2 = CausalMemory::new(0.0);
+        
+        mem1.observe(&[1]);
+        mem1.observe(&[2]);
+        
+        mem2.observe(&[3]);
+        mem2.observe(&[4]);
+        
+        // Merge mem2 into mem1 at 50% rate
+        mem1.merge_from(&mem2, 0.5);
+        
+        let stats = mem1.stats();
+        assert!(stats.base_symbols >= 2, "Should have symbols from both memories");
+    }
+
+    #[test]
+    fn causal_memory_top_outgoing() {
+        let mut mem = CausalMemory::new(0.0);
+        
+        // Create multiple edges from symbol 1
+        mem.observe(&[1]);
+        mem.observe(&[2]);
+        mem.observe(&[1]);
+        mem.observe(&[3]);
+        mem.observe(&[1]);
+        mem.observe(&[2]); // 2 follows 1 twice, 3 follows once
+        
+        let top = mem.top_outgoing(1, 5);
+        assert!(!top.is_empty(), "Should have outgoing edges");
+    }
+
+    #[test]
+    fn causal_memory_serialization_roundtrip() {
+        let mut mem = CausalMemory::new(0.1);
+        mem.observe(&[1, 2]);
+        mem.observe(&[3, 4]);
+        mem.observe(&[1]);
+        
+        let stats_before = mem.stats();
+        
+        // Serialize
+        let mut buf = Vec::new();
+        mem.write_image_payload(&mut buf).unwrap();
+        
+        // Deserialize
+        let mut cursor = std::io::Cursor::new(&buf);
+        let mem2 = CausalMemory::read_image_payload(&mut cursor).unwrap();
+        
+        let stats_after = mem2.stats();
+        assert_eq!(stats_before.base_symbols, stats_after.base_symbols);
+        assert_eq!(stats_before.edges, stats_after.edges);
+    }
+
+    #[test]
+    fn causal_strength_returns_zero_for_unknown() {
+        let mem = CausalMemory::new(0.0);
+        
+        // Unknown symbols should return 0
+        let strength = mem.causal_strength(999, 888);
+        assert_eq!(strength, 0.0);
+    }
+
+    #[test]
+    fn pack_unpack_roundtrip() {
+        let a: SymbolId = 12345;
+        let b: SymbolId = 67890;
+        let packed = pack(a, b);
+        
+        let unpacked_a = (packed >> 32) as SymbolId;
+        let unpacked_b = (packed & 0xFFFF_FFFF) as SymbolId;
+        
+        assert_eq!(a, unpacked_a);
+        assert_eq!(b, unpacked_b);
+    }
 }

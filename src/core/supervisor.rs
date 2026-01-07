@@ -366,3 +366,187 @@ fn step_one_child(child: &mut ChildBrain) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::substrate::BrainConfig;
+
+    fn make_test_brain() -> Brain {
+        let cfg = BrainConfig::with_size(64, 8).with_seed(42);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("test_stim", 4);
+        brain.define_action("test_act", 4);
+        brain
+    }
+
+    #[test]
+    fn supervisor_spawn_child() {
+        let parent = make_test_brain();
+        let mut sup = Supervisor::new(parent);
+
+        assert_eq!(sup.children.len(), 0);
+
+        let spec = ChildSpec {
+            name: "child1".to_string(),
+            budget_steps: 100,
+            stimulus_name: "new_signal".to_string(),
+            target_action: "test_act".to_string(),
+        };
+
+        sup.spawn_child(spec, 123, ChildConfigOverrides::default());
+
+        assert_eq!(sup.children.len(), 1);
+        assert_eq!(sup.children[0].name, "child1");
+        assert_eq!(sup.children[0].remaining, 100);
+    }
+
+    #[test]
+    fn supervisor_step_consumes_budget() {
+        let parent = make_test_brain();
+        let mut sup = Supervisor::new(parent);
+
+        let spec = ChildSpec {
+            name: "child1".to_string(),
+            budget_steps: 10,
+            stimulus_name: "signal".to_string(),
+            target_action: "test_act".to_string(),
+        };
+
+        sup.spawn_child(spec, 123, ChildConfigOverrides::default());
+
+        let initial_remaining = sup.children[0].remaining;
+        sup.step_children();
+        
+        assert!(sup.children[0].remaining < initial_remaining, 
+            "Budget should decrease after step");
+    }
+
+    #[test]
+    fn supervisor_milk_pool() {
+        let parent = make_test_brain();
+        let mut sup = Supervisor::new(parent);
+
+        sup.add_milk_pool_steps(500);
+
+        let spec = ChildSpec {
+            name: "child1".to_string(),
+            budget_steps: 10,
+            stimulus_name: "signal".to_string(),
+            target_action: "test_act".to_string(),
+        };
+
+        sup.spawn_child(spec, 123, ChildConfigOverrides::default());
+
+        // Manually add a milk request
+        sup.children[0].requests.push(ChildRequest::MoreMilk {
+            extra_steps: 50,
+            reason: "test",
+        });
+
+        let budget_before = sup.children[0].remaining;
+        sup.step_children(); // This handles requests
+
+        // Budget should increase from milk pool
+        assert!(sup.children[0].remaining >= budget_before, 
+            "Child should receive milk pool steps");
+    }
+
+    #[test]
+    fn supervisor_consolidation_policy() {
+        let parent = make_test_brain();
+        let sup = Supervisor::new(parent);
+
+        assert!(sup.policy.weight_threshold > 0.0);
+        assert!(sup.policy.merge_rate > 0.0);
+        assert!(sup.policy.merge_rate <= 1.0);
+    }
+
+    #[test]
+    fn supervisor_parallelism_setting() {
+        let parent = make_test_brain();
+        let mut sup = Supervisor::new(parent);
+
+        sup.set_max_parallelism(4);
+        // Setting to 0 should clamp to 1
+        sup.set_max_parallelism(0);
+        
+        // spawn multiple children and step to verify no panic
+        for i in 0..3 {
+            let spec = ChildSpec {
+                name: format!("child{}", i),
+                budget_steps: 5,
+                stimulus_name: "signal".to_string(),
+                target_action: "test_act".to_string(),
+            };
+            sup.spawn_child(spec, i as u64, ChildConfigOverrides::default());
+        }
+
+        sup.set_max_parallelism(2);
+        sup.step_children(); // Should work with parallel stepping
+    }
+
+    #[test]
+    fn supervisor_recursive_spawning_disabled_by_default() {
+        let parent = make_test_brain();
+        let mut sup = Supervisor::new(parent);
+        sup.add_milk_pool_steps(1000);
+
+        let spec = ChildSpec {
+            name: "child1".to_string(),
+            budget_steps: 10,
+            stimulus_name: "signal".to_string(),
+            target_action: "test_act".to_string(),
+        };
+
+        sup.spawn_child(spec, 123, ChildConfigOverrides::default());
+
+        // Request grandchild spawn
+        sup.children[0].requests.push(ChildRequest::SpawnGrandchild {
+            extra_steps: 100,
+        });
+
+        sup.step_children();
+
+        // Should still be just 1 child (recursive disabled by default)
+        assert_eq!(sup.children.len(), 1, 
+            "Grandchild should not spawn when recursive is disabled");
+    }
+
+    #[test]
+    fn supervisor_recursive_spawning_enabled() {
+        let parent = make_test_brain();
+        let mut sup = Supervisor::new(parent);
+        sup.add_milk_pool_steps(1000);
+        sup.set_recursive_spawning(true);
+
+        let spec = ChildSpec {
+            name: "child1".to_string(),
+            budget_steps: 10,
+            stimulus_name: "signal".to_string(),
+            target_action: "test_act".to_string(),
+        };
+
+        sup.spawn_child(spec, 123, ChildConfigOverrides::default());
+
+        // Request grandchild spawn
+        sup.children[0].requests.push(ChildRequest::SpawnGrandchild {
+            extra_steps: 100,
+        });
+
+        sup.step_children();
+
+        // Should now have 2 children (grandchild spawned)
+        assert_eq!(sup.children.len(), 2, 
+            "Grandchild should spawn when recursive is enabled");
+    }
+
+    #[test]
+    fn child_config_overrides_default() {
+        let overrides = ChildConfigOverrides::default();
+        
+        // Default overrides should have reasonable exploration values
+        assert!(overrides.noise_amp >= 0.0);
+        assert!(overrides.hebb_rate >= 0.0);
+    }
+}
