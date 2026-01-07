@@ -2,6 +2,9 @@
 /braine_viz_metrics.log
 *.log
 
+# Packaging/build artifacts
+/dist/
+
 # Local brain-image artifacts
 *.bbi
 *.bbi.tmp

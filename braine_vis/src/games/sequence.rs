@@ -172,8 +172,7 @@ impl SequenceUi {
         };
 
         brain.note_action(action);
-        let pair = format!("pair::{regime}::{token_name}::{action}");
-        brain.note_action(&pair);
+        brain.note_compound_symbol(&["pair", regime, token_name, action]);
 
         // Save prediction for next-step reward.
         self.prev_prediction = Some(action);

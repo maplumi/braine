@@ -51,6 +51,9 @@ pub struct CausalMemory {
 
     prev_symbols: Vec<SymbolId>,
 
+    // Counts how many observe() calls have occurred. Used to amortize pruning.
+    observe_count: u64,
+
     last_directed_edge_updates: usize,
     last_cooccur_edge_updates: usize,
 }
@@ -63,6 +66,8 @@ impl CausalMemory {
             base: HashMap::new(),
             prev_symbols: Vec::new(),
 
+            observe_count: 0,
+
             last_directed_edge_updates: 0,
             last_cooccur_edge_updates: 0,
         }
@@ -72,12 +77,22 @@ impl CausalMemory {
         self.last_directed_edge_updates = 0;
         self.last_cooccur_edge_updates = 0;
 
+        self.observe_count = self.observe_count.wrapping_add(1);
+
         // Apply decay.
         for v in self.base.values_mut() {
             *v *= 1.0 - self.decay;
         }
         for e in self.edges.values_mut() {
             e.count *= 1.0 - self.decay;
+        }
+
+        // Keep memory bounded: occasionally remove near-zero entries.
+        // Amortized to avoid scanning large maps every tick.
+        if (self.observe_count & 0xFF) == 0 {
+            let thr = 0.001;
+            self.base.retain(|_, v| *v > thr);
+            self.edges.retain(|_, e| e.count > thr);
         }
 
         // Update base counts.
@@ -274,6 +289,7 @@ impl CausalMemory {
             edges,
             base,
             prev_symbols,
+            observe_count: 0,
             last_directed_edge_updates: 0,
             last_cooccur_edge_updates: 0,
         })

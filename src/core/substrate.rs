@@ -374,6 +374,11 @@ pub struct Brain {
 
     reserved: Vec<bool>,
 
+    // Cached membership maps (derived from groups; not serialized).
+    // Used for fast, stable “engram” handling.
+    sensor_member: Vec<bool>,
+    group_member: Vec<bool>,
+
     // If false, unit's outgoing connections do not undergo learning updates.
     // Used to protect a parent identity subset in child brains.
     learning_enabled: Vec<bool>,
@@ -381,6 +386,10 @@ pub struct Brain {
     // External "sensor" input is just injected current to some units.
     sensor_groups: Vec<NamedGroup>,
     action_groups: Vec<NamedGroup>,
+
+    // Fast lookup: stimulus name -> sensor group index.
+    // Derived from `sensor_groups`; not serialized.
+    sensor_group_index: HashMap<String, usize>,
 
     pending_input: Vec<f32>,
 
@@ -460,9 +469,12 @@ impl Brain {
         let pending_input = vec![0.0; cfg.unit_count];
         let reserved = vec![false; cfg.unit_count];
         let learning_enabled = vec![true; cfg.unit_count];
+        let sensor_member = vec![false; cfg.unit_count];
+        let group_member = vec![false; cfg.unit_count];
 
         let mut symbols: HashMap<String, SymbolId> = HashMap::new();
         let mut symbols_rev: Vec<String> = Vec::new();
+        let sensor_group_index: HashMap<String, usize> = HashMap::new();
 
         // Reserve reward symbols up front.
         let reward_pos_symbol = intern_symbol(&mut symbols, &mut symbols_rev, "reward_pos");
@@ -477,6 +489,7 @@ impl Brain {
             tier: ExecutionTier::default(),
             sensor_groups: Vec::new(),
             action_groups: Vec::new(),
+            sensor_group_index,
             pending_input,
             neuromod: 0.0,
             pruned_last_step: 0,
@@ -485,15 +498,49 @@ impl Brain {
             reserved,
             learning_enabled,
 
+            sensor_member,
+            group_member,
+
             symbols,
             symbols_rev,
-            active_symbols: Vec::new(),
+            active_symbols: Vec::with_capacity(32),
             causal,
             reward_pos_symbol,
             reward_neg_symbol,
 
             age_steps: 0,
             telemetry: Telemetry::default(),
+        }
+    }
+
+    fn rebuild_sensor_group_index(&mut self) {
+        self.sensor_group_index.clear();
+        for (idx, g) in self.sensor_groups.iter().enumerate() {
+            self.sensor_group_index.insert(g.name.clone(), idx);
+        }
+    }
+
+    fn rebuild_group_membership(&mut self) {
+        self.sensor_member.fill(false);
+        self.group_member.fill(false);
+
+        for g in &self.sensor_groups {
+            for &id in &g.units {
+                if id < self.sensor_member.len() {
+                    self.sensor_member[id] = true;
+                }
+                if id < self.group_member.len() {
+                    self.group_member[id] = true;
+                }
+            }
+        }
+
+        for g in &self.action_groups {
+            for &id in &g.units {
+                if id < self.group_member.len() {
+                    self.group_member[id] = true;
+                }
+            }
         }
     }
 
@@ -852,21 +899,24 @@ impl Brain {
 
         let age_steps = age_steps.unwrap_or(0);
 
-        Ok(Self {
+        let mut brain = Self {
             cfg,
             units,
             connections,
             tier: ExecutionTier::default(),
             rng: Prng::from_state(rng_state),
             reserved,
+            sensor_member: vec![false; unit_count],
+            group_member: vec![false; unit_count],
             learning_enabled,
             sensor_groups,
+            sensor_group_index: HashMap::new(),
             action_groups,
             pending_input: vec![0.0; unit_count],
             neuromod: 0.0,
             symbols,
             symbols_rev,
-            active_symbols: Vec::new(),
+            active_symbols: Vec::with_capacity(32),
             causal,
             reward_pos_symbol,
             reward_neg_symbol,
@@ -874,7 +924,11 @@ impl Brain {
             births_last_step: 0,
             age_steps,
             telemetry: Telemetry::default(),
-        })
+        };
+
+        brain.rebuild_group_membership();
+        brain.rebuild_sensor_group_index();
+        Ok(brain)
     }
 
     /// Exact serialized size in bytes for the current brain image.
@@ -1384,6 +1438,9 @@ impl Brain {
         child.action_groups = self.action_groups.clone();
         child.reserved = self.reserved.clone();
 
+        // Derived caches depend on groups copied above.
+        child.rebuild_sensor_group_index();
+
         // Copy symbol table + causal memory.
         child.symbols = self.symbols.clone();
         child.symbols_rev = self.symbols_rev.clone();
@@ -1402,6 +1459,9 @@ impl Brain {
             }
         }
         child.learning_enabled = mask;
+
+        // Group membership caches depend on groups copied above.
+        child.rebuild_group_membership();
 
         child
     }
@@ -1473,10 +1533,18 @@ impl Brain {
     /// * `width` - Number of units in the group
     pub fn define_sensor(&mut self, name: &str, width: usize) {
         let units = self.allocate_units(width);
+        for &id in &units {
+            self.sensor_member[id] = true;
+            self.group_member[id] = true;
+        }
         self.sensor_groups.push(NamedGroup {
             name: name.to_string(),
             units,
         });
+
+        // Keep the index map updated.
+        let idx = self.sensor_groups.len() - 1;
+        self.sensor_group_index.insert(name.to_string(), idx);
 
         self.intern(name);
     }
@@ -1493,6 +1561,7 @@ impl Brain {
         // Slight positive bias so actions can become stable attractors.
         for &id in &units {
             self.units[id].bias += 0.02;
+            self.group_member[id] = true;
         }
         self.action_groups.push(NamedGroup {
             name: name.to_string(),
@@ -1519,29 +1588,200 @@ impl Brain {
     /// brain.apply_stimulus(Stimulus::new("vision", 1.0));
     /// ```
     pub fn apply_stimulus(&mut self, stimulus: Stimulus<'_>) {
-        let group_units = self
-            .sensor_groups
-            .iter()
-            .find(|g| g.name == stimulus.name)
-            .map(|g| g.units.clone());
-
-        if let Some(group_units) = group_units {
-            for &id in &group_units {
-                self.pending_input[id] += stimulus.strength;
-            }
-
-            self.note_symbol(stimulus.name);
-
-            if self.telemetry.enabled {
-                if let Some(id) = self.symbol_id(stimulus.name) {
-                    self.telemetry.last_stimuli.push(id);
+        // Hot path: avoid allocations.
+        // We take a raw slice to the group units to avoid cloning while still
+        // being able to mutably update other brain state.
+        let idx = match self.sensor_group_index.get(stimulus.name) {
+            Some(&i) => i,
+            None => match self
+                .sensor_groups
+                .iter()
+                .position(|g| g.name == stimulus.name)
+            {
+                Some(i) => {
+                    // Self-heal if constructed without a rebuild.
+                    self.sensor_group_index.insert(stimulus.name.to_string(), i);
+                    i
                 }
+                None => return,
+            },
+        };
+
+        let (units_ptr, units_len) = match self.sensor_groups.get(idx) {
+            Some(g) => (g.units.as_ptr(), g.units.len()),
+            None => return,
+        };
+
+        // Safety: `sensor_groups` is not mutated during this call, so the pointer
+        // remains valid for the duration of the function.
+        let group_units: &[UnitId] = unsafe { core::slice::from_raw_parts(units_ptr, units_len) };
+
+        for &id in group_units {
+            self.pending_input[id] += stimulus.strength;
+        }
+
+        self.note_symbol(stimulus.name);
+
+        if self.telemetry.enabled {
+            if let Some(id) = self.symbol_id(stimulus.name) {
+                self.telemetry.last_stimuli.push(id);
+            }
+        }
+
+        // One-shot imprinting: when a stimulus is present, create a new "concept" unit
+        // connected to currently active units (including the sensor group itself).
+        // This is the simplest "instant learning" mechanism without training loops.
+        self.imprint_if_novel(group_units, stimulus.strength);
+    }
+
+    #[inline]
+    fn build_compound_symbol<'a>(buf: &'a mut [u8; 256], parts: &[&str]) -> Option<&'a str> {
+        let mut idx: usize = 0;
+        for (i, part) in parts.iter().enumerate() {
+            if i > 0 {
+                let sep = b"::";
+                if idx + sep.len() > buf.len() {
+                    return None;
+                }
+                buf[idx..idx + sep.len()].copy_from_slice(sep);
+                idx += sep.len();
             }
 
-            // One-shot imprinting: when a stimulus is present, create a new "concept" unit
-            // connected to currently active units (including the sensor group itself).
-            // This is the simplest "instant learning" mechanism without training loops.
-            self.imprint_if_novel(&group_units, stimulus.strength);
+            let bytes = part.as_bytes();
+            if idx + bytes.len() > buf.len() {
+                return None;
+            }
+            buf[idx..idx + bytes.len()].copy_from_slice(bytes);
+            idx += bytes.len();
+        }
+
+        // Parts come from valid UTF-8 strings; concatenation preserves UTF-8 validity.
+        Some(unsafe { core::str::from_utf8_unchecked(&buf[..idx]) })
+    }
+
+    /// Record a compound symbol without heap allocation in the hot path.
+    ///
+    /// Example: `note_compound_symbol(&["pair", ctx, action])`.
+    pub fn note_compound_symbol(&mut self, parts: &[&str]) {
+        let mut buf = [0u8; 256];
+        if let Some(name) = Self::build_compound_symbol(&mut buf, parts) {
+            self.note_symbol(name);
+        }
+    }
+
+    #[inline]
+    fn compound_symbol_id(&self, parts: &[&str]) -> Option<SymbolId> {
+        let mut buf = [0u8; 256];
+        let name = Self::build_compound_symbol(&mut buf, parts)?;
+        self.symbol_id(name)
+    }
+
+    /// Allocation-free action selection that returns the **action group index**.
+    ///
+    /// This avoids returning `&str` that would keep borrowing `self` across subsequent
+    /// mutation steps (important for tight control loops like `brained`).
+    pub fn select_action_with_meaning_index(&self, stimulus: &str, alpha: f32) -> (usize, f32) {
+        let alpha = alpha.clamp(0.0, 20.0);
+        let stimulus_id = self.symbol_id(stimulus);
+
+        let mut best: Option<(usize, f32)> = None;
+        for (idx, g) in self.action_groups.iter().enumerate() {
+            let action_name: &str = g.name.as_str();
+
+            // Habit readout: treat negative amplitude as "inactive" and normalize to ~[0,1].
+            let habit = g
+                .units
+                .iter()
+                .map(|&id| self.units[id].amp.max(0.0))
+                .sum::<f32>();
+            let habit_norm = if g.units.is_empty() {
+                0.0
+            } else {
+                (habit / (g.units.len() as f32 * 2.0)).clamp(0.0, 1.0)
+            };
+
+            let meaning = if let Some(aid) = self.symbol_id(action_name) {
+                let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
+                    - self.causal.causal_strength(aid, self.reward_neg_symbol);
+
+                let conditional = if stimulus_id.is_some() {
+                    if let Some(pid) = self.compound_symbol_id(&["pair", stimulus, action_name]) {
+                        self.causal.causal_strength(pid, self.reward_pos_symbol)
+                            - self.causal.causal_strength(pid, self.reward_neg_symbol)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                conditional * 1.0 + global * 0.15
+            } else {
+                0.0
+            };
+
+            let score = habit_norm * 0.5 + alpha * meaning;
+            if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
+                best = Some((idx, score));
+            }
+        }
+
+        best.unwrap_or((usize::MAX, 0.0))
+    }
+
+    /// Borrow the action name for an action group index.
+    #[must_use]
+    pub fn action_name(&self, index: usize) -> Option<&str> {
+        self.action_groups.get(index).map(|g| g.name.as_str())
+    }
+
+    /// Record an action event by action-group index (no heap allocation).
+    pub fn note_action_index(&mut self, index: usize) {
+        // Avoid holding an immutable borrow of self across a mutable call.
+        let (ptr, len) = match self.action_groups.get(index) {
+            Some(g) => {
+                let s = g.name.as_str();
+                (s.as_ptr(), s.len())
+            }
+            None => return,
+        };
+
+        let name = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len)) };
+        self.note_action(name);
+    }
+
+    /// Record a pair::<stimulus>::<action> event by action-group index (no heap allocation).
+    pub fn note_pair_index(&mut self, stimulus: &str, index: usize) {
+        // Avoid holding an immutable borrow of self across a mutable call.
+        let (ptr, len) = match self.action_groups.get(index) {
+            Some(g) => {
+                let s = g.name.as_str();
+                (s.as_ptr(), s.len())
+            }
+            None => return,
+        };
+
+        let action =
+            unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len)) };
+        self.note_compound_symbol(&["pair", stimulus, action]);
+    }
+
+    /// Reinforce an action by index (avoids string lookup + allocation).
+    pub fn reinforce_action_index(&mut self, index: usize, delta_bias: f32) {
+        let Some(group) = self.action_groups.get(index) else {
+            return;
+        };
+
+        if self.telemetry.enabled {
+            if let Some(id) = self.symbol_id(group.name.as_str()) {
+                self.telemetry
+                    .last_reinforced_actions
+                    .push((id, delta_bias));
+            }
+        }
+
+        for &id in &group.units {
+            self.units[id].bias = (self.units[id].bias + delta_bias * 0.01).clamp(-0.5, 0.5);
         }
     }
 
@@ -1614,59 +1854,9 @@ impl Brain {
     ///
     /// `alpha` weights meaning vs habit. `alpha=0` => pure habit.
     pub fn select_action_with_meaning(&mut self, stimulus: &str, alpha: f32) -> (String, f32) {
-        // Allow meaning to dominate when needed (demo/goal-directed mode).
-        let alpha = alpha.clamp(0.0, 20.0);
-        let stimulus_id = self.symbol_id(stimulus);
-
-        let mut best: Option<(String, f32)> = None;
-        for g in &self.action_groups {
-            // Habit readout: treat negative amplitude as "inactive" and normalize to ~[0,1].
-            let habit = g
-                .units
-                .iter()
-                .map(|&id| self.units[id].amp.max(0.0))
-                .sum::<f32>();
-            let habit_norm = if g.units.is_empty() {
-                0.0
-            } else {
-                (habit / (g.units.len() as f32 * 2.0)).clamp(0.0, 1.0)
-            };
-
-            let meaning = if let Some(aid) = self.symbol_id(&g.name) {
-                // Global action value (unconditional).
-                let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
-                    - self.causal.causal_strength(aid, self.reward_neg_symbol);
-
-                // State-conditional value using a composite symbol, if the environment emits it:
-                //   pair::<stimulus>::<action>
-                // This enables learning different actions for different stimuli without requiring
-                // a dense model.
-                let conditional = if stimulus_id.is_some() {
-                    let pair_name = format!("pair::{stimulus}::{}", g.name);
-                    if let Some(pid) = self.symbol_id(&pair_name) {
-                        self.causal.causal_strength(pid, self.reward_pos_symbol)
-                            - self.causal.causal_strength(pid, self.reward_neg_symbol)
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-
-                // If conditional exists it should dominate; global is a weak prior.
-                conditional * 1.0 + global * 0.15
-            } else {
-                0.0
-            };
-
-            // Keep habit as a weak tie-breaker; let meaning drive choice.
-            let score = habit_norm * 0.5 + alpha * meaning;
-            if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
-                best = Some((g.name.clone(), score));
-            }
-        }
-
-        best.unwrap_or_else(|| ("idle".to_string(), 0.0))
+        let (idx, sc) = self.select_action_with_meaning_index(stimulus, alpha);
+        let act = self.action_name(idx).unwrap_or("idle");
+        (act.to_string(), sc)
     }
 
     /// Return actions ranked by the same score used by `select_action_with_meaning`.
@@ -1694,8 +1884,8 @@ impl Brain {
                     - self.causal.causal_strength(aid, self.reward_neg_symbol);
 
                 let conditional = if stimulus_id.is_some() {
-                    let pair_name = format!("pair::{stimulus}::{}", g.name);
-                    if let Some(pid) = self.symbol_id(&pair_name) {
+                    if let Some(pid) = self.compound_symbol_id(&["pair", stimulus, g.name.as_str()])
+                    {
                         self.causal.causal_strength(pid, self.reward_pos_symbol)
                             - self.causal.causal_strength(pid, self.reward_neg_symbol)
                     } else {
@@ -1755,8 +1945,7 @@ impl Brain {
         ctx_prefix: &str,
         top_n: usize,
     ) -> Vec<(String, f32)> {
-        let pair_name = format!("pair::{}::{}", stimulus, action);
-        let Some(pair_id) = self.symbol_id(&pair_name) else {
+        let Some(pair_id) = self.compound_symbol_id(&["pair", stimulus, action]) else {
             return Vec::new();
         };
 
@@ -1780,8 +1969,7 @@ impl Brain {
     /// This can be used as a tie-breaker in action selection.
     /// Returns `Sum_i(P(ctx_i | pair) * value(ctx_i))` where value is reward association.
     fn prediction_bonus(&self, stimulus: &str, action: &str, ctx_prefix: &str) -> f32 {
-        let pair_name = format!("pair::{}::{}", stimulus, action);
-        let Some(pair_id) = self.symbol_id(&pair_name) else {
+        let Some(pair_id) = self.compound_symbol_id(&["pair", stimulus, action]) else {
             return 0.0;
         };
 
@@ -1842,8 +2030,8 @@ impl Brain {
                 let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
                     - self.causal.causal_strength(aid, self.reward_neg_symbol);
                 let conditional = if stimulus_id.is_some() {
-                    let pair_name = format!("pair::{stimulus}::{}", g.name);
-                    if let Some(pid) = self.symbol_id(&pair_name) {
+                    if let Some(pid) = self.compound_symbol_id(&["pair", stimulus, g.name.as_str()])
+                    {
                         self.causal.causal_strength(pid, self.reward_pos_symbol)
                             - self.causal.causal_strength(pid, self.reward_neg_symbol)
                     } else {
@@ -2537,6 +2725,8 @@ impl Brain {
         self.reserved.push(false);
         self.learning_enabled.push(true);
         self.pending_input.push(0.0);
+        self.sensor_member.push(false);
+        self.group_member.push(false);
 
         // Add connections FROM the new unit TO existing units.
         // This requires rebuilding CSR (expensive but rare).
@@ -2683,6 +2873,8 @@ impl Brain {
             self.reserved.push(false);
             self.learning_enabled.push(true);
             self.pending_input.push(0.0);
+            self.sensor_member.push(false);
+            self.group_member.push(false);
 
             // Wire FROM new unit TO group units (new unit can influence the group).
             let outgoing: Vec<UnitId> = group_units
@@ -3185,19 +3377,50 @@ impl Brain {
         let decay = 1.0 - self.cfg.forget_rate;
         let prune_below = self.cfg.prune_below;
 
-        // Apply decay to all weights.
-        for w in &mut self.connections.weights {
-            *w *= decay;
-        }
+        // Apply decay and prune. For “engrams” (sensor↔concept links), keep a weak trace:
+        // allow decay, but do not prune to zero.
+        //
+        // Concept units are reserved but not members of any group; sensor units are tracked
+        // in `sensor_member`. This avoids changing the on-disk image format.
+        let unit_count = self.units.len();
+        for owner in 0..unit_count {
+            let owner_is_concept = self.reserved[owner] && !self.group_member[owner];
+            let owner_is_sensor = self.sensor_member[owner];
 
-        // Mark tiny weights as pruned (tombstone).
-        for idx in 0..self.connections.weights.len() {
-            if self.connections.weights[idx].abs() < prune_below
-                && self.connections.targets[idx] != INVALID_UNIT
-            {
-                self.connections.targets[idx] = INVALID_UNIT;
-                self.connections.weights[idx] = 0.0;
-                self.pruned_last_step += 1;
+            let start = self.connections.offsets[owner];
+            let end = self.connections.offsets[owner + 1];
+            for idx in start..end {
+                let target = self.connections.targets[idx];
+                if target == INVALID_UNIT {
+                    continue;
+                }
+
+                // Decay all active weights.
+                self.connections.weights[idx] *= decay;
+
+                let target_is_concept = self.reserved[target] && !self.group_member[target];
+                let target_is_sensor = self.sensor_member[target];
+                let is_engram_edge = (owner_is_sensor && target_is_concept)
+                    || (owner_is_concept && target_is_sensor);
+
+                let w = self.connections.weights[idx];
+                let abs = w.abs();
+
+                if is_engram_edge {
+                    // Keep a minimal, non-zero trace so it can be rapidly re-strengthened
+                    // on re-exposure (“savings” / muscle memory).
+                    if abs < prune_below {
+                        self.connections.weights[idx] =
+                            if w < 0.0 { -prune_below } else { prune_below };
+                    }
+                    continue;
+                }
+
+                if abs < prune_below {
+                    self.connections.targets[idx] = INVALID_UNIT;
+                    self.connections.weights[idx] = 0.0;
+                    self.pruned_last_step += 1;
+                }
             }
         }
 
@@ -3256,6 +3479,12 @@ impl Brain {
         let Some((concept_id, _)) = candidates.into_iter().next() else {
             return;
         };
+
+        // Reserve the concept so future group allocations can't overwrite it.
+        // (The concept is not itself a sensor/action group member.)
+        if concept_id < self.reserved.len() {
+            self.reserved[concept_id] = true;
+        }
 
         // Connect sensor units to the concept (and back) so it can be recalled.
         for &sid in group_units {

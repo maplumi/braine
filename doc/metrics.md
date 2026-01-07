@@ -65,6 +65,15 @@ We can’t measure power perfectly in software, but we can use proxies:
 - `avg_amp_change_per_step` (activity)
 - `connection_count` (memory footprint)
 
+## Live operational signals (daemon/UI)
+For long-running autonomy (minimal external influence), these are often more informative than raw counts:
+- `pruned_last_step`: structural forgetting rate (should be >0 occasionally; too high may indicate instability)
+- `births_last_step`: neurogenesis activity (should be 0 most of the time, non-zero when saturated)
+- `saturated`: whether the substrate is in a high-load regime (auto-neurogenesis trigger condition)
+- `causal_last_directed_edge_updates` / `causal_last_cooccur_edge_updates`: how much meaning/credit assignment is happening each tick
+
+If these remain at zero while behavior changes, it usually indicates the loop isn’t committing observations or isn’t seeing symbols.
+
 These proxies should decrease with pruning and stabilize with habits.
 
 ## Reproducibility

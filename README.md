@@ -22,9 +22,49 @@ This project behaves like a **continuous-time recurrent substrate** with **local
 If you want a longer version, see [doc/research-landscape.md](doc/research-landscape.md).
 
 ## Quick start
-- Demo: `cargo run`
-- Capability assays: `cargo run -- assays`
-- Layman-visible environment: `cargo run -- pong-demo`
+
+### Building and running
+```bash
+# Build and run core demos
+cargo run                      # Basic food/threat demo
+cargo run -- assays            # Capability assays
+cargo run -- pong-demo         # Pong environment
+
+# Build release binaries
+cargo build --release
+
+# Cross-compile for Windows (requires MinGW toolchain)
+cargo build --release --target x86_64-pc-windows-gnu
+
+# All-in-one: format, lint, build (Linux + Windows), package
+./scripts/dev.sh
+```
+
+### Daemon + UI (Spot game)
+The daemon-based architecture runs the brain as a persistent service:
+```bash
+# Start daemon (listens on 127.0.0.1:9876)
+cargo run --release -p brained
+
+# Launch UI (connects to daemon)
+cargo run --release -p braine_viz
+
+# CLI control (start/stop/status/save/load)
+cargo run --release --bin braine-cli -- status
+cargo run --release --bin braine-cli -- start
+cargo run --release --bin braine-cli -- save
+```
+
+**Persistence**: Brain state auto-saves on `Stop` and persists to:
+- Linux: `~/.local/share/braine/brain.bbi`
+- Windows: `%APPDATA%\Braine\brain.bbi`
+- MacOS: `~/Library/Application Support/Braine/brain.bbi`
+
+### Windows portable bundle
+After building with `./scripts/dev.sh`, the Windows installer bundle is at:
+- `dist/braine-portable.zip` — unzip and run `run_braine.bat` (starts daemon + UI)
+
+See [doc/packaging.md](doc/packaging.md) for details.
 
 ## Feature flags
 

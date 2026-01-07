@@ -81,11 +81,56 @@ A practical edge-deployable agent needs a thin infrastructure layer we’ll call
 - Power management: duty cycling, sleep modes, wake on stimulus.
 - Persistence: snapshot/restore of couplings + a small amount of state.
 
+### Daemon + clients (brained, braine_viz, braine-cli)
+This repo also includes a small “frame” implementation as a background daemon:
+
+- **Daemon**: `brained` owns the single authoritative in-memory brain and runs the online learning loop.
+- **Clients**:
+	- `braine_viz` (Slint UI) polls state and sends control requests.
+	- `braine-cli` sends one-shot requests (start/stop/status, etc).
+
+They communicate over a simple line-delimited JSON protocol over TCP on `127.0.0.1:9876`.
+
+#### Two separate speed knobs (important)
+The daemon intentionally separates:
+
+- **Simulation framerate (FPS)**: how often the daemon ticks/steps.
+	- Request: `SetFramerate { fps }`
+	- CLI: `braine-cli fps <1-1000>`
+
+- **Task trial period (ms)**: how often the Spot task starts a new trial / flips the stimulus.
+	- Request: `SetTrialPeriodMs { ms }`
+	- CLI: `braine-cli trialms <10-60000>`
+
+This decoupling prevents “faster compute” from automatically turning into “faster stimulus flicker”, and makes experiments reproducible (task schedule stays constant even if FPS changes).
+
 ### Frame ↔ Brain interface
 - `Stimulus { name, strength }` excites a named sensor group.
 - Brain produces actions by readout from action groups.
 
 We keep the interface symbolic only at the boundary (names). Internally, representations remain distributed and dynamical.
+
+### Stimulus “encoding” and “decoding” (non-transformer)
+
+For signals like `spot_left` / `spot_right`, think of the Frame as providing a **stable symbolic handle** and the substrate as providing a **distributed encoder/decoder**:
+
+- **Encoder (in substrate terms):** a *named sensor group*.
+	- When `apply_stimulus(Stimulus { name, strength })` runs, it injects input current into that group’s units.
+	- The name is also “interned” as a symbol so causality/meaning can refer to it.
+
+- **One-shot concept formation (imprinting):** if the stimulus is novel/strong enough, the substrate picks a quiet unit and connects sensor↔concept.
+	- This creates a sparse “engram” that can later be reactivated by partial stimulation.
+
+- **Decoder (practical view):** reactivation is *implicit*.
+	- When the stimulus pattern reappears, the sensor units drive the concept unit, which then feeds back into the recurrent dynamics and can bias action selection.
+
+### “Muscle memory” / savings
+
+The substrate has forgetting and pruning, but we want re-learning to be faster for previously-seen stimuli.
+To support this, we keep a weak non-zero trace for **sensor↔concept** links created by imprinting:
+
+- Those links can decay, but they are not pruned to zero.
+- Effect: after a stimulus disappears for a long time, the association may weaken, but on re-exposure it can “snap back” faster because the engram still exists.
 
 ## 4) Causality and meaning (minimal)
 
@@ -95,6 +140,20 @@ We keep the interface symbolic only at the boundary (names). Internally, represe
 - what tended to happen next (reward/other outcomes)
 
 We implement a cheap temporal causal memory: previous events \(A\) → next events \(B\).
+
+### Bounded context (important for edge autonomy)
+To keep long-running deployments stable without manual resets, causal memory is kept **bounded**:
+- Symbol and edge counts decay continuously.
+- Near-zero entries are periodically pruned.
+
+This prevents unbounded growth of the causal hashmaps while keeping the “recently useful” structure.
+
+### What the UI shows
+The daemon (`brained`) reports additional runtime signals to help verify learning and self-maintenance without external supervision:
+- `pruned_last_step` — how much structural forgetting happened recently
+- `births_last_step` — how much neurogenesis happened recently
+- `saturated` — whether the network is in a “needs more capacity” regime (same threshold used by auto-neurogenesis)
+- causal stats: base symbol count, edge count, and last-tick update counts (directed + co-occur)
 
 ```mermaid
 flowchart TD

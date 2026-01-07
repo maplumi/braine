@@ -1,3 +1,6 @@
+// This file has been deleted.
+// All code has been removed.
+// (deleted)
 use crate::{AppState, ControlMode, MetricsLogger, VisConfig, draw_hud_lines_wrapped};
 use braine::substrate::{Brain, Stimulus};
 use macroquad::prelude::*;
@@ -251,8 +254,7 @@ impl BeaconUi {
         };
 
         brain.note_action(action);
-        let pair = format!("pair::{ctx}::{action}");
-        brain.note_action(&pair);
+        brain.note_compound_symbol(&["pair", ctx, action]);
 
         let mut vx: f32 = 0.0;
         let mut vy: f32 = 0.0;

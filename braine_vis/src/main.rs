@@ -1,399 +1,178 @@
-//! Braine Visualizer - Slint UI
-//!
-//! Interactive visualization of the brain substrate with Pong and other games.
+//! Braine Visualizer - Slint UI client
+//! Connects to the `brained` daemon over TCP (127.0.0.1:9876)
 
-use braine::substrate::{Brain, BrainConfig, Stimulus};
-use slint::{Timer, TimerMode};
+use serde::{Deserialize, Serialize};
+use slint::Timer;
 use std::cell::RefCell;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 slint::include_modules!();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Configuration
+// Protocol (mirrors brained daemon)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const WORLD_W: f32 = 400.0;
-const WORLD_H: f32 = 520.0;
-const PADDLE_W: f32 = 80.0;
-const PADDLE_SPEED: f32 = 400.0;
-const BALL_R: f32 = 10.0;
-const BALL_SPEED_Y: f32 = 200.0;
-const CATCH_MARGIN: f32 = 12.0;
-const PADDLE_Y: f32 = WORLD_H - 30.0;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Game state
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ControlMode {
-    Human,
-    Braine,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum Request {
+    GetState,
+    Start,
+    Stop,
+    SetMode { mode: String },
+    HumanAction { action: String },
+    TriggerDream,
+    TriggerBurst,
+    TriggerSync,
+    TriggerImprint,
+    SaveBrain,
+    LoadBrain,
+    ResetBrain,
+    SetFramerate { fps: u32 },
+    SetTrialPeriodMs { ms: u32 },
 }
 
-#[derive(Debug)]
-struct PongGame {
-    ball_x: f32,
-    ball_y: f32,
-    ball_vx: f32,
-    ball_vy: f32,
-    #[allow(dead_code)]
-    decoy_x: f32,
-    #[allow(dead_code)]
-    decoy_y: f32,
-    #[allow(dead_code)]
-    decoy_vx: f32,
-    #[allow(dead_code)]
-    decoy_vy: f32,
-    paddle_x: f32,
-    
-    hits: u32,
-    misses: u32,
-    score: f32,
-    recent: Vec<bool>,
-    
-    rng_seed: u64,
-    
-    sensor_axis_flipped: bool,
-    shift_every_outcomes: u32,
-    
-    misbucket_p: f32,
-    rel_jitter: f32,
-    explore_p: f32,
-    decoy_enabled: bool,
-    difficulty_level: u8,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum Response {
+    State(DaemonStateSnapshot),
+    Success { message: String },
+    Error { message: String },
 }
 
-impl PongGame {
-    fn new() -> Self {
-        let mut game = Self {
-            ball_x: WORLD_W / 2.0,
-            ball_y: 40.0,
-            ball_vx: 0.0,
-            ball_vy: BALL_SPEED_Y,
-            decoy_x: WORLD_W / 3.0,
-            decoy_y: 60.0,
-            decoy_vx: 50.0,
-            decoy_vy: BALL_SPEED_Y * 0.92,
-            paddle_x: WORLD_W / 2.0,
-            
-            hits: 0,
-            misses: 0,
-            score: 0.0,
-            recent: Vec::new(),
-            
-            rng_seed: 12345,
-            
-            sensor_axis_flipped: false,
-            shift_every_outcomes: 160,
-            
-            misbucket_p: 0.0,
-            rel_jitter: 0.0,
-            explore_p: 0.12,
-            decoy_enabled: false,
-            difficulty_level: 0,
-        };
-        game.apply_difficulty();
-        game.reset_ball();
-        game
-    }
-    
-    fn apply_difficulty(&mut self) {
-        match self.difficulty_level {
-            0 => {
-                // Tutorial
-                self.misbucket_p = 0.0;
-                self.rel_jitter = 0.0;
-                self.decoy_enabled = false;
-                self.explore_p = 0.12;
-                self.shift_every_outcomes = 9999;
-            }
-            1 => {
-                // Easy
-                self.misbucket_p = 0.0;
-                self.rel_jitter = 0.0;
-                self.decoy_enabled = false;
-                self.explore_p = 0.10;
-                self.shift_every_outcomes = self.shift_every_outcomes.max(240);
-            }
-            2 => {
-                // Medium
-                self.misbucket_p = 0.04;
-                self.rel_jitter = 10.0;
-                self.decoy_enabled = false;
-                self.explore_p = 0.08;
-                self.shift_every_outcomes = self.shift_every_outcomes.max(200);
-            }
-            3 => {
-                // Hard
-                self.misbucket_p = 0.08;
-                self.rel_jitter = 18.0;
-                self.decoy_enabled = true;
-                self.explore_p = 0.06;
-                self.shift_every_outcomes = self.shift_every_outcomes.max(160);
-            }
-            _ => {
-                // Expert
-                self.misbucket_p = 0.12;
-                self.rel_jitter = 26.0;
-                self.decoy_enabled = true;
-                self.explore_p = 0.04;
-                self.shift_every_outcomes = self.shift_every_outcomes.max(120);
-            }
-        }
-    }
-    
-    fn difficulty_name(&self) -> &'static str {
-        match self.difficulty_level {
-            0 => "Tutorial",
-            1 => "Easy",
-            2 => "Medium",
-            3 => "Hard",
-            _ => "Expert",
-        }
-    }
-    
-    fn easier(&mut self) {
-        if self.difficulty_level > 0 {
-            self.difficulty_level -= 1;
-            self.apply_difficulty();
-        }
-    }
-    
-    fn harder(&mut self) {
-        if self.difficulty_level < 4 {
-            self.difficulty_level += 1;
-            self.apply_difficulty();
-        }
-    }
-    
-    fn flip_slower(&mut self) {
-        self.shift_every_outcomes = (self.shift_every_outcomes + 40).clamp(40, 400);
-    }
-    
-    fn flip_faster(&mut self) {
-        self.shift_every_outcomes = self.shift_every_outcomes.saturating_sub(40).clamp(40, 400);
-    }
-    
-    fn outcomes(&self) -> u32 {
-        self.hits + self.misses
-    }
-    
-    fn flip_countdown(&self) -> u32 {
-        let shift = self.shift_every_outcomes.max(1);
-        let o = self.outcomes();
-        if o == 0 { shift } else { shift - (o % shift) }
-    }
-    
-    fn recent_rate(&self) -> f32 {
-        if self.recent.is_empty() { return 0.5; }
-        let good = self.recent.iter().filter(|&&b| b).count();
-        good as f32 / self.recent.len() as f32
-    }
-    
-    fn reset_ball(&mut self) {
-        self.rng_seed = self.rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let u = (self.rng_seed >> 11) as u32;
-        let x01 = (u as f32) / (u32::MAX as f32);
-        
-        if self.difficulty_level == 0 {
-            // Tutorial: ball spawns above paddle
-            let offset = (x01 - 0.5) * 60.0;
-            self.ball_x = (self.paddle_x + offset).clamp(BALL_R, WORLD_W - BALL_R);
-            self.ball_vx = 0.0;
-        } else {
-            self.ball_x = BALL_R + x01 * (WORLD_W - 2.0 * BALL_R);
-            self.rng_seed = self.rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let u2 = (self.rng_seed >> 11) as u32;
-            let s01 = (u2 as f32) / (u32::MAX as f32);
-            let drift = match self.difficulty_level {
-                1 => 90.0,
-                2 => 120.0,
-                3 => 140.0,
-                _ => 170.0,
-            };
-            self.ball_vx = (s01 * 2.0 - 1.0) * drift;
-        }
-        self.ball_y = 40.0;
-        self.ball_vy = BALL_SPEED_Y;
-    }
-    
-    fn bucket_index(&self, rel: f32) -> usize {
-        if rel <= -120.0 { 0 }
-        else if rel <= -30.0 { 1 }
-        else if rel.abs() <= 18.0 { 2 }
-        else if rel >= 120.0 { 4 }
-        else { 3 }
-    }
-    
-    fn ctx_name(idx: usize) -> &'static str {
-        match idx {
-            0 => "pong_ctx_far_left",
-            1 => "pong_ctx_left",
-            2 => "pong_ctx_aligned",
-            3 => "pong_ctx_right",
-            _ => "pong_ctx_far_right",
-        }
-    }
-    
-    fn tick(&mut self, mode: ControlMode, brain: &mut Brain, dt: f32) -> (f32, bool) {
-        // Sensor mapping
-        let rel_raw = self.ball_x - self.paddle_x;
-        let rel_seen = if self.sensor_axis_flipped { -rel_raw } else { rel_raw };
-        let ctx_idx = self.bucket_index(rel_seen);
-        let ctx = Self::ctx_name(ctx_idx);
-        
-        // Stimulus
-        brain.apply_stimulus(Stimulus::new(ctx, 1.0));
-        brain.step();
-        
-        // Action
-        let action: &'static str = match mode {
-            ControlMode::Human => "stay", // Keyboard not available in Slint yet
-            ControlMode::Braine => {
-                let (a, _) = brain.select_action_with_meaning(ctx, 6.0);
-                if a == "left" { "left" }
-                else if a == "right" { "right" }
-                else { "stay" }
-            }
-        };
-        
-        brain.note_action(action);
-        let pair = format!("pair::{ctx}::{action}");
-        brain.note_action(&pair);
-        
-        // Move paddle
-        let ax = match action {
-            "left" => -1.0,
-            "right" => 1.0,
-            _ => 0.0,
-        };
-        self.paddle_x += ax * PADDLE_SPEED * dt;
-        self.paddle_x = self.paddle_x.clamp(PADDLE_W / 2.0, WORLD_W - PADDLE_W / 2.0);
-        
-        // Ball physics
-        self.ball_x += self.ball_vx * dt;
-        self.ball_y += self.ball_vy * dt;
-        
-        // Bounce off walls
-        if self.ball_x <= BALL_R { self.ball_vx = self.ball_vx.abs(); }
-        if self.ball_x >= WORLD_W - BALL_R { self.ball_vx = -self.ball_vx.abs(); }
-        if self.ball_y <= BALL_R { self.ball_vy = self.ball_vy.abs(); }
-        
-        // Check paddle collision
-        let mut reward = 0.0f32;
-        let mut just_flipped = false;
-        
-        let half = PADDLE_W / 2.0;
-        let margin = if self.difficulty_level == 0 { 25.0 } else { CATCH_MARGIN };
-        let hit_left = self.paddle_x - half - margin;
-        let hit_right = self.paddle_x + half + margin;
-        
-        if self.ball_vy > 0.0 && self.ball_y + BALL_R >= PADDLE_Y {
-            if self.ball_x >= hit_left && self.ball_x <= hit_right {
-                // Hit!
-                self.hits += 1;
-                self.score += 1.0;
-                reward = 1.0;
-                self.recent.push(true);
-                self.ball_vy = -self.ball_vy.abs();
-                
-                // Reinforce
-                brain.set_neuromodulator(0.5);
-                brain.reinforce_action(action, 0.08);
-                brain.reinforce_action(&pair, 0.15);
-            } else if self.ball_y > WORLD_H {
-                // Miss
-                self.misses += 1;
-                self.score -= 0.5;
-                reward = -1.0;
-                self.recent.push(false);
-                self.reset_ball();
-                
-                // Punish
-                brain.set_neuromodulator(-0.3);
-                brain.reinforce_action(action, -0.06);
-                brain.reinforce_action(&pair, -0.10);
-            }
-            
-            // Check for flip
-            let outcomes_now = self.outcomes();
-            if self.shift_every_outcomes < 9999 && outcomes_now > 0 && outcomes_now % self.shift_every_outcomes == 0 {
-                self.sensor_axis_flipped = !self.sensor_axis_flipped;
-                just_flipped = true;
-            }
-        }
-        
-        if self.recent.len() > 400 {
-            self.recent.drain(0..100);
-        }
-        
-        brain.commit_observation();
-        
-        (reward, just_flipped)
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Application state
-// ═══════════════════════════════════════════════════════════════════════════
-
-struct AppState {
-    brain: Brain,
-    pong: PongGame,
-    mode: ControlMode,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonStateSnapshot {
+    running: bool,
+    mode: String,
     frame: u64,
-    last_pred_ctx: String,
-    last_pred_bonus: f32,
+    #[serde(default)]
+    target_fps: u32,
+    game: DaemonGameState,
+    hud: DaemonHudData,
+    brain_stats: DaemonBrainStats,
 }
 
-impl AppState {
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonGameState {
+    spot_is_left: bool,
+    response_made: bool,
+    trial_frame: u32,
+    trial_duration: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonHudData {
+    trials: u32,
+    correct: u32,
+    incorrect: u32,
+    accuracy: f32,
+    recent_rate: f32,
+    last_100_rate: f32,
+    neuromod: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonBrainStats {
+    unit_count: usize,
+    connection_count: usize,
+    #[serde(default)]
+    pruned_last_step: usize,
+    #[serde(default)]
+    births_last_step: usize,
+    #[serde(default)]
+    saturated: bool,
+    avg_amp: f32,
+    avg_weight: f32,
+    memory_bytes: usize,
+    #[serde(default)]
+    causal_base_symbols: usize,
+    causal_edges: usize,
+    #[serde(default)]
+    causal_last_directed_edge_updates: usize,
+    #[serde(default)]
+    causal_last_cooccur_edge_updates: usize,
+    age_steps: u64,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Daemon client
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct DaemonClient {
+    tx: mpsc::Sender<Request>,
+    snapshot: Arc<Mutex<DaemonStateSnapshot>>, // latest state from daemon
+}
+
+impl DaemonClient {
     fn new() -> Self {
-        let mut brain = Brain::new(BrainConfig {
-            unit_count: 160,
-            connectivity_per_unit: 8,
-            dt: 0.05,
-            base_freq: 1.0,
-            noise_amp: 0.015,
-            noise_phase: 0.008,
-            global_inhibition: 0.07,
-            hebb_rate: 0.09,
-            forget_rate: 0.0015,
-            prune_below: 0.0008,
-            coactive_threshold: 0.55,
-            phase_lock_threshold: 0.6,
-            imprint_rate: 0.6,
-            seed: Some(123),
-            causal_decay: 0.01,
+        let (tx, rx) = mpsc::channel::<Request>();
+        let snapshot = Arc::new(Mutex::new(DaemonStateSnapshot::default()));
+        let snap_clone = Arc::clone(&snapshot);
+
+        // Background worker: manages TCP connection and request/response loop
+        thread::spawn(move || loop {
+            match TcpStream::connect("127.0.0.1:9876") {
+                Ok(mut stream) => {
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let req = match rx.recv() {
+                            Ok(r) => r,
+                            Err(_) => return, // channel closed
+                        };
+                        // Send request
+                        if let Ok(line) = serde_json::to_string(&req) {
+                            if stream.write_all(line.as_bytes()).is_err() {
+                                break;
+                            }
+                            if stream.write_all(b"\n").is_err() {
+                                break;
+                            }
+                        }
+                        // Read response
+                        let mut resp_line = String::new();
+                        if reader.read_line(&mut resp_line).is_err() {
+                            break;
+                        }
+                        if resp_line.trim().is_empty() {
+                            continue;
+                        }
+                        match serde_json::from_str::<Response>(&resp_line) {
+                            Ok(Response::State(state)) => {
+                                if let Ok(mut s) = snap_clone.lock() {
+                                    *s = state;
+                                }
+                            }
+                            Ok(Response::Success { .. }) => {
+                                // nothing to store
+                            }
+                            Ok(Response::Error { message }) => {
+                                eprintln!("Daemon error: {}", message);
+                            }
+                            Err(e) => eprintln!("Bad response: {}", e),
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Unable to connect to brained: {}. Retrying in 1s...", e);
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
         });
-        
-        // Register Pong symbols
-        brain.define_sensor("pong_ctx_far_left", 4);
-        brain.define_sensor("pong_ctx_left", 4);
-        brain.define_sensor("pong_ctx_aligned", 4);
-        brain.define_sensor("pong_ctx_right", 4);
-        brain.define_sensor("pong_ctx_far_right", 4);
-        brain.define_action("left", 6);
-        brain.define_action("right", 6);
-        brain.define_action("stay", 4);
-        
-        brain.set_observer_telemetry(true);
-        
-        Self {
-            brain,
-            pong: PongGame::new(),
-            mode: ControlMode::Braine,
-            frame: 0,
-            last_pred_ctx: String::new(),
-            last_pred_bonus: 0.0,
-        }
+
+        Self { tx, snapshot }
     }
-    
-    fn tick(&mut self, dt: f32) {
-        self.frame += 1;
-        let (_reward, _flipped) = self.pong.tick(self.mode, &mut self.brain, dt);
+
+    fn send(&self, req: Request) {
+        let _ = self.tx.send(req);
+    }
+
+    fn snapshot(&self) -> DaemonStateSnapshot {
+        self.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
     }
 }
 
@@ -403,123 +182,253 @@ impl AppState {
 
 fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
-    let state = Rc::new(RefCell::new(AppState::new()));
-    
-    // Initialize UI state
+    let client = Rc::new(DaemonClient::new());
+
+    // Track local control changes so the next poll doesn't immediately overwrite
+    // the slider position before the daemon applies the request.
+    let pending_fps: Rc<RefCell<Option<(u32, Instant)>>> = Rc::new(RefCell::new(None));
+    let pending_trial_ms: Rc<RefCell<Option<(u32, Instant)>>> = Rc::new(RefCell::new(None));
+
+    // Initial UI data
     ui.set_learning(LearningState {
         learning_enabled: true,
         attention_boost: 0.5,
         attention_enabled: false,
         burst_mode_enabled: false,
-        auto_dream_on_flip: true,
-        auto_burst_on_slump: true,
-        prediction_enabled: true,
-        prediction_weight: 2.0,
+        auto_dream_on_flip: false,
+        auto_burst_on_slump: false,
+        prediction_enabled: false,
+        prediction_weight: 0.0,
     });
-    
-    // Wire up callbacks
+
+    // Callbacks to daemon
     {
-        let state_clone = state.clone();
+        let c = client.clone();
         ui.on_mode_changed(move |is_braine| {
-            let mut s = state_clone.borrow_mut();
-            s.mode = if is_braine { ControlMode::Braine } else { ControlMode::Human };
+            c.send(Request::SetMode {
+                mode: if is_braine { "braine" } else { "human" }.to_string(),
+            });
         });
     }
-    
+
     {
-        let state_clone = state.clone();
-        ui.on_difficulty_up(move || {
-            state_clone.borrow_mut().pong.harder();
+        let c = client.clone();
+        ui.on_running_changed(move |is_running| {
+            if is_running {
+                c.send(Request::Start);
+            } else {
+                c.send(Request::Stop);
+            }
         });
     }
-    
+
+    // Learning controls
     {
-        let state_clone = state.clone();
-        ui.on_difficulty_down(move || {
-            state_clone.borrow_mut().pong.easier();
-        });
+        let c = client.clone();
+        ui.on_trigger_dream(move || c.send(Request::TriggerDream));
     }
-    
     {
-        let state_clone = state.clone();
-        ui.on_flip_faster(move || {
-            state_clone.borrow_mut().pong.flip_faster();
-        });
+        let c = client.clone();
+        ui.on_trigger_burst(move || c.send(Request::TriggerBurst));
     }
-    
     {
-        let state_clone = state.clone();
-        ui.on_flip_slower(move || {
-            state_clone.borrow_mut().pong.flip_slower();
-        });
+        let c = client.clone();
+        ui.on_trigger_sync(move || c.send(Request::TriggerSync));
     }
-    
     {
-        let state_clone = state.clone();
-        ui.on_reset_brain(move || {
-            let mut s = state_clone.borrow_mut();
-            *s = AppState::new();
+        let c = client.clone();
+        ui.on_trigger_imprint(move || c.send(Request::TriggerImprint));
+    }
+
+    // Storage
+    {
+        let c = client.clone();
+        ui.on_save_brain(move || c.send(Request::SaveBrain));
+    }
+    {
+        let c = client.clone();
+        ui.on_load_brain(move || c.send(Request::LoadBrain));
+    }
+    {
+        let c = client.clone();
+        ui.on_reset_brain(move || c.send(Request::ResetBrain));
+    }
+
+    // Framerate control
+    {
+        let c = client.clone();
+        let pending = pending_fps.clone();
+        ui.on_set_framerate(move |fps| {
+            *pending.borrow_mut() = Some((fps as u32, Instant::now()));
+            c.send(Request::SetFramerate { fps: fps as u32 })
         });
     }
-    
-    // Game loop timer (~60 FPS)
-    let timer = Timer::default();
+
+    // Trial period control
+    {
+        let c = client.clone();
+        let pending = pending_trial_ms.clone();
+        ui.on_set_trial_period_ms(move |ms| {
+            *pending.borrow_mut() = Some((ms as u32, Instant::now()));
+            c.send(Request::SetTrialPeriodMs { ms: ms as u32 })
+        });
+    }
+
+    // Human input
+    {
+        let c = client.clone();
+        ui.on_human_key_pressed(move |key| match key.as_str() {
+            "left" => c.send(Request::HumanAction {
+                action: "left".into(),
+            }),
+            "right" => c.send(Request::HumanAction {
+                action: "right".into(),
+            }),
+            _ => {}
+        });
+    }
+    {
+        let c = client.clone();
+        ui.on_human_key_released(move |_key| {
+            // No-op; actions are instantaneous
+            let _ = c.clone();
+        });
+    }
+
+    // Poll daemon for state.
+    // This is adaptive: when you slow FPS down, the UI poll slows too so the spot changes remain visible.
     let ui_weak = ui.as_weak();
-    let state_clone = state.clone();
-    
-    timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
-        let ui = ui_weak.unwrap();
-        
-        if ui.get_paused() {
-            return;
-        }
-        
-        let mut s = state_clone.borrow_mut();
-        let dt = 0.016;
-        s.tick(dt);
-        
-        // Update Pong state for rendering
-        ui.set_pong(PongState {
-            ball_x: s.pong.ball_x,
-            ball_y: s.pong.ball_y,
-            paddle_x: s.pong.paddle_x,
-            decoy_x: s.pong.decoy_x,
-            decoy_y: s.pong.decoy_y,
-            decoy_enabled: s.pong.decoy_enabled,
-        });
-        
-        // Update HUD
-        ui.set_hud(HudData {
-            frame: s.frame as i32,
-            hits: s.pong.hits as i32,
-            misses: s.pong.misses as i32,
-            score: s.pong.score,
-            recent_rate: s.pong.recent_rate(),
-            difficulty: s.pong.difficulty_level as i32,
-            difficulty_name: s.pong.difficulty_name().into(),
-            flip_countdown: s.pong.flip_countdown() as i32,
-            sensor_flipped: s.pong.sensor_axis_flipped,
-            neuromod: s.brain.neuromodulator(),
-            explore_p: s.pong.explore_p,
-            decoy_enabled: s.pong.decoy_enabled,
-            prediction_enabled: ui.get_learning().prediction_enabled,
-            pred_ctx: s.last_pred_ctx.clone().into(),
-            pred_bonus: s.last_pred_bonus,
-        });
-        
-        // Update brain stats
-        let diag = s.brain.diagnostics();
-        let causal = s.brain.causal_stats();
-        ui.set_brain_stats(BrainStats {
-            unit_count: diag.unit_count as i32,
-            connection_count: diag.connection_count as i32,
-            avg_amp: diag.avg_amp,
-            avg_weight: diag.avg_weight,
-            memory_bytes: diag.memory_bytes as i32,
-            causal_edges: causal.edges as i32,
-            age_steps: s.brain.age_steps() as i32,
+    let c = client.clone();
+    let pending_fps_poll = pending_fps.clone();
+    let pending_trial_ms_poll = pending_trial_ms.clone();
+
+    type PollFn = Rc<dyn Fn(Duration)>;
+    let poll_fn: Rc<RefCell<Option<PollFn>>> = Rc::new(RefCell::new(None));
+    let poll_fn_setter = poll_fn.clone();
+
+    let poll_impl: PollFn = Rc::new(move |delay: Duration| {
+        let ui_weak = ui_weak.clone();
+        let c = c.clone();
+        let poll_fn = poll_fn_setter.clone();
+        let pending_fps_poll = pending_fps_poll.clone();
+        let pending_trial_ms_poll = pending_trial_ms_poll.clone();
+
+        Timer::single_shot(delay, move || {
+            c.send(Request::GetState);
+            let snap = c.snapshot();
+
+            let now = Instant::now();
+
+            let mut next_delay = Duration::from_millis(100);
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_game(GameState {
+                    spot_is_left: snap.game.spot_is_left,
+                    response_made: snap.game.response_made,
+                    trial_frame: snap.game.trial_frame as i32,
+                    trial_duration: snap.game.trial_duration as i32,
+                });
+                ui.set_hud(HudData {
+                    frame: snap.frame as i32,
+                    trials: snap.hud.trials as i32,
+                    correct: snap.hud.correct as i32,
+                    incorrect: snap.hud.incorrect as i32,
+                    accuracy: snap.hud.accuracy,
+                    recent_rate: snap.hud.recent_rate,
+                    last_100_rate: snap.hud.last_100_rate,
+                    neuromod: snap.hud.neuromod,
+                });
+                ui.set_brain_stats(BrainStats {
+                    unit_count: snap.brain_stats.unit_count as i32,
+                    connection_count: snap.brain_stats.connection_count as i32,
+                    pruned_last_step: snap.brain_stats.pruned_last_step as i32,
+                    births_last_step: snap.brain_stats.births_last_step as i32,
+                    saturated: snap.brain_stats.saturated,
+                    avg_amp: snap.brain_stats.avg_amp,
+                    avg_weight: snap.brain_stats.avg_weight,
+                    memory_bytes: snap.brain_stats.memory_bytes as i32,
+                    causal_base_symbols: snap.brain_stats.causal_base_symbols as i32,
+                    causal_edges: snap.brain_stats.causal_edges as i32,
+                    causal_last_directed_updates: snap.brain_stats.causal_last_directed_edge_updates
+                        as i32,
+                    causal_last_cooccur_updates: snap.brain_stats.causal_last_cooccur_edge_updates
+                        as i32,
+                    age_steps: snap.brain_stats.age_steps as i32,
+                });
+                ui.set_is_braine_mode(snap.mode != "human");
+                ui.set_running(snap.running);
+
+                // Keep the UI's displayed FPS in sync with the daemon.
+                if snap.target_fps != 0 {
+                    let apply = match pending_fps_poll.borrow().as_ref() {
+                        Some((want, t))
+                            if now.duration_since(*t) < Duration::from_millis(800)
+                                && snap.target_fps != *want =>
+                        {
+                            false
+                        }
+                        Some((want, _)) if snap.target_fps == *want => {
+                            pending_fps_poll.borrow_mut().take();
+                            true
+                        }
+                        Some((_, t)) if now.duration_since(*t) >= Duration::from_millis(800) => {
+                            pending_fps_poll.borrow_mut().take();
+                            true
+                        }
+                        None => true,
+                        _ => true,
+                    };
+
+                    if apply {
+                        ui.set_framerate(snap.target_fps as i32);
+                    }
+                }
+
+                // Keep the UI's displayed trial period in sync with the daemon.
+                if snap.game.trial_duration != 0 {
+                    let apply = match pending_trial_ms_poll.borrow().as_ref() {
+                        Some((want, t))
+                            if now.duration_since(*t) < Duration::from_millis(800)
+                                && snap.game.trial_duration != *want =>
+                        {
+                            false
+                        }
+                        Some((want, _)) if snap.game.trial_duration == *want => {
+                            pending_trial_ms_poll.borrow_mut().take();
+                            true
+                        }
+                        Some((_, t)) if now.duration_since(*t) >= Duration::from_millis(800) => {
+                            pending_trial_ms_poll.borrow_mut().take();
+                            true
+                        }
+                        None => true,
+                        _ => true,
+                    };
+
+                    if apply {
+                        ui.set_trial_period_ms(snap.game.trial_duration as i32);
+                    }
+                }
+
+                // Choose the next poll rate.
+                // - When running: poll ~once per sim step (bounded), so slowing FPS slows visible updates.
+                // - When stopped: poll slower.
+                if snap.running {
+                    let fps = snap.target_fps.max(1);
+                    let ms = (1000 / fps).max(16) as u64;
+                    next_delay = Duration::from_millis(ms.min(1000));
+                } else {
+                    next_delay = Duration::from_millis(250);
+                }
+            }
+
+            if let Some(cb) = poll_fn.borrow().as_ref() {
+                cb(next_delay);
+            }
         });
     });
-    
+
+    *poll_fn.borrow_mut() = Some(poll_impl.clone());
+    poll_impl(Duration::from_millis(100));
+
     ui.run()
 }

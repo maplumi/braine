@@ -259,8 +259,7 @@ impl ForageUi {
         };
 
         brain.note_action(action);
-        let pair = format!("pair::{ctx_name}::{action}");
-        brain.note_action(&pair);
+        brain.note_compound_symbol(&["pair", ctx_name, action]);
 
         let mut vx: f32 = 0.0;
         let mut vy: f32 = 0.0;

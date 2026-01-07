@@ -1,28 +1,21 @@
-// Braine Visualizer UI - Slint markup
-// Main application window with tabbed interface
+// Braine Visualizer UI - Minimal Spot Game
+// Simple left/right discrimination task to test brain learning
 
-import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox, LineEdit, SpinBox, ProgressIndicator } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox } from "std-widgets.slint";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Data structures exposed to Rust
+// Data structures
 // ═══════════════════════════════════════════════════════════════════════════
 
 export struct HudData {
     frame: int,
-    hits: int,
-    misses: int,
-    score: float,
+    trials: int,
+    correct: int,
+    incorrect: int,
+    accuracy: float,
     recent-rate: float,
-    difficulty: int,
-    difficulty-name: string,
-    flip-countdown: int,
-    sensor-flipped: bool,
+    last-100-rate: float,
     neuromod: float,
-    explore-p: float,
-    decoy-enabled: bool,
-    prediction-enabled: bool,
-    pred-ctx: string,
-    pred-bonus: float,
 }
 
 export struct LearningState {
@@ -39,24 +32,28 @@ export struct LearningState {
 export struct BrainStats {
     unit-count: int,
     connection-count: int,
+    pruned-last-step: int,
+    births-last-step: int,
+    saturated: bool,
     avg-amp: float,
     avg-weight: float,
     memory-bytes: int,
+    causal-base-symbols: int,
     causal-edges: int,
+    causal-last-directed-updates: int,
+    causal-last-cooccur-updates: int,
     age-steps: int,
 }
 
-export struct PongState {
-    ball-x: float,
-    ball-y: float,
-    paddle-x: float,
-    decoy-x: float,
-    decoy-y: float,
-    decoy-enabled: bool,
+export struct GameState {
+    spot-is-left: bool,
+    response-made: bool,
+    trial-frame: int,
+    trial-duration: int,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Color theme
+// Theme
 // ═══════════════════════════════════════════════════════════════════════════
 
 global Theme {
@@ -72,56 +69,82 @@ global Theme {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Custom game canvas (Pong)
+// Spot Game Canvas
 // ═══════════════════════════════════════════════════════════════════════════
 
-component PongCanvas inherits Rectangle {
-    in property <PongState> state;
-    in property <float> world-width: 400;
-    in property <float> world-height: 520;
+component SpotCanvas inherits Rectangle {
+    in property <GameState> game;
     
     background: Theme.bg-dark;
     border-color: Theme.border;
-    border-width: 1px;
+    border-width: 2px;
     
-    // Scale factors (dimensionless ratios)
-    property <float> scale-x: self.width / 1px / world-width;
-    property <float> scale-y: self.height / 1px / world-height;
-    
-    // Paddle
+    // Center divider
     Rectangle {
-        x: (state.paddle-x - 40) * scale-x * 1px;
-        y: (world-height - 30) * scale-y * 1px;
-        width: 80 * scale-x * 1px;
-        height: 14 * scale-y * 1px;
-        background: Theme.accent-blue;
-        border-radius: 4px;
+        x: parent.width / 2 - 1px;
+        width: 2px;
+        height: parent.height;
+        background: #ffffff20;
     }
     
-    // Ball
-    Rectangle {
-        x: (state.ball-x - 10) * scale-x * 1px;
-        y: (state.ball-y - 10) * scale-y * 1px;
-        width: 20 * scale-x * 1px;
-        height: 20 * scale-y * 1px;
-        background: white;
-        border-radius: self.width / 2;
+    // Left label
+    Text {
+        x: parent.width * 0.25 - 25px;
+        y: 20px;
+        text: "LEFT";
+        color: Theme.text-secondary;
+        font-size: 18px;
     }
     
-    // Decoy ball (if enabled)
-    if state.decoy-enabled: Rectangle {
-        x: (state.decoy-x - 8) * scale-x * 1px;
-        y: (state.decoy-y - 8) * scale-y * 1px;
-        width: 16 * scale-x * 1px;
-        height: 16 * scale-y * 1px;
+    // Right label
+    Text {
+        x: parent.width * 0.75 - 30px;
+        y: 20px;
+        text: "RIGHT";
+        color: Theme.text-secondary;
+        font-size: 18px;
+    }
+    
+    // Spot (bright yellow circle)
+    Rectangle {
+        x: (game.spot-is-left ? parent.width * 0.25 : parent.width * 0.75) - 40px;
+        y: parent.height / 2 - 40px;
+        width: 80px;
+        height: 80px;
         background: Theme.accent-yellow;
-        border-radius: self.width / 2;
-        opacity: 0.7;
+        border-radius: 40px;
+        opacity: game.response-made ? 0.25 : 1.0;
+    }
+    
+    // Instruction text (when waiting for response)
+    if !game.response-made: Text {
+        x: 0px;
+        y: parent.height - 40px;
+        width: parent.width;
+        text: game.spot-is-left ? "← Press LEFT (A)" : "Press RIGHT (D) →";
+        color: Theme.text-primary;
+        font-size: 16px;
+        horizontal-alignment: center;
+    }
+    
+    // Trial progress bar
+    Rectangle {
+        y: parent.height - 10px;
+        x: game.spot-is-left ? 0px : parent.width / 2;
+        width: game.trial-duration > 0 ? (
+            (
+                ((game.trial-frame * 1.0) / game.trial-duration) > 1.0 ? 1.0 :
+                ((game.trial-frame * 1.0) / game.trial-duration) < 0.0 ? 0.0 :
+                ((game.trial-frame * 1.0) / game.trial-duration)
+            )
+        ) * (parent.width / 2) : 0px;
+        height: 4px;
+        background: Theme.accent-blue;
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// HUD panel
+// HUD Panel
 // ═══════════════════════════════════════════════════════════════════════════
 
 component HudPanel inherits Rectangle {
@@ -137,40 +160,41 @@ component HudPanel inherits Rectangle {
         spacing: 4px;
         
         Text {
-            text: "Frame: " + hud.frame + "  Hits: " + hud.hits + "  Misses: " + hud.misses;
+            text: "Frame: " + hud.frame + "  Trials: " + hud.trials;
             color: Theme.text-primary;
             font-size: 13px;
         }
         Text {
-            text: "Score: " + round(hud.score * 100) / 100 + "  Recent: " + round(hud.recent-rate * 100) + "%";
+            text: "Correct: " + hud.correct + "  Incorrect: " + hud.incorrect + "  Accuracy: " + round(hud.accuracy * 100) + "%";
             color: Theme.text-primary;
             font-size: 13px;
         }
         Text {
-            text: "Difficulty: " + hud.difficulty + " (" + hud.difficulty-name + ")";
+            text: "Recent: " + round(hud.recent-rate * 100) + "%  Last 100: " + round(hud.last-100-rate * 100) + "%";
+            color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.text-secondary;
+            font-size: 13px;
+        }
+        Text {
+            text: "Neuromodulator: " + round(hud.neuromod * 1000) / 1000;
             color: Theme.text-secondary;
             font-size: 12px;
         }
+        
+        // Learning milestones
         Text {
-            text: "Flip in: " + hud.flip-countdown + "  Flipped: " + (hud.sensor-flipped ? "YES" : "no");
-            color: hud.sensor-flipped ? Theme.accent-yellow : Theme.text-secondary;
-            font-size: 12px;
-        }
-        Text {
-            text: "Neuromod: " + round(hud.neuromod * 1000) / 1000 + "  Explore: " + round(hud.explore-p * 100) / 100;
-            color: Theme.text-secondary;
-            font-size: 12px;
-        }
-        if hud.prediction-enabled: Text {
-            text: "Prediction: " + hud.pred-ctx + " (bonus: " + round(hud.pred-bonus * 1000) / 1000 + ")";
-            color: Theme.accent-green;
-            font-size: 12px;
+            text: hud.last-100-rate >= 0.95 ? "★★★ MASTERED" : 
+                  hud.last-100-rate >= 0.85 ? "★★ LEARNED" :
+                  hud.last-100-rate >= 0.70 ? "★ LEARNING" :
+                  hud.trials < 20 ? "Starting..." : "Not yet learned";
+            color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.accent-yellow;
+            font-size: 14px;
+            font-weight: 600;
         }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Learning controls panel
+// Learning Panel
 // ═══════════════════════════════════════════════════════════════════════════
 
 component LearningPanel inherits Rectangle {
@@ -180,6 +204,11 @@ component LearningPanel inherits Rectangle {
     callback trigger-burst();
     callback trigger-sync();
     callback trigger-imprint();
+    callback set-framerate(int);
+    callback set-trial-period-ms(int);
+    
+    in-out property <int> framerate: 60;
+    in-out property <int> trial-period-ms: 250;
     
     background: Theme.bg-panel;
     border-color: Theme.border;
@@ -197,42 +226,12 @@ component LearningPanel inherits Rectangle {
             font-weight: 600;
         }
         
-        // Master toggle
-        HorizontalBox {
-            spacing: 8px;
-            CheckBox {
-                text: "Learning Enabled";
-                checked: state.learning-enabled;
-                toggled => { state.learning-enabled = self.checked; }
-            }
+        CheckBox {
+            text: "Learning Enabled";
+            checked: state.learning-enabled;
+            toggled => { state.learning-enabled = self.checked; }
         }
         
-        // Attention
-        GroupBox {
-            title: "Attention Gating";
-            VerticalBox {
-                spacing: 4px;
-                HorizontalBox {
-                    CheckBox {
-                        text: "Enabled";
-                        checked: state.attention-enabled;
-                        toggled => { state.attention-enabled = self.checked; }
-                    }
-                }
-                HorizontalBox {
-                    Text { text: "Boost:"; color: Theme.text-secondary; font-size: 12px; }
-                    Slider {
-                        minimum: 0.0;
-                        maximum: 1.0;
-                        value: state.attention-boost;
-                        changed(v) => { state.attention-boost = v; }
-                    }
-                    Text { text: round(state.attention-boost * 100) / 100; color: Theme.text-primary; font-size: 12px; }
-                }
-            }
-        }
-        
-        // Quick actions
         HorizontalBox {
             spacing: 6px;
             Button {
@@ -253,40 +252,68 @@ component LearningPanel inherits Rectangle {
             }
         }
         
-        // Auto triggers
-        HorizontalBox {
-            spacing: 8px;
-            CheckBox {
-                text: "Dream on flip";
-                checked: state.auto-dream-on-flip;
-                toggled => { state.auto-dream-on-flip = self.checked; }
-            }
-            CheckBox {
-                text: "Burst on slump";
-                checked: state.auto-burst-on-slump;
-                toggled => { state.auto-burst-on-slump = self.checked; }
-            }
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
         }
         
-        // Prediction (P3)
-        GroupBox {
-            title: "Prediction (P3)";
-            VerticalBox {
-                spacing: 4px;
-                CheckBox {
-                    text: "Predictive action selection";
-                    checked: state.prediction-enabled;
-                    toggled => { state.prediction-enabled = self.checked; }
+        Text {
+            text: "Simulation Speed";
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        HorizontalBox {
+            spacing: 8px;
+            Text {
+                text: "FPS: " + framerate;
+                color: Theme.text-secondary;
+                font-size: 12px;
+                min-width: 60px;
+            }
+            Slider {
+                minimum: 1;
+                maximum: 120;
+                value: framerate;
+                changed(val) => {
+                    framerate = val;
+                    set-framerate(val);
                 }
-                HorizontalBox {
-                    Text { text: "Weight:"; color: Theme.text-secondary; font-size: 12px; }
-                    Slider {
-                        minimum: 0.0;
-                        maximum: 5.0;
-                        value: state.prediction-weight;
-                        changed(v) => { state.prediction-weight = v; }
-                    }
-                    Text { text: round(state.prediction-weight * 100) / 100; color: Theme.text-primary; font-size: 12px; }
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Reset";
+                clicked => {
+                    framerate = 60;
+                    set-framerate(60);
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text {
+                text: "Trial: " + trial-period-ms + "ms";
+                color: Theme.text-secondary;
+                font-size: 12px;
+                min-width: 100px;
+            }
+            Slider {
+                minimum: 50;
+                maximum: 2000;
+                value: trial-period-ms;
+                changed(val) => {
+                    trial-period-ms = val;
+                    set-trial-period-ms(val);
+                }
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Reset";
+                clicked => {
+                    trial-period-ms = 250;
+                    set-trial-period-ms(250);
                 }
             }
         }
@@ -294,7 +321,7 @@ component LearningPanel inherits Rectangle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Brain stats panel
+// Brain Stats Panel
 // ═══════════════════════════════════════════════════════════════════════════
 
 component BrainPanel inherits Rectangle {
@@ -310,15 +337,19 @@ component BrainPanel inherits Rectangle {
         spacing: 6px;
         
         Text {
-            text: "Brain Diagnostics";
+            text: "Brain Substrate";
             color: Theme.text-primary;
             font-size: 14px;
             font-weight: 600;
         }
-        
         Text { text: "Units: " + stats.unit-count; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Connections: " + stats.connection-count; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Pruned (last): " + stats.pruned-last-step; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Births (last): " + stats.births-last-step; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Saturated: " + (stats.saturated ? "yes" : "no"); color: stats.saturated ? Theme.accent-yellow : Theme.text-secondary; font-size: 12px; }
+        Text { text: "Causal symbols: " + stats.causal-base-symbols; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Causal edges: " + stats.causal-edges; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Causal updates (last): " + stats.causal-last-directed-updates + " dir, " + stats.causal-last-cooccur-updates + " co"; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Avg amplitude: " + round(stats.avg-amp * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Avg weight: " + round(stats.avg-weight * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Memory: " + stats.memory-bytes + " bytes"; color: Theme.text-secondary; font-size: 12px; }
@@ -327,33 +358,29 @@ component BrainPanel inherits Rectangle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Main application window
+// Main Window
 // ═══════════════════════════════════════════════════════════════════════════
 
 export component MainWindow inherits Window {
-    title: "Braine Visualizer";
-    width: 900px;
+    title: "Braine Visualizer - Spot Game";
+    width: 800px;
     height: 700px;
     background: Theme.bg-dark;
     
     // State from Rust
     in property <HudData> hud;
-    in property <PongState> pong;
+    in property <GameState> game;
     in property <BrainStats> brain-stats;
     in-out property <LearningState> learning;
     
     // Control state
-    in-out property <int> active-game: 0;  // 0=Pong, 1=Bandit, etc.
     in-out property <bool> is-braine-mode: true;
     in-out property <bool> paused: false;
+    in-out property <bool> running: false;  // Whether game loop is active
     
     // Callbacks to Rust
-    callback mode-changed(bool);  // true = Braine, false = Human
-    callback game-changed(int);
-    callback difficulty-up();
-    callback difficulty-down();
-    callback flip-faster();
-    callback flip-slower();
+    callback mode-changed(bool);
+    callback running-changed(bool);  // New callback for start/stop
     callback trigger-dream();
     callback trigger-burst();
     callback trigger-sync();
@@ -361,120 +388,151 @@ export component MainWindow inherits Window {
     callback save-brain();
     callback load-brain();
     callback reset-brain();
-    callback tick();  // Called each frame
+    callback human-key-pressed(string);
+    callback human-key-released(string);
+    callback set-framerate(int);
+    callback set-trial-period-ms(int);
     
-    VerticalBox {
-        padding: 8px;
-        spacing: 8px;
-        
-        // Top toolbar
-        HorizontalBox {
-            spacing: 8px;
-            height: 36px;
-            
-            // Mode selector
-            Text { text: "Mode:"; color: Theme.text-secondary; vertical-alignment: center; }
-            Button {
-                text: is-braine-mode ? "Braine" : "Human";
-                clicked => {
-                    is-braine-mode = !is-braine-mode;
-                    mode-changed(is-braine-mode);
-                }
+    // Control state
+    in-out property <int> framerate: 60;
+    in-out property <int> trial-period-ms: 250;
+    
+    // Keyboard input
+    in-out property <bool> human-left-pressed: false;
+    in-out property <bool> human-right-pressed: false;
+    
+    FocusScope {
+        capture-key-pressed(event) => {
+            if (event.text == "a" || event.text == "A" || event.text == "ArrowLeft" || event.text == "Left" || event.text == "←") {
+                root.human-left-pressed = true;
+                root.human-key-pressed("left");
+                return accept;
             }
-            
-            Rectangle { width: 1px; background: Theme.border; }
-            
-            // Game selector
-            Text { text: "Game:"; color: Theme.text-secondary; vertical-alignment: center; }
-            Button { text: "Pong"; clicked => { active-game = 0; game-changed(0); } }
-            Button { text: "Bandit"; clicked => { active-game = 1; game-changed(1); } }
-            Button { text: "Forage"; clicked => { active-game = 2; game-changed(2); } }
-            
-            Rectangle { horizontal-stretch: 1; }
-            
-            // Pause/play
-            Button {
-                text: paused ? "▶ Play" : "⏸ Pause";
-                clicked => { paused = !paused; }
+            if (event.text == "d" || event.text == "D" || event.text == "ArrowRight" || event.text == "Right" || event.text == "→") {
+                root.human-right-pressed = true;
+                root.human-key-pressed("right");
+                return accept;
             }
+            return reject;
         }
         
-        // Main content area
-        HorizontalBox {
+        capture-key-released(event) => {
+            if (event.text == "a" || event.text == "A" || event.text == "ArrowLeft" || event.text == "Left" || event.text == "←") {
+                root.human-left-pressed = false;
+                root.human-key-released("left");
+                return accept;
+            }
+            if (event.text == "d" || event.text == "D" || event.text == "ArrowRight" || event.text == "Right" || event.text == "→") {
+                root.human-right-pressed = false;
+                root.human-key-released("right");
+                return accept;
+            }
+            return reject;
+        }
+    
+        VerticalBox {
+            padding: 8px;
             spacing: 8px;
             
-            // Left: Game canvas
-            VerticalBox {
-                width: 420px;
+            // Top toolbar
+            HorizontalBox {
                 spacing: 8px;
+                height: 36px;
                 
-                // Game controls
-                HorizontalBox {
-                    spacing: 4px;
-                    height: 32px;
-                    
-                    Button { text: "Easier"; clicked => { difficulty-down(); } }
-                    Button { text: "Harder"; clicked => { difficulty-up(); } }
-                    Rectangle { width: 8px; }
-                    Button { text: "Flip−"; clicked => { flip-slower(); } }
-                    Button { text: "Flip+"; clicked => { flip-faster(); } }
+                // Start/Stop button
+                Button {
+                    text: running ? "⏹ Stop" : "▶ Start";
+                    clicked => {
+                        running = !running;
+                        running-changed(running);
+                    }
                 }
                 
-                // Game canvas
-                PongCanvas {
-                    state: pong;
-                    vertical-stretch: 1;
+                Text { text: "Mode:"; color: Theme.text-secondary; vertical-alignment: center; }
+                Button {
+                    text: is-braine-mode ? "Braine" : "Human";
+                    clicked => {
+                        is-braine-mode = !is-braine-mode;
+                        mode-changed(is-braine-mode);
+                    }
                 }
                 
-                // HUD
-                HudPanel {
-                    hud: hud;
-                    height: 140px;
+                Rectangle { horizontal-stretch: 1; }
+                
+                Button {
+                    text: paused ? "▶ Resume" : "⏸ Pause";
+                    clicked => { paused = !paused; }
+                    enabled: running;  // Only enable when running
                 }
             }
             
-            // Right: Control panels (tabbed)
-            TabWidget {
-                horizontal-stretch: 1;
+            // Main content
+            HorizontalBox {
+                spacing: 8px;
                 
-                Tab {
-                    title: "Learning";
-                    LearningPanel {
-                        state <=> learning;
-                        trigger-dream => { root.trigger-dream(); }
-                        trigger-burst => { root.trigger-burst(); }
-                        trigger-sync => { root.trigger-sync(); }
-                        trigger-imprint => { root.trigger-imprint(); }
+                // Left: Game canvas
+                VerticalBox {
+                    width: 420px;
+                    spacing: 8px;
+                    
+                    SpotCanvas {
+                        game: root.game;
+                        vertical-stretch: 1;
+                    }
+                    
+                    HudPanel {
+                        hud: root.hud;
+                        height: 160px;
                     }
                 }
                 
-                Tab {
-                    title: "Brain";
-                    BrainPanel {
-                        stats: brain-stats;
+                // Right: Control panels
+                TabWidget {
+                    horizontal-stretch: 1;
+                    
+                    Tab {
+                        title: "Learning";
+                        LearningPanel {
+                            state <=> learning;
+                            framerate <=> root.framerate;
+                            trial-period-ms <=> root.trial-period-ms;
+                            trigger-dream => { root.trigger-dream(); }
+                            trigger-burst => { root.trigger-burst(); }
+                            trigger-sync => { root.trigger-sync(); }
+                            trigger-imprint => { root.trigger-imprint(); }
+                            set-framerate(fps) => { root.set-framerate(fps); }
+                            set-trial-period-ms(ms) => { root.set-trial-period-ms(ms); }
+                        }
                     }
-                }
-                
-                Tab {
-                    title: "Storage";
-                    Rectangle {
-                        background: Theme.bg-panel;
-                        VerticalBox {
-                            padding: 12px;
-                            spacing: 8px;
-                            
-                            Text {
-                                text: "Brain Persistence";
-                                color: Theme.text-primary;
-                                font-size: 14px;
-                                font-weight: 600;
-                            }
-                            
-                            HorizontalBox {
+                    
+                    Tab {
+                        title: "Brain";
+                        BrainPanel {
+                            stats: brain-stats;
+                        }
+                    }
+                    
+                    Tab {
+                        title: "Storage";
+                        Rectangle {
+                            background: Theme.bg-panel;
+                            VerticalBox {
+                                padding: 12px;
                                 spacing: 8px;
-                                Button { text: "Save"; clicked => { save-brain(); } }
-                                Button { text: "Load"; clicked => { load-brain(); } }
-                                Button { text: "Reset"; clicked => { reset-brain(); } }
+                                
+                                Text {
+                                    text: "Brain Persistence";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    Button { text: "Save"; clicked => { save-brain(); } }
+                                    Button { text: "Load"; clicked => { load-brain(); } }
+                                    Button { text: "Reset"; clicked => { reset-brain(); } }
+                                }
                             }
                         }
                     }

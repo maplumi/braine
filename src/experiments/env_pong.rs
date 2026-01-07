@@ -140,8 +140,7 @@ pub fn run_pong_demo(brain: &mut Brain, cfg: PongConfig) {
         };
 
         brain.note_action(&action);
-        let pair = format!("pair::{ctx}::{action}");
-        brain.note_action(&pair);
+        brain.note_compound_symbol(&["pair", ctx, action.as_str()]);
 
         match action.as_str() {
             "left" => s.paddle_x -= 1,
