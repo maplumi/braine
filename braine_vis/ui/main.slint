@@ -58,6 +58,38 @@ export struct UnitPoint {
     is_group_member: bool,
 }
 
+export struct ActionScore {
+    name: string,
+    habit_norm: float,
+    meaning_global: float,
+    meaning_conditional: float,
+    meaning: float,
+    score: float,
+}
+
+export struct MeaningEdges {
+    to-reward-pos: float,
+    to-reward-neg: float,
+    meaning: float,
+}
+
+export struct MeaningData {
+    stimulus: string,
+    correct-action: string,
+    pair-left: MeaningEdges,
+    pair-right: MeaningEdges,
+    action-left: MeaningEdges,
+    action-right: MeaningEdges,
+    pair-gap: float,
+    global-gap: float,
+}
+
+export struct MeaningHistDot {
+    x01: float,
+    v: float,
+    positive: bool,
+}
+
 export struct GameState {
     spot-is-left: bool,
     response-made: bool,
@@ -393,6 +425,10 @@ export component MainWindow inherits Window {
     in property <GameState> game;
     in property <BrainStats> brain-stats;
     in property <[UnitPoint]> unit-points;
+    in property <[ActionScore]> action-scores;
+    in property <MeaningData> meaning;
+    in property <[MeaningHistDot]> meaning-pair-gap-dots;
+    in property <[MeaningHistDot]> meaning-global-gap-dots;
     in-out property <LearningState> learning;
     
     // Control state
@@ -594,6 +630,128 @@ export component MainWindow inherits Window {
                                     text: "Legend: reserved, sensor, group, other";
                                     color: Theme.text-secondary;
                                     font-size: 12px;
+                                }
+
+                                Rectangle { height: 1px; background: Theme.border; }
+
+                                Text {
+                                    text: "Action preference (habit vs meaning)";
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                }
+
+                                for s in action-scores: Text {
+                                    text: s.name +
+                                          "  habit=" + round(s.habit_norm * 1000) / 1000 +
+                                          "  meaning=" + round(s.meaning * 1000) / 1000 +
+                                          " (cond=" + round(s.meaning_conditional * 1000) / 1000 +
+                                          " global=" + round(s.meaning_global * 1000) / 1000 +
+                                          ")  score=" + round(s.score * 1000) / 1000;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+                            }
+                        }
+                    }
+
+                    Tab {
+                        title: "Meaning";
+                        Rectangle {
+                            background: Theme.bg-panel;
+                            VerticalBox {
+                                padding: 12px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "Meaning evidence (reward edges)";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+
+                                Text {
+                                    text: "Stimulus: " + meaning.stimulus + "   correct: " + meaning.correct-action;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Text {
+                                    text: "pair(stim, left)  +" + round(meaning.pair-left.to-reward-pos * 1000) / 1000 +
+                                          "  -" + round(meaning.pair-left.to-reward-neg * 1000) / 1000 +
+                                          "  meaning=" + round(meaning.pair-left.meaning * 1000) / 1000;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+                                Text {
+                                    text: "pair(stim, right) +" + round(meaning.pair-right.to-reward-pos * 1000) / 1000 +
+                                          "  -" + round(meaning.pair-right.to-reward-neg * 1000) / 1000 +
+                                          "  meaning=" + round(meaning.pair-right.meaning * 1000) / 1000;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Rectangle { height: 1px; background: Theme.border; }
+
+                                Text {
+                                    text: "action(left)      +" + round(meaning.action-left.to-reward-pos * 1000) / 1000 +
+                                          "  -" + round(meaning.action-left.to-reward-neg * 1000) / 1000 +
+                                          "  meaning=" + round(meaning.action-left.meaning * 1000) / 1000;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+                                Text {
+                                    text: "action(right)     +" + round(meaning.action-right.to-reward-pos * 1000) / 1000 +
+                                          "  -" + round(meaning.action-right.to-reward-neg * 1000) / 1000 +
+                                          "  meaning=" + round(meaning.action-right.meaning * 1000) / 1000;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Rectangle { height: 1px; background: Theme.border; }
+
+                                Text {
+                                    text: "Gaps (correct - wrong): pair=" + round(meaning.pair-gap * 1000) / 1000 + "   global=" + round(meaning.global-gap * 1000) / 1000;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Text { text: "Pair gap history"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
+                                Rectangle {
+                                    height: 110px;
+                                    horizontal-stretch: 1;
+                                    background: Theme.bg-dark;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+
+                                    Rectangle { x: 0px; y: parent.height / 2; width: parent.width; height: 1px; background: Theme.border; }
+
+                                    for d in meaning-pair-gap-dots: Rectangle {
+                                        width: 5px;
+                                        height: 5px;
+                                        x: d.x01 * (parent.width - self.width);
+                                        y: (0.5 - 0.45 * d.v) * (parent.height - self.height);
+                                        background: d.positive ? Theme.accent-green : Theme.accent-red;
+                                    }
+                                }
+
+                                Text { text: "Global gap history"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
+                                Rectangle {
+                                    height: 110px;
+                                    horizontal-stretch: 1;
+                                    background: Theme.bg-dark;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+
+                                    Rectangle { x: 0px; y: parent.height / 2; width: parent.width; height: 1px; background: Theme.border; }
+
+                                    for d in meaning-global-gap-dots: Rectangle {
+                                        width: 5px;
+                                        height: 5px;
+                                        x: d.x01 * (parent.width - self.width);
+                                        y: (0.5 - 0.45 * d.v) * (parent.height - self.height);
+                                        background: d.positive ? Theme.accent-green : Theme.accent-red;
+                                    }
                                 }
                             }
                         }

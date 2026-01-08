@@ -12,7 +12,7 @@
 //! - MacOS: ~/Library/Application Support/Braine/
 
 use braine::substrate::Stimulus;
-use braine::substrate::{Brain, BrainConfig, UnitPlotPoint};
+use braine::substrate::{ActionScoreBreakdown, Brain, BrainConfig, RewardEdges, UnitPlotPoint};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write as _;
@@ -57,7 +57,7 @@ enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum Response {
-    State(StateSnapshot),
+    State(Box<StateSnapshot>),
     Success { message: String },
     Error { message: String },
 }
@@ -73,6 +73,40 @@ struct StateSnapshot {
     brain_stats: BrainStats,
     #[serde(default)]
     unit_plot: Vec<UnitPlotPoint>,
+    #[serde(default)]
+    action_scores: Vec<ActionScoreBreakdown>,
+    #[serde(default)]
+    meaning: MeaningSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct MeaningSnapshot {
+    #[serde(default)]
+    stimulus: String,
+    #[serde(default)]
+    correct_action: String,
+
+    #[serde(default)]
+    pair_left: RewardEdges,
+    #[serde(default)]
+    pair_right: RewardEdges,
+
+    #[serde(default)]
+    action_left: RewardEdges,
+    #[serde(default)]
+    action_right: RewardEdges,
+
+    #[serde(default)]
+    pair_gap: f32,
+    #[serde(default)]
+    global_gap: f32,
+
+    /// Trial-sampled history of the correct-vs-wrong pair meaning gap.
+    #[serde(default)]
+    pair_gap_history: Vec<f32>,
+    /// Trial-sampled history of the correct-vs-wrong global action meaning gap.
+    #[serde(default)]
+    global_gap_history: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -153,6 +187,10 @@ struct DaemonState {
     target_fps: u32,
     trial_period_ms: u32,
     pending_neuromod: f32,
+
+    meaning_last: MeaningSnapshot,
+    meaning_pair_gap_history: Vec<f32>,
+    meaning_global_gap_history: Vec<f32>,
 }
 
 impl DaemonState {
@@ -181,6 +219,19 @@ impl DaemonState {
         brain.define_action("right", 6);
         brain.set_observer_telemetry(true);
 
+        // Optional execution tier override (safe default if feature not enabled).
+        // Values: scalar|simd|parallel|gpu
+        if let Ok(v) = std::env::var("BRAINE_EXEC_TIER") {
+            let vv = v.trim().to_ascii_lowercase();
+            match vv.as_str() {
+                "scalar" => brain.set_execution_tier(braine::substrate::ExecutionTier::Scalar),
+                "simd" => brain.set_execution_tier(braine::substrate::ExecutionTier::Simd),
+                "parallel" => brain.set_execution_tier(braine::substrate::ExecutionTier::Parallel),
+                "gpu" => brain.set_execution_tier(braine::substrate::ExecutionTier::Gpu),
+                _ => warn!("Unknown BRAINE_EXEC_TIER value: {}", v),
+            }
+        }
+
         Self {
             brain,
             game: SpotGame::new(),
@@ -196,6 +247,74 @@ impl DaemonState {
             target_fps: 60,
             trial_period_ms: 250,
             pending_neuromod: 0.0,
+
+            meaning_last: MeaningSnapshot::default(),
+            meaning_pair_gap_history: Vec::with_capacity(96),
+            meaning_global_gap_history: Vec::with_capacity(96),
+        }
+    }
+
+    fn compute_meaning_snapshot(&self, stimulus: &str) -> MeaningSnapshot {
+        let correct_action = if self.game.spot_is_left {
+            "left"
+        } else {
+            "right"
+        };
+        let wrong_action = if correct_action == "left" {
+            "right"
+        } else {
+            "left"
+        };
+
+        let pair_left = self.brain.pair_reward_edges(stimulus, "left");
+        let pair_right = self.brain.pair_reward_edges(stimulus, "right");
+
+        let action_left = self.brain.action_reward_edges("left");
+        let action_right = self.brain.action_reward_edges("right");
+
+        let pair_correct = if correct_action == "left" {
+            pair_left.meaning
+        } else {
+            pair_right.meaning
+        };
+        let pair_wrong = if wrong_action == "left" {
+            pair_left.meaning
+        } else {
+            pair_right.meaning
+        };
+        let pair_gap = pair_correct - pair_wrong;
+
+        let global_correct = if correct_action == "left" {
+            action_left.meaning
+        } else {
+            action_right.meaning
+        };
+        let global_wrong = if wrong_action == "left" {
+            action_left.meaning
+        } else {
+            action_right.meaning
+        };
+        let global_gap = global_correct - global_wrong;
+
+        MeaningSnapshot {
+            stimulus: stimulus.to_string(),
+            correct_action: correct_action.to_string(),
+            pair_left,
+            pair_right,
+            action_left,
+            action_right,
+            pair_gap,
+            global_gap,
+            pair_gap_history: Vec::new(),
+            global_gap_history: Vec::new(),
+        }
+    }
+
+    fn push_history(buf: &mut Vec<f32>, v: f32, cap: usize) {
+        buf.push(v);
+        if buf.len() > cap {
+            let drop = buf.len() - cap;
+            buf.drain(0..drop);
         }
     }
 
@@ -283,6 +402,13 @@ impl DaemonState {
         self.brain.commit_observation();
 
         if completed {
+            let m = self.compute_meaning_snapshot(stimulus);
+            Self::push_history(&mut self.meaning_pair_gap_history, m.pair_gap, 96);
+            Self::push_history(&mut self.meaning_global_gap_history, m.global_gap, 96);
+            self.meaning_last = m;
+        }
+
+        if completed {
             // Anneal exploration but keep a small floor for on-policy correction
             self.exploration_eps = (self.exploration_eps * 0.99).max(0.02);
 
@@ -318,6 +444,8 @@ impl DaemonState {
     fn get_snapshot(&self) -> StateSnapshot {
         let diag = self.brain.diagnostics();
         let causal = self.brain.causal_stats();
+
+        let stimulus = self.game.stimulus_name();
 
         StateSnapshot {
             running: self.running,
@@ -358,6 +486,15 @@ impl DaemonState {
                 age_steps: self.brain.age_steps(),
             },
             unit_plot: self.brain.unit_plot_points(128),
+            action_scores: self
+                .brain
+                .action_score_breakdown(stimulus, self.meaning_alpha),
+            meaning: {
+                let mut m = self.meaning_last.clone();
+                m.pair_gap_history = self.meaning_pair_gap_history.clone();
+                m.global_gap_history = self.meaning_global_gap_history.clone();
+                m
+            },
         }
     }
 
@@ -489,7 +626,7 @@ async fn handle_client(
         let response = match request {
             Request::GetState => {
                 let s = state.read().await;
-                Response::State(s.get_snapshot())
+                Response::State(Box::new(s.get_snapshot()))
             }
             Request::Start => {
                 let mut s = state.write().await;

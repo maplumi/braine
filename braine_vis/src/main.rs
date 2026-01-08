@@ -39,7 +39,7 @@ enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum Response {
-    State(DaemonStateSnapshot),
+    State(Box<DaemonStateSnapshot>),
     Success { message: String },
     Error { message: String },
 }
@@ -56,6 +56,58 @@ struct DaemonStateSnapshot {
     brain_stats: DaemonBrainStats,
     #[serde(default)]
     unit_plot: Vec<DaemonUnitPlotPoint>,
+    #[serde(default)]
+    action_scores: Vec<DaemonActionScore>,
+    #[serde(default)]
+    meaning: DaemonMeaningSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonRewardEdges {
+    #[serde(default)]
+    to_reward_pos: f32,
+    #[serde(default)]
+    to_reward_neg: f32,
+    #[serde(default)]
+    meaning: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonMeaningSnapshot {
+    #[serde(default)]
+    stimulus: String,
+    #[serde(default)]
+    correct_action: String,
+
+    #[serde(default)]
+    pair_left: DaemonRewardEdges,
+    #[serde(default)]
+    pair_right: DaemonRewardEdges,
+
+    #[serde(default)]
+    action_left: DaemonRewardEdges,
+    #[serde(default)]
+    action_right: DaemonRewardEdges,
+
+    #[serde(default)]
+    pair_gap: f32,
+    #[serde(default)]
+    global_gap: f32,
+
+    #[serde(default)]
+    pair_gap_history: Vec<f32>,
+    #[serde(default)]
+    global_gap_history: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonActionScore {
+    name: String,
+    habit_norm: f32,
+    meaning_global: f32,
+    meaning_conditional: f32,
+    meaning: f32,
+    score: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -164,7 +216,7 @@ impl DaemonClient {
                         match serde_json::from_str::<Response>(&resp_line) {
                             Ok(Response::State(state)) => {
                                 if let Ok(mut s) = snap_clone.lock() {
-                                    *s = state;
+                                    *s = *state;
                                 }
                             }
                             Ok(Response::Success { .. }) => {
@@ -392,6 +444,79 @@ fn main() -> Result<(), slint::PlatformError> {
                     })
                     .collect();
                 ui.set_unit_points(ModelRc::new(VecModel::from(points)));
+
+                let scores: Vec<ActionScore> = snap
+                    .action_scores
+                    .iter()
+                    .map(|s| ActionScore {
+                        name: s.name.clone().into(),
+                        habit_norm: s.habit_norm,
+                        meaning_global: s.meaning_global,
+                        meaning_conditional: s.meaning_conditional,
+                        meaning: s.meaning,
+                        score: s.score,
+                    })
+                    .collect();
+                ui.set_action_scores(ModelRc::new(VecModel::from(scores)));
+
+                ui.set_meaning(MeaningData {
+                    stimulus: snap.meaning.stimulus.clone().into(),
+                    correct_action: snap.meaning.correct_action.clone().into(),
+                    pair_left: MeaningEdges {
+                        to_reward_pos: snap.meaning.pair_left.to_reward_pos,
+                        to_reward_neg: snap.meaning.pair_left.to_reward_neg,
+                        meaning: snap.meaning.pair_left.meaning,
+                    },
+                    pair_right: MeaningEdges {
+                        to_reward_pos: snap.meaning.pair_right.to_reward_pos,
+                        to_reward_neg: snap.meaning.pair_right.to_reward_neg,
+                        meaning: snap.meaning.pair_right.meaning,
+                    },
+                    action_left: MeaningEdges {
+                        to_reward_pos: snap.meaning.action_left.to_reward_pos,
+                        to_reward_neg: snap.meaning.action_left.to_reward_neg,
+                        meaning: snap.meaning.action_left.meaning,
+                    },
+                    action_right: MeaningEdges {
+                        to_reward_pos: snap.meaning.action_right.to_reward_pos,
+                        to_reward_neg: snap.meaning.action_right.to_reward_neg,
+                        meaning: snap.meaning.action_right.meaning,
+                    },
+                    pair_gap: snap.meaning.pair_gap,
+                    global_gap: snap.meaning.global_gap,
+                });
+
+                fn hist_to_dots(hist: &[f32]) -> Vec<MeaningHistDot> {
+                    let n = hist.len();
+                    if n == 0 {
+                        return Vec::new();
+                    }
+
+                    let mut max_abs = 0.0f32;
+                    for &v in hist {
+                        max_abs = max_abs.max(v.abs());
+                    }
+                    let inv = if max_abs > 1e-6 { 1.0 / max_abs } else { 0.0 };
+                    let denom = (n - 1).max(1) as f32;
+
+                    let mut out = Vec::with_capacity(n);
+                    for (i, &raw) in hist.iter().enumerate() {
+                        let x01 = (i as f32 / denom).clamp(0.0, 1.0);
+                        out.push(MeaningHistDot {
+                            x01,
+                            v: (raw * inv).clamp(-1.0, 1.0),
+                            positive: raw >= 0.0,
+                        });
+                    }
+                    out
+                }
+
+                ui.set_meaning_pair_gap_dots(ModelRc::new(VecModel::from(hist_to_dots(
+                    &snap.meaning.pair_gap_history,
+                ))));
+                ui.set_meaning_global_gap_dots(ModelRc::new(VecModel::from(hist_to_dots(
+                    &snap.meaning.global_gap_history,
+                ))));
                 ui.set_is_braine_mode(snap.mode != "human");
                 ui.set_running(snap.running);
 

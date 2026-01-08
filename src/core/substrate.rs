@@ -302,6 +302,33 @@ pub struct UnitPlotPoint {
     pub is_group_member: bool,
 }
 
+/// Per-action score breakdown for UI inspection.
+///
+/// This is *not* a learning signal by itself; it's a snapshot of what the current
+/// readout would prefer, and why.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ActionScoreBreakdown {
+    pub name: String,
+    pub habit_norm: f32,
+    pub meaning_global: f32,
+    pub meaning_conditional: f32,
+    pub meaning: f32,
+    pub score: f32,
+}
+
+/// Reward-edge breakdown for a symbol in causal memory.
+///
+/// This is primarily for UI/diagnostics.
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct RewardEdges {
+    pub to_reward_pos: f32,
+    pub to_reward_neg: f32,
+    /// Convenience: `to_reward_pos - to_reward_neg`.
+    pub meaning: f32,
+}
+
 impl OwnedStimulus {
     /// Convert to a borrowed Stimulus.
     pub fn as_stimulus(&self) -> Stimulus<'_> {
@@ -1801,6 +1828,103 @@ impl Brain {
         }
 
         best.unwrap_or((usize::MAX, 0.0))
+    }
+
+    /// Compute the per-action breakdown used by `select_action_with_meaning_index`.
+    ///
+    /// This is useful for UI: it shows how much of the preference comes from
+    /// (a) habit readout and (b) causal/meaning memory.
+    #[cfg(feature = "std")]
+    pub fn action_score_breakdown(&self, stimulus: &str, alpha: f32) -> Vec<ActionScoreBreakdown> {
+        let alpha = alpha.clamp(0.0, 20.0);
+        let stimulus_id = self.symbol_id(stimulus);
+
+        let mut out = Vec::with_capacity(self.action_groups.len());
+        for g in &self.action_groups {
+            let action_name: &str = g.name.as_str();
+
+            let habit = g
+                .units
+                .iter()
+                .map(|&id| self.units[id].amp.max(0.0))
+                .sum::<f32>();
+            let habit_norm = if g.units.is_empty() {
+                0.0
+            } else {
+                (habit / (g.units.len() as f32 * 2.0)).clamp(0.0, 1.0)
+            };
+
+            let (meaning_global, meaning_conditional, meaning) = if let Some(aid) =
+                self.symbol_id(action_name)
+            {
+                let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
+                    - self.causal.causal_strength(aid, self.reward_neg_symbol);
+
+                let conditional = if stimulus_id.is_some() {
+                    if let Some(pid) = self.compound_symbol_id(&["pair", stimulus, action_name]) {
+                        self.causal.causal_strength(pid, self.reward_pos_symbol)
+                            - self.causal.causal_strength(pid, self.reward_neg_symbol)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
+                let m = conditional * 1.0 + global * 0.15;
+                (global, conditional, m)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+
+            let score = habit_norm * 0.5 + alpha * meaning;
+            out.push(ActionScoreBreakdown {
+                name: action_name.to_string(),
+                habit_norm,
+                meaning_global,
+                meaning_conditional,
+                meaning,
+                score,
+            });
+        }
+
+        out
+    }
+
+    /// Return causal edge strengths from `pair::<stimulus>::<action>` to `reward_pos/reward_neg`.
+    ///
+    /// This is allocation-free and intended for UI/debugging.
+    #[cfg(feature = "std")]
+    pub fn pair_reward_edges(&self, stimulus: &str, action: &str) -> RewardEdges {
+        let Some(pid) = self.compound_symbol_id(&["pair", stimulus, action]) else {
+            return RewardEdges::default();
+        };
+
+        let pos = self.causal.causal_strength(pid, self.reward_pos_symbol);
+        let neg = self.causal.causal_strength(pid, self.reward_neg_symbol);
+        RewardEdges {
+            to_reward_pos: pos,
+            to_reward_neg: neg,
+            meaning: pos - neg,
+        }
+    }
+
+    /// Return causal edge strengths from an action symbol to `reward_pos/reward_neg`.
+    ///
+    /// This is allocation-free and intended for UI/debugging.
+    #[cfg(feature = "std")]
+    pub fn action_reward_edges(&self, action: &str) -> RewardEdges {
+        let Some(aid) = self.symbol_id(action) else {
+            return RewardEdges::default();
+        };
+
+        let pos = self.causal.causal_strength(aid, self.reward_pos_symbol);
+        let neg = self.causal.causal_strength(aid, self.reward_neg_symbol);
+        RewardEdges {
+            to_reward_pos: pos,
+            to_reward_neg: neg,
+            meaning: pos - neg,
+        }
     }
 
     /// Borrow the action name for an action group index.

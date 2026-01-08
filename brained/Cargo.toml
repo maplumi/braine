@@ -3,6 +3,14 @@ name = "brained"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+
+# Forward execution-tier features to the core crate.
+gpu = ["braine/gpu"]
+simd = ["braine/simd"]
+parallel = ["braine/parallel"]
+
 [[bin]]
 name = "brained"
 path = "src/main.rs"
