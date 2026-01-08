@@ -27,9 +27,15 @@ cp target/x86_64-pc-windows-gnu/release/braine.exe dist/windows/
 cp braine_vis/assets/braine.ico dist/windows/
 cat > dist/windows/run_braine.bat <<'EOF'
 @echo off
-start "brained" brained.exe
+rem Ensure we run from the folder containing this script.
+rem This also makes UNC paths (e.g. \\wsl.localhost\...) work by mapping a temp drive.
+pushd "%~dp0" || (echo Failed to enter script directory & exit /b 1)
+
+start "brained" "%~dp0brained.exe"
 timeout /t 1 >NUL
-start "braine_viz" braine_viz.exe
+start "braine_viz" "%~dp0braine_viz.exe"
+
+popd
 EOF
 cat > dist/windows/README.txt <<'EOF'
 Braine - Brain-like Learning Substrate
@@ -38,6 +44,12 @@ SETUP:
 1. Run run_braine.bat (or create a shortcut to it)
    - Starts brained daemon in background
    - Launches braine_viz UI after 1 second
+
+NOTE (WSL / UNC PATHS):
+  If you run this from a path like \\wsl.localhost\..., cmd.exe may not treat it as a normal working directory.
+  run_braine.bat uses pushd to handle UNC paths, but the most reliable approach is:
+  - Copy dist/braine-portable.zip to a normal Windows folder (e.g. Downloads)
+  - Extract it, then run run_braine.bat from there
 
 CONTROLS:
 - Start/Stop: Toggle learning loop

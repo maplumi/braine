@@ -461,6 +461,15 @@ pub struct Brain {
     telemetry: Telemetry,
 }
 
+/// A bounded, sparse representation of structural changes between two brains.
+///
+/// This is intentionally minimal for the initial expert/child-brain mechanism:
+/// it only carries top-K connection weight deltas.
+#[derive(Debug, Clone, Default)]
+pub struct BrainDelta {
+    pub weight_deltas: Vec<(usize, Weight)>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Telemetry {
     enabled: bool,
@@ -472,6 +481,70 @@ struct Telemetry {
 }
 
 impl Brain {
+    /// Compute a sparse delta from `base` to `self` by taking the top-K
+    /// absolute connection weight changes.
+    ///
+    /// If the connection topology differs (length mismatch), returns an empty delta.
+    #[must_use]
+    pub fn diff_weights_topk(&self, base: &Brain, topk: usize) -> BrainDelta {
+        if topk == 0 {
+            return BrainDelta::default();
+        }
+
+        let w_self = &self.connections.weights;
+        let w_base = &base.connections.weights;
+        if w_self.len() != w_base.len() {
+            return BrainDelta::default();
+        }
+
+        // If targets differ, merging by index would be incorrect.
+        // For now, require identical target arrays.
+        if self.connections.targets != base.connections.targets {
+            return BrainDelta::default();
+        }
+
+        let mut deltas: Vec<(usize, Weight)> = Vec::with_capacity(topk.min(w_self.len()));
+
+        for i in 0..w_self.len() {
+            let dw = w_self[i] - w_base[i];
+            if dw.abs() > 1.0e-6 {
+                deltas.push((i, dw));
+            }
+        }
+
+        deltas.sort_by(|a, b| {
+            b.1.abs()
+                .partial_cmp(&a.1.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        deltas.truncate(topk);
+
+        BrainDelta {
+            weight_deltas: deltas,
+        }
+    }
+
+    /// Apply a sparse delta of connection weight changes.
+    ///
+    /// The applied delta for each edge is clamped to `[-delta_max, +delta_max]`.
+    pub fn apply_weight_delta(&mut self, delta: &BrainDelta, delta_max: Weight) {
+        if delta.weight_deltas.is_empty() {
+            return;
+        }
+        if delta_max <= 0.0 {
+            return;
+        }
+
+        let w = &mut self.connections.weights;
+        for (idx, dw) in &delta.weight_deltas {
+            if *idx >= w.len() {
+                continue;
+            }
+            let clipped = dw.clamp(-delta_max, delta_max);
+            w[*idx] += clipped;
+        }
+    }
+
     pub fn new(cfg: BrainConfig) -> Self {
         let mut rng = Prng::new(cfg.seed.unwrap_or(1));
 
@@ -903,19 +976,20 @@ impl Brain {
             io::copy(&mut take, &mut io::sink())?;
         }
 
-        let cfg = cfg.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing CFG0"))?;
-        let unit_count = cfg.unit_count;
+        let mut cfg =
+            cfg.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing CFG0"))?;
         let units =
             units.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing UNIT"))?;
         let connections = connections.ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "missing UNIT connections")
         })?;
-        if units.len() != unit_count {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "UNIT count mismatch",
-            ));
+        // The authoritative unit count is the UNIT chunk payload length.
+        // Older images (prior to unit-count sync on neurogenesis) may have a stale
+        // CFG0.unit_count; tolerate and repair in-memory to keep images loadable.
+        if cfg.unit_count != units.len() {
+            cfg.unit_count = units.len();
         }
+        let unit_count = cfg.unit_count;
 
         let reserved =
             reserved.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing MASK"))?;
@@ -2023,6 +2097,26 @@ impl Brain {
         self.active_symbols.clear();
     }
 
+    /// Discard current perception/action/reward events without learning.
+    ///
+    /// This is useful for evaluation/holdout modes where you want to run the
+    /// substrate dynamics and action selection, but you do not want to update
+    /// causal/meaning memory.
+    pub fn discard_observation(&mut self) {
+        // Keep telemetry roughly consistent with commit_observation().
+        self.active_symbols.sort_unstable();
+        self.active_symbols.dedup();
+
+        if self.telemetry.enabled {
+            self.telemetry.last_committed_symbols.clear();
+            self.telemetry
+                .last_committed_symbols
+                .extend_from_slice(&self.active_symbols);
+        }
+
+        self.active_symbols.clear();
+    }
+
     /// Very small "meaning" query: which action is most causally linked to positive reward
     /// under the last seen stimulus symbol.
     pub fn meaning_hint(&self, stimulus: &str) -> Option<(String, f32)> {
@@ -2962,6 +3056,7 @@ impl Brain {
         }
 
         self.births_last_step += 1;
+        self.cfg.unit_count = self.units.len();
         new_id
     }
 
@@ -2977,6 +3072,7 @@ impl Brain {
         for _ in 0..count {
             self.grow_unit(connectivity);
         }
+        self.cfg.unit_count = self.units.len();
         start_id..self.units.len()
     }
 
@@ -3073,6 +3169,7 @@ impl Brain {
             self.pending_input.push(0.0);
             self.sensor_member.push(false);
             self.group_member.push(false);
+            self.cfg.unit_count = self.units.len();
 
             // Wire FROM new unit TO group units (new unit can influence the group).
             let outgoing: Vec<UnitId> = group_units

@@ -218,6 +218,21 @@ graph LR
 
 ---
 
+## UI Triggers (daemon + visualizer)
+
+The daemon + UI expose a few manual triggers that map directly to core substrate operations:
+
+- **Dream**: calls `dream_replay()` which runs multiple short offline consolidation episodes.
+    Useful after a small success streak to stabilize structure.
+- **Burst**: calls `set_burst_mode(true, …)` to temporarily boost learning intensity.
+    Useful when the task changes and the substrate needs to adapt quickly.
+- **Sync**: calls `force_synchronize_sensors()` to phase-align sensor groups.
+    Useful after regime shifts/reversals to make encoding more coherent.
+- **Imprint**: calls `imprint_current_context()` for one-shot association.
+    Useful when the substrate is missing a “concept handle” for the current context.
+
+---
+
 ### 3. Neurogenesis
 
 **Status**: ✅ Implemented

@@ -60,6 +60,10 @@ cargo run --release --bin braine-cli -- save
 - Windows: `%APPDATA%\Braine\brain.bbi`
 - MacOS: `~/Library/Application Support/Braine/brain.bbi`
 
+The UI also supports **timestamped snapshots** (saved alongside the main brain image) so you can
+save a point-in-time copy and load older/newer snapshots.
+Snapshots live under the same data directory in `snapshots/`.
+
 ### Windows portable bundle
 After building with `./scripts/dev.sh`, the Windows installer bundle is at:
 - `dist/braine-portable.zip` — unzip and run `run_braine.bat` (starts daemon + UI)
@@ -116,7 +120,15 @@ security-hardened component.
 - Interaction + I/O: [doc/interaction.md](doc/interaction.md)
 - Persistence + storage adapters: [doc/brain-image.md](doc/brain-image.md)
 - Visualizer games (what each measures): [doc/visualizer-games.md](doc/visualizer-games.md)
+- What this does that LLMs don’t (yet): [doc/what-llms-dont-do-yet.md](doc/what-llms-dont-do-yet.md)
 - **Accelerated Learning**: [doc/accelerated-learning.md](doc/accelerated-learning.md)
+
+### Learning actions (UI)
+The visualizer exposes a few manual “accelerators”:
+- **Dream**: offline replay/consolidation over recent structure.
+- **Burst**: temporary learning-rate boost for rapid adaptation.
+- **Sync**: phase-align sensor groups to improve coherent encoding.
+- **Imprint**: one-shot association of the current context.
 
 ## Accelerated Learning Mechanisms (9 of 13 implemented)
 

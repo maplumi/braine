@@ -18,6 +18,37 @@ what metrics indicate success, and how to measure learning rate.
 
 ---
 
+## Cross-cutting: Experts (child brains) across all games
+
+This repo is adding a general expert/child-brain mechanism intended to work across every game. The canonical design contract lives in:
+- [Expert / Child-Brain Mechanism](experts.md)
+
+### What stays the same
+- Games still apply stimuli, read an action, and compute reward.
+- With experts disabled, behavior should match today.
+
+### What should change (observable)
+
+When experts are enabled (once implemented):
+- **Lower interference**: competence on an already-learned mapping should degrade less while exploring novelty.
+- **Faster recovery**: after flips/regime changes, a child can adapt quickly, then consolidation improves the parent.
+- **Bounded churn**: the parent’s structure changes less aggressively than the child’s.
+
+### How to test (baseline vs experts)
+
+For any game that has a flip/reversal/regime shift:
+1. Run baseline (experts disabled). Record recovery time after a flip.
+2. Run with experts enabled. Record:
+   - whether a child spawns near the flip/novelty event,
+   - whether recovery time improves,
+   - whether performance remains stable outside the novel regime.
+
+The mechanism is considered successful if:
+- Disabling experts reproduces baseline.
+- Enabling experts improves at least two games without destabilizing others.
+
+---
+
 ## Game 1: Pong
 
 ### What It Tests

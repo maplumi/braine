@@ -25,6 +25,10 @@ fn main() {
         run_pong_demo();
         return;
     }
+    if args.len() >= 2 && args[1] == "spotxy-demo" {
+        run_spotxy_demo();
+        return;
+    }
 
     if args.len() >= 2 {
         eprintln!("Unknown command: {}", args[1]);
@@ -133,6 +137,7 @@ fn print_help() {
     println!("  cargo run -- spawn-demo");
     println!("  cargo run -- autonomy-demo");
     println!("  cargo run -- pong-demo");
+    println!("  cargo run -- spotxy-demo");
     println!("  cargo run -- --help");
 }
 
@@ -156,6 +161,36 @@ fn run_pong_demo() {
     });
 
     experiments::env_pong::run_pong_demo(&mut brain, experiments::env_pong::PongConfig::default());
+}
+
+fn run_spotxy_demo() {
+    // Minimal 2D position input (population-coded) with a 2-action decision rule.
+    // This is an early spatial-awareness stepping stone.
+
+    // Sizing note: this demo allocates many sensor groups (pos_x_*, pos_y_*),
+    // so it uses a larger substrate than the tiny default demo.
+    let mut brain = Brain::new(BrainConfig {
+        unit_count: 256,
+        connectivity_per_unit: 10,
+        dt: 0.05,
+        base_freq: 1.0,
+        noise_amp: 0.015,
+        noise_phase: 0.008,
+        global_inhibition: 0.07,
+        hebb_rate: 0.09,
+        forget_rate: 0.0015,
+        prune_below: 0.0008,
+        coactive_threshold: 0.55,
+        phase_lock_threshold: 0.6,
+        imprint_rate: 0.6,
+        seed: Some(2026),
+        causal_decay: 0.01,
+    });
+
+    experiments::env_spot_xy::run_spotxy_demo(
+        &mut brain,
+        experiments::env_spot_xy::SpotXYConfig::default(),
+    );
 }
 
 fn run_autonomy_demo() {

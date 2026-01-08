@@ -26,11 +26,11 @@ Single stimulus → single response mappings.
 
 | # | Capability | Test | Status | Notes |
 |---|-----------|------|--------|-------|
-| 1.1 | Learn one association | sensor A → action X after repeated reward | ⬜ | Spot game |
-| 1.2 | Learn two associations | A→X, B→Y simultaneously | ⬜ | Spot game |
-| 1.3 | Discriminate stimuli | Different sensors → different actions | ⬜ | Spot game |
-| 1.4 | Retain over time | Association persists across 100+ steps | ⬜ | |
-| 1.5 | Imprint one-shot | Single strong exposure creates association | ⬜ | Imprint mechanism |
+| 1.1 | Learn one association | sensor A → action X after repeated reward | ☑️ | Spot: converges to high hit-rate in short runs |
+| 1.2 | Learn two associations | A→X, B→Y simultaneously | ☑️ | Spot: left/right stimulus-action mappings learned together |
+| 1.3 | Discriminate stimuli | Different sensors → different actions | ☑️ | Spot: distinct stimuli drive distinct actions (not a single reflex) |
+| 1.4 | Retain over time | Association persists across 100+ steps | ☑️ | Observed stable performance over 100+ trials; state persists via brain.bbi + runtime.json |
+| 1.5 | Imprint one-shot | Single strong exposure creates association | 🔄 | Mechanism exists (imprint_if_novel + imprint_rate), needs a dedicated one-shot experiment |
 
 ---
 
@@ -62,6 +62,28 @@ Responding to environmental changes.
 
 ---
 
+## Spatial / Continuous Track (Higher-D Inputs)
+
+This track covers *spatial awareness* and scaling to higher-dimensional observations without changing the core principles.
+
+Key idea: prefer **factorized population codes** (e.g., X-code + Y-code) over a full combinatorial grid.
+This keeps sensor dimensionality roughly linear in the number of axes.
+
+| # | Capability | Test | Status | Notes |
+|---|-----------|------|--------|-------|
+| S1 | Encode 2D position | Given (x,y), sensor vector is normalized and stable | ⬜ | Population code: e.g., 8–32 bumps per axis; deterministic via seed |
+| S2 | Learn quadrant/side | Reward based on quadrant → choose correct action | ⬜ | Start with 4 actions (NE/NW/SE/SW) or 2 actions (left/right) |
+| S3 | Generalize locally | Train on subset of positions; test on held-out nearby positions | ⬜ | Validates smooth sensor similarity → smooth policy |
+| S4 | Context separation | Same (x,y) in two contexts yields different action mapping | ⬜ | Mirrors reversal-regime logic; prevents catastrophic overwrite |
+| S5 | Scale to N dims | Add a new axis (z) with no redesign | ⬜ | Goal: add `Z` sensors and keep learning dynamics stable |
+
+Suggested experiments (minimal → harder):
+1) `SpotXY (2 actions)`: choose left/right based on x<0 vs x>=0.
+2) `SpotXY (4 actions)`: quadrant classification.
+3) `SpotXY-Reversal`: flip rule mid-run; measure recovery.
+
+---
+
 ## Level 4: Temporal Processing
 
 Handling time-extended patterns.
@@ -76,6 +98,18 @@ Handling time-extended patterns.
 
 ---
 
+## Temporal Structure Track (Predict / Track)
+
+This track is about learning from *sequences* rather than single-step labels.
+
+| # | Capability | Test | Status | Notes |
+|---|-----------|------|--------|-------|
+| T1 | One-step prediction | Given (x,y) and velocity, predict next (x',y') bucket | ⬜ | Start discrete (bins), then continuous (population code) |
+| T2 | Temporal aliasing handling | Same observation → different best action depending on history | ⬜ | Requires internal state or working memory-like dynamics |
+| T3 | Delayed reward credit | Reward at t credits action at t-k | ⬜ | Measure performance vs delay length |
+
+---
+
 ## Level 5: Attention and Selection
 
 Filtering relevant from irrelevant.
@@ -83,7 +117,7 @@ Filtering relevant from irrelevant.
 | # | Capability | Test | Status | Notes |
 |---|-----------|------|--------|-------|
 | 5.1 | Ignore distractors | Learn with irrelevant sensors active | ⬜ | Pong decoy ball |
-| 5.2 | Selective learning | Only high-amplitude units learn | ⬜ | Attention gating |
+| 5.2 | Selective learning | Only high-amplitude units learn | ☑️ | Unit test: attention_gate_focuses_learning |
 | 5.3 | Focus on rewarded | Increase attention to reward-predictive stimuli | ⬜ | |
 | 5.4 | Filter by phase | Same-phase units bind, opposite don't | ⬜ | Phase binding |
 | 5.5 | Attentional switch | Shift focus when target changes | ⬜ | Beacon game |
@@ -96,9 +130,9 @@ Strengthening and organizing memories.
 
 | # | Capability | Test | Status | Notes |
 |---|-----------|------|--------|-------|
-| 6.1 | Dream replay helps | Offline processing improves retention | ⬜ | Dream mechanism |
-| 6.2 | Burst learning works | High-plasticity bursts accelerate learning | ⬜ | Burst mechanism |
-| 6.3 | Pruning cleans up | Weak connections removed over time | ⬜ | Prune mechanism |
+| 6.1 | Dream replay helps | Offline processing improves retention | ☑️ | Unit test: dream_consolidates_memories |
+| 6.2 | Burst learning works | High-plasticity bursts accelerate learning | ☑️ | Unit test: burst_learning_detects_spikes |
+| 6.3 | Pruning cleans up | Weak connections removed over time | ⚠️ | Pruning + diagnostics exist (pruned_last_step), but no explicit pruning-focused test/experiment yet |
 | 6.4 | Consolidation transfers | Knowledge moves from fast to slow weights | ⬜ | Child brain? |
 | 6.5 | Interference reduced | Learning B doesn't erase A | ⬜ | Catastrophic forgetting |
 
@@ -165,4 +199,6 @@ Chaining actions toward goals.
 | Date | Update |
 |------|--------|
 | 2026-01-07 | Initial checklist created |
+| 2026-01-08 | Updated Level 1 (Spot) to verified; marked attention/dream/burst as verified by unit tests; clarified imprinting/pruning as not yet behaviorally validated |
+| 2026-01-08 | Added Spatial/Continuous and Temporal-Structure tracking sections with concrete experiment/test targets |
 

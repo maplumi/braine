@@ -169,6 +169,9 @@ Child brains are short-lived sandboxes:
 - Child explores or learns a new signal.
 - Parent consolidates only strong, useful changes.
 
+This is a high-level overview. The full general mechanism (all games), expected behavior vs current, and the concrete implementation checklist live in:
+- [Experts / Child-Brain Mechanism](experts.md)
+
 ```mermaid
 flowchart TD
 	P[Parent brain] --> D{Detect novelty or new signal}

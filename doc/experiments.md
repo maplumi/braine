@@ -90,7 +90,18 @@ Copy/paste for each experiment:
 - Branch/commit:
 - Hypothesis:
 - Change:
+- Determinism:
+	- Brain seed:
+	- Environment seed (if different):
+	- Any other randomness sources:
 - Protocol (stimuli/actions/reward schedule):
+- Encoder config (if continuous/spatial):
+	- Encoding family: (e.g., factorized population code)
+	- Axes: (x, y, z, ...)
+	- Bumps per axis (k):
+	- Sigma (\sigma):
+	- Normalization: (per-axis sum=1, global clamp, etc)
+	- Stimulus naming scheme:
 - Metrics collected:
 - Result summary:
 - Next step:

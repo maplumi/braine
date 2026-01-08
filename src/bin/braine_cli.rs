@@ -23,8 +23,15 @@ enum Request {
     GetState,
     Start,
     Stop,
-    SetMode { mode: String },
-    HumanAction { action: String },
+    SetGame {
+        game: String,
+    },
+    SetMode {
+        mode: String,
+    },
+    HumanAction {
+        action: String,
+    },
     TriggerDream,
     TriggerBurst,
     TriggerSync,
@@ -33,14 +40,38 @@ enum Request {
     LoadBrain,
     ResetBrain,
     Shutdown,
-    SetFramerate { fps: u32 },
-    SetTrialPeriodMs { ms: u32 },
+    SetFramerate {
+        fps: u32,
+    },
+    SetTrialPeriodMs {
+        ms: u32,
+    },
+
+    // Experts (child brains)
+    SetExpertsEnabled {
+        enabled: bool,
+    },
+    SetExpertPolicy {
+        parent_learning: String,
+        max_children: u32,
+        child_reward_scale: f32,
+        episode_trials: u32,
+        consolidate_topk: u32,
+
+        #[serde(default)]
+        allow_nested: bool,
+        #[serde(default)]
+        max_depth: u32,
+        #[serde(default)]
+        persistence_mode: String,
+    },
+    CullExperts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum Response {
-    State(StateSnapshot),
+    State(Box<StateSnapshot>),
     Success { message: String },
     Error { message: String },
 }
@@ -55,10 +86,52 @@ struct StateSnapshot {
     game: GameState,
     hud: HudData,
     brain_stats: BrainStats,
+
+    // Experts (child brains)
+    #[serde(default)]
+    experts_enabled: bool,
+    #[serde(default)]
+    experts: ExpertsSummary,
+    #[serde(default)]
+    active_expert: Option<ActiveExpertSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ExpertsSummary {
+    #[serde(default)]
+    active_count: u32,
+    #[serde(default)]
+    max_children: u32,
+    #[serde(default)]
+    last_spawn_reason: String,
+    #[serde(default)]
+    last_consolidation: String,
+
+    #[serde(default)]
+    persistence_mode: String,
+    #[serde(default)]
+    allow_nested: bool,
+    #[serde(default)]
+    max_depth: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActiveExpertSummary {
+    id: u32,
+    #[serde(default)]
+    context_key: String,
+    #[serde(default)]
+    age_steps: u64,
+    #[serde(default)]
+    reward_ema: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GameState {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    reversal_active: bool,
     spot_is_left: bool,
     response_made: bool,
     trial_frame: u32,
@@ -93,6 +166,7 @@ fn usage() -> ! {
     eprintln!("Commands:");
     eprintln!("  status                      Show daemon state");
     eprintln!("  start | stop                Control run loop");
+    eprintln!("  game <spot|bandit|spot_reversal>  Switch task/game (stop first)");
     eprintln!("  mode <braine|human>         Switch control mode");
     eprintln!("  action <left|right>         Send human action");
     eprintln!("  trigger <dream|burst|sync|imprint>  Fire learning helpers");
@@ -100,8 +174,21 @@ fn usage() -> ! {
     eprintln!("  shutdown                    Save and exit daemon");
     eprintln!("  fps <1-1000>                Set simulation framerate");
     eprintln!("  trialms <10-60000>          Set trial period in milliseconds");
+    eprintln!("  experts <on|off|cull>        Control expert (child brain) mechanism");
+    eprintln!("  experts policy <parent_learning> <max_children> <child_reward_scale> <episode_trials> <consolidate_topk> [allow_nested] [max_depth] [persist_mode]");
+    eprintln!("                               allow_nested: true|false (default false)");
+    eprintln!("                               max_depth: >=1 (default 1)");
+    eprintln!("                               persist_mode: full|drop_active (default full)");
     eprintln!("  paths                       Show data directory and brain file path");
     process::exit(1);
+}
+
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn parse_args() -> (String, Vec<String>) {
@@ -168,9 +255,50 @@ fn print_state(s: StateSnapshot) {
         s.brain_stats.age_steps,
     );
     println!(
-        "game: spot_is_left={} response_made={} trial_frame={} / {}",
-        s.game.spot_is_left, s.game.response_made, s.game.trial_frame, s.game.trial_duration,
+        "game: kind={} reversal_active={} spot_is_left={} response_made={} trial_frame={} / {}",
+        if s.game.kind.is_empty() {
+            "spot"
+        } else {
+            s.game.kind.as_str()
+        },
+        s.game.reversal_active,
+        s.game.spot_is_left,
+        s.game.response_made,
+        s.game.trial_frame,
+        s.game.trial_duration,
     );
+
+    if s.experts_enabled || s.experts.active_count > 0 {
+        println!(
+            "experts: enabled={} active={}/{} persist={} allow_nested={} max_depth={} last_spawn={} last_consolidation={}",
+            s.experts_enabled,
+            s.experts.active_count,
+            s.experts.max_children,
+            if s.experts.persistence_mode.is_empty() {
+                "full"
+            } else {
+                s.experts.persistence_mode.as_str()
+            },
+            s.experts.allow_nested,
+            s.experts.max_depth,
+            if s.experts.last_spawn_reason.is_empty() {
+                "-"
+            } else {
+                s.experts.last_spawn_reason.as_str()
+            },
+            if s.experts.last_consolidation.is_empty() {
+                "-"
+            } else {
+                s.experts.last_consolidation.as_str()
+            },
+        );
+        if let Some(ae) = s.active_expert {
+            println!(
+                "active_expert: id={} ctx={} age_steps={} reward_ema={:.3}",
+                ae.id, ae.context_key, ae.age_steps, ae.reward_ema
+            );
+        }
+    }
 }
 
 fn main() {
@@ -186,6 +314,13 @@ fn main() {
         "status" => Request::GetState,
         "start" => Request::Start,
         "stop" => Request::Stop,
+        "game" => {
+            if args.len() < 2 {
+                usage();
+            }
+            let game = args[1].clone();
+            Request::SetGame { game }
+        }
         "mode" => {
             if args.len() < 2 {
                 usage();
@@ -240,6 +375,67 @@ fn main() {
                 .unwrap_or_else(|_| make_error("trialms must be a number (10-60000)"));
             Request::SetTrialPeriodMs { ms }
         }
+        "experts" => {
+            if args.len() < 2 {
+                usage();
+            }
+            match args[1].as_str() {
+                "on" => Request::SetExpertsEnabled { enabled: true },
+                "off" => Request::SetExpertsEnabled { enabled: false },
+                "cull" => Request::CullExperts,
+                "policy" => {
+                    if args.len() < 7 {
+                        make_error(
+                            "usage: experts policy <parent_learning> <max_children> <child_reward_scale> <episode_trials> <consolidate_topk>",
+                        );
+                    }
+                    let parent_learning = args[2].clone();
+                    let max_children: u32 = args[3]
+                        .parse()
+                        .unwrap_or_else(|_| make_error("max_children must be a u32"));
+                    let child_reward_scale: f32 = args[4]
+                        .parse()
+                        .unwrap_or_else(|_| make_error("child_reward_scale must be a float"));
+                    let episode_trials: u32 = args[5]
+                        .parse()
+                        .unwrap_or_else(|_| make_error("episode_trials must be a u32"));
+                    let consolidate_topk: u32 = args[6]
+                        .parse()
+                        .unwrap_or_else(|_| make_error("consolidate_topk must be a u32"));
+
+                    let allow_nested: bool = if args.len() >= 8 {
+                        parse_bool(&args[7]).unwrap_or_else(|| {
+                            make_error("allow_nested must be true|false (or 1|0)")
+                        })
+                    } else {
+                        false
+                    };
+                    let max_depth: u32 = if args.len() >= 9 {
+                        args[8]
+                            .parse()
+                            .unwrap_or_else(|_| make_error("max_depth must be a u32 >= 1"))
+                    } else {
+                        1
+                    };
+                    let persistence_mode: String = if args.len() >= 10 {
+                        args[9].clone()
+                    } else {
+                        "full".to_string()
+                    };
+                    Request::SetExpertPolicy {
+                        parent_learning,
+                        max_children,
+                        child_reward_scale,
+                        episode_trials,
+                        consolidate_topk,
+                        allow_nested,
+                        max_depth,
+                        persistence_mode,
+                    }
+                }
+                _ => usage(),
+            }
+        }
         "paths" => {
             // Special command: doesn't need daemon, just print paths
             #[cfg(unix)]
@@ -264,7 +460,7 @@ fn main() {
     };
 
     match send_request(&addr, &req) {
-        Ok(Response::State(s)) => print_state(s),
+        Ok(Response::State(s)) => print_state(*s),
         Ok(Response::Success { message }) => println!("{message}"),
         Ok(Response::Error { message }) => {
             eprintln!("Error: {message}");

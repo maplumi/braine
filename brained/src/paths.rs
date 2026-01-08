@@ -24,6 +24,7 @@ impl AppPaths {
         Ok(base.join("braine"))
     }
 
+    #[allow(dead_code)]
     pub fn data_dir(&self) -> &PathBuf {
         &self.data_dir
     }

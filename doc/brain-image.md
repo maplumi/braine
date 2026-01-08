@@ -60,4 +60,6 @@ Unknown tags must be skipped.
 
 ## Notes
 - This format is intended for **research snapshots**, not as a security boundary.
-- The visualizer may expose quick save/load hotkeys for convenience.
+- The daemon persists the active image as `brain.bbi` alongside `runtime.json`.
+- The UI/daemon can also create **timestamped snapshots** under `snapshots/` in the same data
+  directory (copies of both the brain image and runtime stats).

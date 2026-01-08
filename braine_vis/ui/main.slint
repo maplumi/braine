@@ -1,7 +1,7 @@
 // Braine Visualizer UI - Minimal Spot Game
 // Simple left/right discrimination task to test brain learning
 
-import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox, ScrollView } from "std-widgets.slint";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Data structures
@@ -34,6 +34,7 @@ export struct LearningState {
 
 export struct BrainStats {
     unit-count: int,
+    max-units-limit: int,
     connection-count: int,
     pruned-last-step: int,
     births-last-step: int,
@@ -73,9 +74,20 @@ export struct MeaningEdges {
     meaning: float,
 }
 
+export struct SnapshotItem {
+    stem: string,
+    modified-unix: int,
+    brain-bytes: int,
+    runtime-bytes: int,
+}
+
 export struct MeaningData {
     stimulus: string,
     correct-action: string,
+
+    action-a-name: string,
+    action-b-name: string,
+
     pair-left: MeaningEdges,
     pair-right: MeaningEdges,
     action-left: MeaningEdges,
@@ -91,10 +103,41 @@ export struct MeaningHistDot {
 }
 
 export struct GameState {
+    kind: string,
+    reversal-active: bool,
+    chosen-action: string,
+    pos-x: float,
+    pos-y: float,
+    spotxy-eval: bool,
+    spotxy-mode: string,
+    spotxy-grid-n: int,
+    spotxy-chosen-ix: int,
+    spotxy-chosen-iy: int,
+    spotxy-correct-ix: int,
+    spotxy-correct-iy: int,
+    last-reward: float,
     spot-is-left: bool,
     response-made: bool,
     trial-frame: int,
     trial-duration: int,
+}
+
+export struct GraphNodeDot {
+    x01: float,
+    y01: float,
+    label: string,
+    value: float,
+    domain: string,
+}
+
+export struct GraphEdgeSeg {
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    positive: bool,
+    strength01: float,
+    thickness01: float,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -152,7 +195,9 @@ component SpotCanvas inherits Rectangle {
     
     // Spot (bright yellow circle)
     Rectangle {
-        x: (game.spot-is-left ? parent.width * 0.25 : parent.width * 0.75) - 40px;
+        x: ((game.kind == "bandit") ? (parent.width * 0.5) :
+            (((game.kind == "spot_reversal") ? (game.spot-is-left != game.reversal-active) : game.spot-is-left)
+                ? parent.width * 0.25 : parent.width * 0.75)) - 40px;
         y: parent.height / 2 - 40px;
         width: 80px;
         height: 80px;
@@ -166,25 +211,144 @@ component SpotCanvas inherits Rectangle {
         x: 0px;
         y: parent.height - 40px;
         width: parent.width;
-        text: game.spot-is-left ? "← Press LEFT (A)" : "Press RIGHT (D) →";
+        text: (game.kind == "bandit") ? "Choose LEFT (A) or RIGHT (D)" :
+              ((game.spot-is-left != game.reversal-active) ? "← Press LEFT (A)" : "Press RIGHT (D) →");
         color: Theme.text-primary;
         font-size: 16px;
         horizontal-alignment: center;
     }
     
-    // Trial progress bar
+    // Choice indicator bar (brain's selected action)
     Rectangle {
         y: parent.height - 10px;
-        x: game.spot-is-left ? 0px : parent.width / 2;
-        width: game.trial-duration > 0 ? (
-            (
-                ((game.trial-frame * 1.0) / game.trial-duration) > 1.0 ? 1.0 :
-                ((game.trial-frame * 1.0) / game.trial-duration) < 0.0 ? 0.0 :
-                ((game.trial-frame * 1.0) / game.trial-duration)
-            )
-        ) * (parent.width / 2) : 0px;
         height: 4px;
         background: Theme.accent-blue;
+
+        x: (game.chosen-action == "left") ? 0px : (game.chosen-action == "right") ? (parent.width / 2) : 0px;
+        width: (game.chosen-action == "left" || game.chosen-action == "right") ? (parent.width / 2) : 0px;
+        opacity: game.response-made ? 0.9 : 0.0;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SpotXY Canvas (2D dot)
+// ═══════════════════════════════════════════════════════════════════════════
+
+component SpotXYCanvas inherits Rectangle {
+    in property <GameState> game;
+    in property <int> frame;
+
+    background: Theme.bg-dark;
+    border-color: Theme.border;
+    border-width: 2px;
+
+    // Fixed drawing bounds for the grid so increasing N doesn't resize the UI;
+    // instead, cells get smaller inside a constant square.
+    grid := Rectangle {
+        property <length> size: max(140px, min(parent.width, parent.height) - 24px);
+        width: self.size;
+        height: self.size;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: transparent;
+        border-color: Theme.border;
+        border-width: 1px;
+    }
+
+    // Binary mode divider (x = 0)
+    if game.spotxy-grid-n <= 0: Rectangle {
+        x: grid.x + grid.width / 2 - 1px;
+        width: 2px;
+        y: grid.y;
+        height: grid.height;
+        background: #ffffff20;
+    }
+
+    // Grid mode lines (N×N). Slint doesn't support dynamic range repeaters here,
+    // so we render up to 8×8 with conditional lines.
+    if game.spotxy-grid-n > 0: Rectangle {
+        x: 0px; y: 0px; width: 0px; height: 0px; background: transparent;
+
+        // Vertical lines k=1..7
+        if game.spotxy-grid-n > 1: Rectangle { width: 1px; height: grid.height; x: grid.x + (1.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 2: Rectangle { width: 1px; height: grid.height; x: grid.x + (2.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 3: Rectangle { width: 1px; height: grid.height; x: grid.x + (3.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 4: Rectangle { width: 1px; height: grid.height; x: grid.x + (4.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 5: Rectangle { width: 1px; height: grid.height; x: grid.x + (5.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 6: Rectangle { width: 1px; height: grid.height; x: grid.x + (6.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 7: Rectangle { width: 1px; height: grid.height; x: grid.x + (7.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
+
+        // Horizontal lines k=1..7
+        if game.spotxy-grid-n > 1: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (1.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 2: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (2.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 3: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (3.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 4: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (4.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 5: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (5.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 6: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (6.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
+        if game.spotxy-grid-n > 7: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (7.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
+    }
+
+    // Flash correct vs chosen cell (grid mode) so errors are obvious.
+    // Note: y is inverted to match the [-1,1] coordinate system used for pos-y.
+    if game.spotxy-grid-n > 0 && game.spotxy-correct-ix >= 0 && game.spotxy-correct-iy >= 0: Rectangle {
+        property <float> n: game.spotxy-grid-n * 1.0;
+        property <float> ix: game.spotxy-correct-ix * 1.0;
+        property <float> iy: (game.spotxy-grid-n - 1 - game.spotxy-correct-iy) * 1.0;
+        x: grid.x + (ix / n) * grid.width;
+        y: grid.y + (iy / n) * grid.height;
+        width: grid.width / n;
+        height: grid.height / n;
+        background: Theme.accent-green;
+        border-color: Theme.accent-green;
+        border-width: 2px;
+        opacity: game.response-made ? ((Math.mod(frame, 16) < 8) ? 0.18 : 0.04) : 0.0;
+    }
+
+    if game.spotxy-grid-n > 0 && game.spotxy-chosen-ix >= 0 && game.spotxy-chosen-iy >= 0
+        && (game.spotxy-correct-ix < 0 || game.spotxy-correct-iy < 0
+            || game.spotxy-chosen-ix != game.spotxy-correct-ix
+            || game.spotxy-chosen-iy != game.spotxy-correct-iy): Rectangle {
+        property <float> n: game.spotxy-grid-n * 1.0;
+        property <float> ix: game.spotxy-chosen-ix * 1.0;
+        property <float> iy: (game.spotxy-grid-n - 1 - game.spotxy-chosen-iy) * 1.0;
+        x: grid.x + (ix / n) * grid.width;
+        y: grid.y + (iy / n) * grid.height;
+        width: grid.width / n;
+        height: grid.height / n;
+        background: Theme.accent-blue;
+        border-color: Theme.accent-blue;
+        border-width: 2px;
+        opacity: game.response-made ? ((Math.mod(frame, 12) < 6) ? 0.22 : 0.05) : 0.0;
+    }
+
+    // Dot position in normalized space [-1,1] -> pixels (mapped into the fixed grid bounds)
+    Rectangle {
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: Theme.accent-yellow;
+        x: grid.x + (0.5 + 0.5 * game.pos-x) * (grid.width - self.width);
+        y: grid.y + (0.5 - 0.5 * game.pos-y) * (grid.height - self.height);
+        opacity: game.response-made ? 0.35 : 1.0;
+    }
+
+    Text {
+        x: 10px;
+        y: 10px;
+        text: game.spotxy-eval ? "EVAL" : "TRAIN";
+        color: Theme.text-secondary;
+        font-size: 14px;
+    }
+
+    // Choice indicator bar (brain's selected action) - only meaningful in binary mode.
+    if game.spotxy-grid-n <= 0: Rectangle {
+        y: parent.height - 10px;
+        height: 4px;
+        background: Theme.accent-blue;
+
+        x: (game.chosen-action == "left") ? 0px : (game.chosen-action == "right") ? (parent.width / 2) : 0px;
+        width: (game.chosen-action == "left" || game.chosen-action == "right") ? (parent.width / 2) : 0px;
+        opacity: game.response-made ? 0.9 : 0.0;
     }
 }
 
@@ -227,9 +391,9 @@ component HudPanel inherits Rectangle {
         
         // Learning milestones
         Text {
-            text: hud.last-100-rate >= 0.95 ? "★★★ MASTERED" : 
-                  hud.last-100-rate >= 0.85 ? "★★ LEARNED" :
-                  hud.last-100-rate >= 0.70 ? "★ LEARNING" :
+            text: hud.last-100-rate >= 0.95 ? "MASTERED" : 
+                hud.last-100-rate >= 0.85 ? "LEARNED" :
+                hud.last-100-rate >= 0.70 ? "LEARNING" :
                   hud.trials < 20 ? "Starting..." : "Not yet learned";
             color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.accent-yellow;
             font-size: 14px;
@@ -303,6 +467,31 @@ component LearningPanel inherits Rectangle {
                 text: "Imprint";
                 clicked => { trigger-imprint(); }
             }
+        }
+
+        Text {
+            text: "Dream: offline replay to consolidate recent structure (stabilizes what just worked).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Burst: temporary learning-rate boost (helps rapid adaptation; can increase drift if overused).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Sync: aligns sensor phases for cleaner encoding (use after a regime shift / reversal).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Imprint: one-shot linking of the current context (fast association when the brain is missing a concept).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
         }
         
         Rectangle {
@@ -379,6 +568,8 @@ component LearningPanel inherits Rectangle {
 
 component BrainPanel inherits Rectangle {
     in property <BrainStats> stats;
+    in property <string> experts-status;
+    callback set-max-units(int);
     
     background: Theme.bg-panel;
     border-color: Theme.border;
@@ -395,7 +586,19 @@ component BrainPanel inherits Rectangle {
             font-size: 14px;
             font-weight: 600;
         }
+
+        if experts-status != "": Text {
+            text: experts-status;
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
         Text { text: "Units: " + stats.unit-count; color: Theme.text-secondary; font-size: 12px; }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Max units: " + stats.max-units-limit; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+            Button { text: "-32"; clicked => { set-max-units(stats.max-units-limit - 32); } }
+            Button { text: "+32"; clicked => { set-max-units(stats.max-units-limit + 32); } }
+        }
         Text { text: "Connections: " + stats.connection-count; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Pruned (last): " + stats.pruned-last-step; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Births (last): " + stats.births-last-step; color: Theme.text-secondary; font-size: 12px; }
@@ -416,8 +619,12 @@ component BrainPanel inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "Braine Visualizer - Spot Game";
-    width: 800px;
-    height: 700px;
+    // Don't bind Window width/height: it prevents resizing/maximize/minimize.
+    // Use preferred + min sizes so the UI is scalable and responsive.
+    preferred-width: 1040px;
+    preferred-height: 740px;
+    min-width: 860px;
+    min-height: 600px;
     background: Theme.bg-dark;
     
     // State from Rust
@@ -429,6 +636,18 @@ export component MainWindow inherits Window {
     in property <MeaningData> meaning;
     in property <[MeaningHistDot]> meaning-pair-gap-dots;
     in property <[MeaningHistDot]> meaning-global-gap-dots;
+
+    // Storage state from daemon
+    in property <string> storage-data-dir: "";
+    in property <string> storage-brain-file: "";
+    in property <int> storage-brain-bytes: 0;
+    in property <string> storage-runtime-file: "";
+    in property <int> storage-runtime-bytes: 0;
+    in property <string> storage-loaded-snapshot: "";
+    in property <[SnapshotItem]> storage-snapshots;
+
+    in property <[GraphNodeDot]> graph-nodes;
+    in property <[GraphEdgeSeg]> graph-edge-segs;
     in-out property <LearningState> learning;
     
     // Control state
@@ -439,6 +658,10 @@ export component MainWindow inherits Window {
     // Callbacks to Rust
     callback mode-changed(bool);
     callback running-changed(bool);  // New callback for start/stop
+    callback game-changed(string);
+    callback spotxy-eval-changed(bool);
+    callback spotxy-increase-grid();
+    callback spotxy-decrease-grid();
     callback trigger-dream();
     callback trigger-burst();
     callback trigger-sync();
@@ -446,14 +669,48 @@ export component MainWindow inherits Window {
     callback save-brain();
     callback load-brain();
     callback reset-brain();
+    callback set-max-units(int);
+
+    // Snapshot management
+    callback save-snapshot();
+    callback load-snapshot(string);
     callback human-key-pressed(string);
     callback human-key-released(string);
     callback set-framerate(int);
     callback set-trial-period-ms(int);
+
+    callback graph-request(string, int, int, bool);
+    callback graph-hover(float, float);
     
     // Control state
     in-out property <int> framerate: 60;
     in-out property <int> trial-period-ms: 250;
+
+    // Graph controls
+    in-out property <string> graph-kind: "substrate";
+    in-out property <string> graph-layout: "force";
+    in-out property <int> graph-max-nodes: 32;
+    in-out property <int> graph-max-edges: 64;
+    in-out property <bool> graph-include-isolated: false;
+    in-out property <bool> graph-auto-refresh: false;
+    in-out property <int> graph-interval-ms: 1000;
+    in-out property <float> graph-zoom: 1.0;
+    in-out property <float> graph-pan-x01: 0.0;
+    in-out property <float> graph-pan-y01: 0.0;
+
+    // Graph hover tooltip (node label/value)
+    in-out property <bool> graph-hover-visible: false;
+    in-out property <float> graph-hover-x01: 0.0;
+    in-out property <float> graph-hover-y01: 0.0;
+    in-out property <string> graph-hover-text: "";
+
+    // Read-only status line (computed in Rust)
+    in property <string> experts-status: "";
+
+    // View mode for plots/graphs: parent | active_expert
+    in-out property <string> view-mode: "parent";
+    callback view-mode-changed(string);
+
     
     // Keyboard input
     in-out property <bool> human-left-pressed: false;
@@ -514,8 +771,35 @@ export component MainWindow inherits Window {
                         mode-changed(is-braine-mode);
                     }
                 }
+
+                Text { text: "Game:"; color: Theme.text-secondary; vertical-alignment: center; }
+                Button {
+                    text: (root.game.kind == "bandit") ? "Bandit" : (root.game.kind == "spot_reversal") ? "Spot Reversal" : (root.game.kind == "spotxy") ? "SpotXY" : "Spot";
+                    enabled: !running;
+                    clicked => {
+                        game-changed((root.game.kind == "spot") ? "bandit" :
+                                     (root.game.kind == "bandit") ? "spot_reversal" :
+                                     (root.game.kind == "spot_reversal") ? "spotxy" :
+                                     "spot");
+                    }
+                }
                 
                 Rectangle { horizontal-stretch: 1; }
+
+                if root.experts-status != "": Button {
+                    text: (root.view-mode == "active_expert") ? "View: Active Expert" : "View: Parent";
+                    clicked => {
+                        root.view-mode = (root.view-mode == "active_expert") ? "parent" : "active_expert";
+                        root.view-mode-changed(root.view-mode);
+                    }
+                }
+
+                if root.experts-status != "": Text {
+                    text: root.experts-status;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    font-size: 12px;
+                }
                 
                 Button {
                     text: paused ? "▶ Resume" : "⏸ Pause";
@@ -527,56 +811,170 @@ export component MainWindow inherits Window {
             // Main content
             HorizontalBox {
                 spacing: 8px;
+                vertical-stretch: 1;
                 
                 // Left: Game canvas
                 VerticalBox {
-                    width: 420px;
+                    // Size hints: allow resize/maximize without layout binding loops.
+                    min-width: 320px;
+                    preferred-width: 420px;
+                    max-width: 520px;
                     spacing: 8px;
-                    
-                    SpotCanvas {
+                    vertical-stretch: 1;
+
+                    if root.game.kind == "spotxy": SpotXYCanvas {
+                        game: root.game;
+                        frame: root.hud.frame;
+                        vertical-stretch: 1;
+                    }
+                    if root.game.kind != "spotxy": SpotCanvas {
                         game: root.game;
                         vertical-stretch: 1;
                     }
                     
                     HudPanel {
                         hud: root.hud;
-                        height: 160px;
+                        // Allow shrinking on small windows; keep a comfortable default.
+                        preferred-height: 160px;
+                        min-height: 120px;
                     }
                 }
                 
                 // Right: Control panels
                 TabWidget {
                     horizontal-stretch: 1;
+                    vertical-stretch: 1;
                     
                     Tab {
                         title: "Learning";
-                        LearningPanel {
-                            state <=> learning;
-                            framerate <=> root.framerate;
-                            trial-period-ms <=> root.trial-period-ms;
-                            trigger-dream => { root.trigger-dream(); }
-                            trigger-burst => { root.trigger-burst(); }
-                            trigger-sync => { root.trigger-sync(); }
-                            trigger-imprint => { root.trigger-imprint(); }
-                            set-framerate(fps) => { root.set-framerate(fps); }
-                            set-trial-period-ms(ms) => { root.set-trial-period-ms(ms); }
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            LearningPanel {
+                                state <=> learning;
+                                framerate <=> root.framerate;
+                                trial-period-ms <=> root.trial-period-ms;
+                                trigger-dream => { root.trigger-dream(); }
+                                trigger-burst => { root.trigger-burst(); }
+                                trigger-sync => { root.trigger-sync(); }
+                                trigger-imprint => { root.trigger-imprint(); }
+                                set-framerate(fps) => { root.set-framerate(fps); }
+                                set-trial-period-ms(ms) => { root.set-trial-period-ms(ms); }
+                            }
+                        }
+                    }
+
+                    Tab {
+                        title: "SpotXY";
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            Rectangle {
+                                background: Theme.bg-panel;
+                                horizontal-stretch: 1;
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 10px;
+
+                                Text {
+                                    text: (root.game.spotxy-grid-n > 0) ?
+                                        "SpotXY (2D position, " + root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n + " grid)" :
+                                        "SpotXY (2D position, 2 actions)";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+
+                                CheckBox {
+                                    text: "Eval (held-out x-band, no learning)";
+                                    enabled: root.game.kind == "spotxy";
+                                    checked: root.game.spotxy-eval;
+                                    toggled => { spotxy-eval-changed(self.checked); }
+                                }
+
+                                Text {
+                                    text: (root.game.spotxy-grid-n > 0) ?
+                                        ("Rule: choose the correct cell (" + root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n + ")") :
+                                        "Rule: left if x < 0 else right";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    Text { text: "Grid:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+
+                                    Button {
+                                        text: "+";
+                                        enabled: root.game.kind == "spotxy" && !root.game.spotxy-eval && root.hud.mastered-at-trial >= 0;
+                                        clicked => { spotxy-increase-grid(); }
+                                    }
+
+                                    Text {
+                                        text: (root.game.spotxy-grid-n > 0) ?
+                                              (root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n) :
+                                              "2 actions";
+                                        color: Theme.text-secondary;
+                                        vertical-alignment: center;
+                                        font-size: 12px;
+                                    }
+
+                                    Button {
+                                        text: "-";
+                                        enabled: root.game.kind == "spotxy" && !root.game.spotxy-eval && root.game.spotxy-grid-n > 0;
+                                        clicked => { spotxy-decrease-grid(); }
+                                    }
+
+                                    Text {
+                                        text: (root.game.spotxy-grid-n > 0) ?
+                                              ("(" + (root.game.spotxy-grid-n * root.game.spotxy-grid-n) + " actions)") :
+                                              "";
+                                        color: Theme.text-secondary;
+                                        vertical-alignment: center;
+                                        font-size: 12px;
+                                    }
+                                }
+
+                                Text {
+                                    text: "Chosen: " + root.game.chosen-action;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Text {
+                                    text: "Last reward: " + (round(root.game.last-reward * 100.0) / 100.0);
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+                                }
+                            }
                         }
                     }
                     
                     Tab {
                         title: "Brain";
-                        BrainPanel {
-                            stats: brain-stats;
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            BrainPanel {
+                                stats: brain-stats;
+                                experts-status: root.experts-status;
+                                set-max-units(n) => { root.set-max-units(n); }
+                            }
                         }
                     }
                     
                     Tab {
                         title: "Storage";
-                        Rectangle {
-                            background: Theme.bg-panel;
-                            VerticalBox {
-                                padding: 12px;
-                                spacing: 8px;
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            Rectangle {
+                                background: Theme.bg-panel;
+                                horizontal-stretch: 1;
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 8px;
                                 
                                 Text {
                                     text: "Brain Persistence";
@@ -584,12 +982,71 @@ export component MainWindow inherits Window {
                                     font-size: 14px;
                                     font-weight: 600;
                                 }
-                                
+
+                                Text {
+                                    text: "Data dir: " + root.storage-data-dir;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                if root.storage-loaded-snapshot != "": Text {
+                                    text: "Loaded snapshot: " + root.storage-loaded-snapshot;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Text {
+                                    text: "Current brain: " + root.storage-brain-bytes + " bytes";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Text {
+                                    text: "Current runtime: " + root.storage-runtime-bytes + " bytes";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                Text {
+                                    text: "Snapshots are timestamped copies (brain + runtime).";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
                                 HorizontalBox {
                                     spacing: 8px;
-                                    Button { text: "Save"; clicked => { save-brain(); } }
-                                    Button { text: "Load"; clicked => { load-brain(); } }
-                                    Button { text: "Reset"; clicked => { reset-brain(); } }
+                                    Button { text: "Save snapshot"; clicked => { save-snapshot(); } }
+                                }
+
+                                Rectangle { height: 1px; background: Theme.border; }
+
+                                Text {
+                                    text: "Snapshots";
+                                    color: Theme.text-primary;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                }
+
+                                if root.storage-snapshots.length == 0: Text {
+                                    text: "No snapshots yet.";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                for s in root.storage-snapshots: HorizontalBox {
+                                    spacing: 8px;
+                                    Text {
+                                        text: s.stem + "  (" + s.brain-bytes + "b brain, " + s.runtime-bytes + "b runtime)";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        horizontal-stretch: 1;
+                                        wrap: word-wrap;
+                                    }
+                                    Button {
+                                        text: "Load";
+                                        clicked => { load-snapshot(s.stem); }
+                                    }
+                                }
                                 }
                             }
                         }
@@ -597,11 +1054,15 @@ export component MainWindow inherits Window {
 
                     Tab {
                         title: "Brain Plot";
-                        Rectangle {
-                            background: Theme.bg-panel;
-                            VerticalBox {
-                                padding: 12px;
-                                spacing: 8px;
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            Rectangle {
+                                background: Theme.bg-panel;
+                                horizontal-stretch: 1;
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 8px;
 
                                 Text {
                                     text: "Units (sampled): amp vs age";
@@ -651,17 +1112,22 @@ export component MainWindow inherits Window {
                                     color: Theme.text-secondary;
                                     font-size: 12px;
                                 }
+                                }
                             }
                         }
                     }
 
                     Tab {
                         title: "Meaning";
-                        Rectangle {
-                            background: Theme.bg-panel;
-                            VerticalBox {
-                                padding: 12px;
-                                spacing: 8px;
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            Rectangle {
+                                background: Theme.bg-panel;
+                                horizontal-stretch: 1;
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 8px;
 
                                 Text {
                                     text: "Meaning evidence (reward edges)";
@@ -677,14 +1143,14 @@ export component MainWindow inherits Window {
                                 }
 
                                 Text {
-                                    text: "pair(stim, left)  +" + round(meaning.pair-left.to-reward-pos * 1000) / 1000 +
+                                    text: "pair(stim, " + meaning.action-a-name + ")  +" + round(meaning.pair-left.to-reward-pos * 1000) / 1000 +
                                           "  -" + round(meaning.pair-left.to-reward-neg * 1000) / 1000 +
                                           "  meaning=" + round(meaning.pair-left.meaning * 1000) / 1000;
                                     color: Theme.text-secondary;
                                     font-size: 12px;
                                 }
                                 Text {
-                                    text: "pair(stim, right) +" + round(meaning.pair-right.to-reward-pos * 1000) / 1000 +
+                                    text: "pair(stim, " + meaning.action-b-name + ") +" + round(meaning.pair-right.to-reward-pos * 1000) / 1000 +
                                           "  -" + round(meaning.pair-right.to-reward-neg * 1000) / 1000 +
                                           "  meaning=" + round(meaning.pair-right.meaning * 1000) / 1000;
                                     color: Theme.text-secondary;
@@ -694,14 +1160,14 @@ export component MainWindow inherits Window {
                                 Rectangle { height: 1px; background: Theme.border; }
 
                                 Text {
-                                    text: "action(left)      +" + round(meaning.action-left.to-reward-pos * 1000) / 1000 +
+                                    text: "action(" + meaning.action-a-name + ")      +" + round(meaning.action-left.to-reward-pos * 1000) / 1000 +
                                           "  -" + round(meaning.action-left.to-reward-neg * 1000) / 1000 +
                                           "  meaning=" + round(meaning.action-left.meaning * 1000) / 1000;
                                     color: Theme.text-secondary;
                                     font-size: 12px;
                                 }
                                 Text {
-                                    text: "action(right)     +" + round(meaning.action-right.to-reward-pos * 1000) / 1000 +
+                                    text: "action(" + meaning.action-b-name + ")     +" + round(meaning.action-right.to-reward-pos * 1000) / 1000 +
                                           "  -" + round(meaning.action-right.to-reward-neg * 1000) / 1000 +
                                           "  meaning=" + round(meaning.action-right.meaning * 1000) / 1000;
                                     color: Theme.text-secondary;
@@ -753,6 +1219,280 @@ export component MainWindow inherits Window {
                                         background: d.positive ? Theme.accent-green : Theme.accent-red;
                                     }
                                 }
+                                }
+                            }
+                        }
+                    }
+                    Tab {
+                        title: "Graph";
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            Rectangle {
+                                background: Theme.bg-panel;
+                                horizontal-stretch: 1;
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 8px;
+
+                                Text {
+                                    text: "Connectivity Graph";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    Text { text: "Kind:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                    Button {
+                                        text: (root.graph-kind == "causal") ? "Causal" : "Substrate";
+                                        clicked => {
+                                            root.graph-kind = (root.graph-kind == "causal") ? "substrate" : "causal";
+                                            graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                        }
+                                    }
+
+                                    Text { text: "Layout:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                    Button {
+                                        text: (root.graph-layout == "circle") ? "Circle" : "Force";
+                                        clicked => {
+                                            root.graph-layout = (root.graph-layout == "circle") ? "force" : "circle";
+                                        }
+                                    }
+
+                                    Rectangle { horizontal-stretch: 1; }
+
+                                    Button {
+                                        text: "Refresh";
+                                        clicked => {
+                                            graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                        }
+                                    }
+                                }
+
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    Text { text: "Nodes:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                    Slider {
+                                        minimum: 8;
+                                        maximum: 128;
+                                        value: root.graph-max-nodes;
+                                        changed(val) => { root.graph-max-nodes = val; }
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text { text: root.graph-max-nodes; color: Theme.text-secondary; vertical-alignment: center; }
+
+                                    Text { text: "Edges:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                    Slider {
+                                        minimum: 0;
+                                        maximum: 320;
+                                        value: root.graph-max-edges;
+                                        changed(val) => { root.graph-max-edges = val; }
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text { text: root.graph-max-edges; color: Theme.text-secondary; vertical-alignment: center; }
+                                }
+
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    CheckBox { text: "Auto"; checked <=> root.graph-auto-refresh; }
+                                    CheckBox {
+                                        text: "Include isolated";
+                                        checked <=> root.graph-include-isolated;
+                                        toggled => {
+                                            graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                        }
+                                    }
+                                    Text { text: "Interval (ms):"; color: Theme.text-secondary; vertical-alignment: center; }
+                                    Slider {
+                                        minimum: 250;
+                                        maximum: 5000;
+                                        value: root.graph-interval-ms;
+                                        changed(val) => { root.graph-interval-ms = val; }
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text { text: root.graph-interval-ms; color: Theme.text-secondary; vertical-alignment: center; }
+                                }
+
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    Text { text: "Zoom:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                    Slider {
+                                        minimum: 0.5;
+                                        maximum: 4.0;
+                                        value <=> root.graph-zoom;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text { text: root.graph-zoom; color: Theme.text-secondary; vertical-alignment: center; }
+                                }
+
+                                // Tiny legend (no extra pages)
+                                HorizontalBox {
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 10px; height: 10px; background: Theme.accent-green; border-radius: 2px;
+                                    }
+                                    Text { text: "+ edge"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    Rectangle {
+                                        width: 10px; height: 10px; background: Theme.accent-red; border-radius: 2px;
+                                    }
+                                    Text { text: "- edge"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    Text { text: "strength → thickness/opacity"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+
+                                    if root.graph-kind == "causal": Rectangle {
+                                        width: 10px; height: 10px; background: Theme.accent-yellow; border-radius: 2px;
+                                    }
+                                    if root.graph-kind == "causal": Text { text: "pos_x"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    if root.graph-kind == "causal": Rectangle {
+                                        width: 10px; height: 10px; background: Theme.accent-green; border-radius: 2px;
+                                    }
+                                    if root.graph-kind == "causal": Text { text: "pos_y"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                }
+
+                                Rectangle {
+                                    height: 360px;
+                                    horizontal-stretch: 1;
+                                    background: Theme.bg-dark;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+
+                                    // Clipped viewport for edges/nodes. Tooltip is a sibling (not clipped)
+                                    // so it doesn't disappear near edges.
+                                    graph_viewport := Rectangle {
+                                        x: 0px;
+                                        y: 0px;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        background: transparent;
+                                        clip: true;
+
+                                        // Pan state for drag-to-pan.
+                                        property <bool> dragging: false;
+                                        property <float> drag-start-x01: 0.0;
+                                        property <float> drag-start-y01: 0.0;
+                                        property <float> pan-start-x01: 0.0;
+                                        property <float> pan-start-y01: 0.0;
+
+                                        hover_area := TouchArea {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            pointer-event(event) => {
+                                                let mx = self.mouse-x / parent.width;
+                                                let my = self.mouse-y / parent.height;
+                                                graph-hover(mx, my);
+                                            }
+                                            moved => {
+                                                let mx = self.mouse-x / parent.width;
+                                                let my = self.mouse-y / parent.height;
+
+                                                // Hover label (even while dragging).
+                                                graph-hover(mx, my);
+
+                                                // Drag-to-pan.
+                                                if self.pressed {
+                                                    if !parent.dragging {
+                                                        parent.dragging = true;
+                                                        parent.drag-start-x01 = self.pressed-x / parent.width;
+                                                        parent.drag-start-y01 = self.pressed-y / parent.height;
+                                                        parent.pan-start-x01 = root.graph-pan-x01;
+                                                        parent.pan-start-y01 = root.graph-pan-y01;
+                                                    }
+
+                                                    let dx = mx - parent.drag-start-x01;
+                                                    let dy = my - parent.drag-start-y01;
+                                                    root.graph-pan-x01 = max(-1.0, min(1.0, parent.pan-start-x01 + dx));
+                                                    root.graph-pan-y01 = max(-1.0, min(1.0, parent.pan-start-y01 + dy));
+                                                } else {
+                                                    parent.dragging = false;
+                                                }
+                                            }
+                                            scroll-event(event) => {
+                                                let dy = event.delta-y / 600px;
+                                                let factor = 1.0 + (-dy);
+
+                                                let old_zoom = root.graph-zoom;
+                                                let new_zoom = max(0.5, min(4.0, old_zoom * factor));
+
+                                                let mx = self.mouse-x / parent.width;
+                                                let my = self.mouse-y / parent.height;
+
+                                                let r = new_zoom / old_zoom;
+                                                root.graph-pan-x01 = max(-1.0, min(1.0, r * root.graph-pan-x01 + (1.0 - r) * (mx - 0.5)));
+                                                root.graph-pan-y01 = max(-1.0, min(1.0, r * root.graph-pan-y01 + (1.0 - r) * (my - 0.5)));
+                                                root.graph-zoom = new_zoom;
+                                                return accept;
+                                            }
+                                        }
+
+                                        // Edge segments first (behind nodes)
+                                        for e in graph-edge-segs: Path {
+                                            // Use pixel coordinates so edges share the exact same
+                                            // mapping as node centers (including node size offset).
+                                            commands:
+                                                "M "
+                                                + (e.x1 * ((parent.width - 8px) / 1px) + 4)
+                                                + " "
+                                                + (e.y1 * ((parent.height - 8px) / 1px) + 4)
+                                                + " L "
+                                                + (e.x2 * ((parent.width - 8px) / 1px) + 4)
+                                                + " "
+                                                + (e.y2 * ((parent.height - 8px) / 1px) + 4);
+                                            viewbox-x: 0;
+                                            viewbox-y: 0;
+                                            viewbox-width: parent.width / 1px;
+                                            viewbox-height: parent.height / 1px;
+
+                                            fill: transparent;
+                                            stroke: e.positive ? Theme.accent-green : Theme.accent-red;
+                                            stroke-width: (0.0006 + 0.0040 * e.thickness01) * min(parent.width, parent.height);
+                                            stroke-line-cap: round;
+                                            opacity: 0.05 + 0.85 * e.strength01;
+                                        }
+
+                                        for n in graph-nodes: Rectangle {
+                                            width: 8px;
+                                            height: 8px;
+                                            x: n.x01 * (parent.width - self.width);
+                                            y: n.y01 * (parent.height - self.height);
+                                            background: (root.graph-kind == "causal")
+                                                ? (n.domain == "pos_x" ? Theme.accent-yellow :
+                                                   n.domain == "pos_y" ? Theme.accent-green :
+                                                   Theme.accent-blue)
+                                                : Theme.accent-blue;
+                                            border-radius: 4px;
+                                        }
+                                    }
+
+                                    if root.graph-hover-visible: Rectangle {
+                                        background: Theme.bg-panel;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
+                                        border-radius: 6px;
+                                        width: 240px;
+                                        height: 36px;
+                                        // ensure above the viewport drawings
+                                        z: 2;
+
+                                        x: ((root.graph-hover-x01 * graph_viewport.width + 12px) > (graph_viewport.width - self.width - 8px))
+                                            ? (graph_viewport.width - self.width - 8px)
+                                            : (root.graph-hover-x01 * graph_viewport.width + 12px);
+                                        y: ((root.graph-hover-y01 * graph_viewport.height + 12px) > (graph_viewport.height - self.height - 8px))
+                                            ? (graph_viewport.height - self.height - 8px)
+                                            : (root.graph-hover-y01 * graph_viewport.height + 12px);
+
+                                        Text {
+                                            x: 8px;
+                                            y: 0px;
+                                            width: parent.width - 16px;
+                                            text: root.graph-hover-text;
+                                            color: Theme.text-primary;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: left;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -760,4 +1500,6 @@ export component MainWindow inherits Window {
             }
         }
     }
+}
+
 }

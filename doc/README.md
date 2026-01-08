@@ -15,8 +15,11 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 ## How to navigate
 - [Architecture](architecture.md): core substrate + "body/frame" interface + execution tiers.
 - (In Architecture) `brained` daemon + UI/CLI protocol, including FPS vs trial-period controls.
+- [Experts / child brains](experts.md): general sandbox learning mechanism for all games (design contract; implemented later).
 - [Performance](performance.md): execution tiers, SIMD, GPU, and benchmarking.
 - [Accelerated Learning](accelerated-learning.md): neurogenesis, dream replay, and other speed-up mechanisms.
+- [What LLMs don’t do (yet)](what-llms-dont-do-yet.md): closed-loop online learning, persistent adaptation, embodiment framing.
+- [Spatial + temporal design note](spatial-temporal-design.md): population-coded spatial inputs, scaling to higher dimensions, and a test-first battery.
 - [Research Comparison](research-comparison.md): how braine differs from mainstream AI, AGI analysis.
 - [Research Landscape](research-landscape.md): what this resembles and how it differs.
 - [Metrics](metrics.md): simple capability measurements to track progress.
