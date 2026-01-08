@@ -283,6 +283,25 @@ pub struct OwnedStimulus {
     pub strength: f32,
 }
 
+/// A lightweight point for UI visualization of the substrate.
+///
+/// This is intentionally small and cheap to generate; it is **not** a full brain dump.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct UnitPlotPoint {
+    pub id: u32,
+    pub amp: f32,
+    /// Amplitude normalized to [0,1] relative to the sampled max.
+    /// This makes the UI plot readable even when absolute activity is low.
+    pub amp01: f32,
+    /// Normalized relative age proxy in [0,1].
+    /// Higher means "newer" (later unit IDs), which aligns with neurogenesis appends.
+    pub rel_age: f32,
+    pub is_reserved: bool,
+    pub is_sensor_member: bool,
+    pub is_group_member: bool,
+}
+
 impl OwnedStimulus {
     /// Convert to a borrowed Stimulus.
     pub fn as_stimulus(&self) -> Stimulus<'_> {
@@ -1408,6 +1427,61 @@ impl Brain {
 
     pub fn has_sensor(&self, name: &str) -> bool {
         self.sensor_groups.iter().any(|g| g.name == name)
+    }
+
+    /// Ensure an action group exists; if missing, create it.
+    pub fn ensure_action(&mut self, name: &str, width: usize) {
+        if self.action_groups.iter().any(|g| g.name == name) {
+            return;
+        }
+        self.define_action(name, width);
+    }
+
+    pub fn has_action(&self, name: &str) -> bool {
+        self.action_groups.iter().any(|g| g.name == name)
+    }
+
+    /// Return a compact sampling of units for UI visualization.
+    ///
+    /// Uses evenly-spaced sampling over unit IDs so the plot is stable across frames.
+    /// `rel_age` is an ID-based proxy (newer units tend to have higher IDs).
+    #[cfg(feature = "std")]
+    pub fn unit_plot_points(&self, max_points: usize) -> Vec<UnitPlotPoint> {
+        let n = self.units.len();
+        if n == 0 || max_points == 0 {
+            return Vec::new();
+        }
+
+        let take = max_points.min(n);
+        let denom = (n - 1).max(1) as f32;
+
+        // First pass: determine max amplitude across sampled points.
+        let mut max_amp = 0.0f32;
+        for i in 0..take {
+            let id = (i * n) / take;
+            let a = self.units[id].amp;
+            if a > max_amp {
+                max_amp = a;
+            }
+        }
+        let inv_max = if max_amp > 1e-6 { 1.0 / max_amp } else { 0.0 };
+
+        let mut out = Vec::with_capacity(take);
+        for i in 0..take {
+            let id = (i * n) / take;
+            let rel_age = (id as f32 / denom).clamp(0.0, 1.0);
+            let amp = self.units[id].amp;
+            out.push(UnitPlotPoint {
+                id: id as u32,
+                amp,
+                amp01: (amp * inv_max).clamp(0.0, 1.0),
+                rel_age,
+                is_reserved: self.reserved.get(id).copied().unwrap_or(false),
+                is_sensor_member: self.sensor_member.get(id).copied().unwrap_or(false),
+                is_group_member: self.group_member.get(id).copied().unwrap_or(false),
+            });
+        }
+        out
     }
 
     /// Create a sandboxed child brain.

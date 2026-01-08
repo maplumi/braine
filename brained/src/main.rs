@@ -12,13 +12,16 @@
 //! - MacOS: ~/Library/Application Support/Braine/
 
 use braine::substrate::Stimulus;
-use braine::substrate::{Brain, BrainConfig};
+use braine::substrate::{Brain, BrainConfig, UnitPlotPoint};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
+use std::io::Write as _;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::time;
 use tracing::{error, info, warn};
 
 mod game;
@@ -68,6 +71,27 @@ struct StateSnapshot {
     game: GameState,
     hud: HudData,
     brain_stats: BrainStats,
+    #[serde(default)]
+    unit_plot: Vec<UnitPlotPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedRuntime {
+    game: PersistedGameStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedGameStats {
+    correct: u32,
+    incorrect: u32,
+    trials: u32,
+    recent: Vec<bool>,
+    #[serde(default)]
+    learning_at_trial: Option<u32>,
+    #[serde(default)]
+    learned_at_trial: Option<u32>,
+    #[serde(default)]
+    mastered_at_trial: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +111,12 @@ struct HudData {
     recent_rate: f32,
     last_100_rate: f32,
     neuromod: f32,
+    #[serde(default)]
+    learning_at_trial: i32,
+    #[serde(default)]
+    learned_at_trial: i32,
+    #[serde(default)]
+    mastered_at_trial: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,9 +293,9 @@ impl DaemonState {
             // - higher max_units => allows more capacity but costs memory/compute
             let _grown = self.brain.maybe_neurogenesis(0.35, 1, 256);
 
-            // Auto-save every 50 trials to preserve online learning
+            // Auto-save frequently so short sessions still persist.
             let trials_since_save = self.game.trials - self.last_autosave_trial;
-            if trials_since_save >= 50 {
+            if trials_since_save >= 10 {
                 info!(
                     "Auto-save triggered: {} trials since last save (trial {})",
                     trials_since_save, self.game.trials
@@ -308,6 +338,9 @@ impl DaemonState {
                 recent_rate: self.game.recent_rate(),
                 last_100_rate: self.game.last_100_rate(),
                 neuromod: self.brain.neuromodulator(),
+                learning_at_trial: self.game.learning_at_trial.map(|v| v as i32).unwrap_or(-1),
+                learned_at_trial: self.game.learned_at_trial.map(|v| v as i32).unwrap_or(-1),
+                mastered_at_trial: self.game.mastered_at_trial.map(|v| v as i32).unwrap_or(-1),
             },
             brain_stats: BrainStats {
                 unit_count: diag.unit_count,
@@ -324,6 +357,7 @@ impl DaemonState {
                 causal_last_cooccur_edge_updates: causal.last_cooccur_edge_updates,
                 age_steps: self.brain.age_steps(),
             },
+            unit_plot: self.brain.unit_plot_points(128),
         }
     }
 
@@ -357,6 +391,26 @@ impl DaemonState {
             msg
         })?;
 
+        // Persist runtime/task metrics alongside the brain so UI progress doesn't reset.
+        let runtime = PersistedRuntime {
+            game: PersistedGameStats {
+                correct: self.game.correct,
+                incorrect: self.game.incorrect,
+                trials: self.game.trials,
+                recent: self.game.recent.clone(),
+                learning_at_trial: self.game.learning_at_trial,
+                learned_at_trial: self.game.learned_at_trial,
+                mastered_at_trial: self.game.mastered_at_trial,
+            },
+        };
+        let rt_path = self.paths.runtime_state_file();
+        let json = serde_json::to_vec_pretty(&runtime)
+            .map_err(|e| format!("Failed to encode runtime state: {e}"))?;
+        let mut rt = File::create(&rt_path)
+            .map_err(|e| format!("Failed to create runtime state file {:?}: {e}", rt_path))?;
+        rt.write_all(&json)
+            .map_err(|e| format!("Failed to write runtime state file {:?}: {e}", rt_path))?;
+
         info!("✓ Brain saved successfully to {:?}", path);
         Ok(())
     }
@@ -369,6 +423,33 @@ impl DaemonState {
         let mut file = File::open(&path).map_err(|e| format!("Failed to open file: {}", e))?;
         self.brain = Brain::load_image_from(&mut file)
             .map_err(|e| format!("Failed to load brain: {}", e))?;
+
+        // Ensure required IO groups exist (for backwards compatibility with older images).
+        self.brain.ensure_sensor("spot_left", 4);
+        self.brain.ensure_sensor("spot_right", 4);
+        self.brain.ensure_action("left", 6);
+        self.brain.ensure_action("right", 6);
+        self.brain.set_observer_telemetry(true);
+
+        // Load runtime/task metrics if present.
+        let rt_path = self.paths.runtime_state_file();
+        if rt_path.exists() {
+            match std::fs::read_to_string(&rt_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<PersistedRuntime>(&s).ok())
+            {
+                Some(rt) => {
+                    self.game.correct = rt.game.correct;
+                    self.game.incorrect = rt.game.incorrect;
+                    self.game.trials = rt.game.trials;
+                    self.game.recent = rt.game.recent;
+                    self.game.learning_at_trial = rt.game.learning_at_trial;
+                    self.game.learned_at_trial = rt.game.learned_at_trial;
+                    self.game.mastered_at_trial = rt.game.mastered_at_trial;
+                }
+                None => warn!("Failed to parse runtime state file {:?}", rt_path),
+            }
+        }
         info!("Brain loaded from {:?}", path);
         Ok(())
     }
@@ -500,7 +581,14 @@ async fn handle_client(
                 match s.save_brain() {
                     Ok(_) => {
                         info!("Shutdown requested; brain saved");
-                        std::process::exit(0);
+                        tokio::spawn(async {
+                            // Give the response a moment to flush before exiting.
+                            time::sleep(Duration::from_millis(50)).await;
+                            std::process::exit(0);
+                        });
+                        Response::Success {
+                            message: "Shutting down".to_string(),
+                        }
                     }
                     Err(e) => Response::Error {
                         message: format!("Save failed, aborting shutdown: {}", e),
@@ -552,6 +640,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize daemon state
     let state = Arc::new(RwLock::new(DaemonState::new(paths)));
+
+    // Save on Ctrl-C so state persists even if the daemon is stopped abruptly.
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let s = state.read().await;
+                if let Err(e) = s.save_brain() {
+                    error!("Ctrl-C save failed: {}", e);
+                } else {
+                    info!("Ctrl-C: brain saved");
+                }
+                std::process::exit(0);
+            }
+        });
+    }
 
     // Try to load existing brain
     {

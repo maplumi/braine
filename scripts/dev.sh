@@ -57,8 +57,9 @@ DATA LOCATION:
   Brain saves to: %APPDATA%\Braine\brain.bbi
 
 AUTO-SAVE:
-  Brain auto-saves every 50 trials.
+  Brain auto-saves every 10 trials.
   It also saves on explicit Stop or Shutdown.
+  Spot runtime metrics persist to: %APPDATA%\Braine\runtime.json
 EOF
 (
   cd dist/windows

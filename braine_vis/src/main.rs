@@ -2,7 +2,7 @@
 //! Connects to the `brained` daemon over TCP (127.0.0.1:9876)
 
 use serde::{Deserialize, Serialize};
-use slint::Timer;
+use slint::{ModelRc, Timer, VecModel};
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -54,6 +54,20 @@ struct DaemonStateSnapshot {
     game: DaemonGameState,
     hud: DaemonHudData,
     brain_stats: DaemonBrainStats,
+    #[serde(default)]
+    unit_plot: Vec<DaemonUnitPlotPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonUnitPlotPoint {
+    id: u32,
+    amp: f32,
+    #[serde(default)]
+    amp01: f32,
+    rel_age: f32,
+    is_reserved: bool,
+    is_sensor_member: bool,
+    is_group_member: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -73,6 +87,12 @@ struct DaemonHudData {
     recent_rate: f32,
     last_100_rate: f32,
     neuromod: f32,
+    #[serde(default)]
+    learning_at_trial: i32,
+    #[serde(default)]
+    learned_at_trial: i32,
+    #[serde(default)]
+    mastered_at_trial: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -336,6 +356,9 @@ fn main() -> Result<(), slint::PlatformError> {
                     recent_rate: snap.hud.recent_rate,
                     last_100_rate: snap.hud.last_100_rate,
                     neuromod: snap.hud.neuromod,
+                    learning_at_trial: snap.hud.learning_at_trial,
+                    learned_at_trial: snap.hud.learned_at_trial,
+                    mastered_at_trial: snap.hud.mastered_at_trial,
                 });
                 ui.set_brain_stats(BrainStats {
                     unit_count: snap.brain_stats.unit_count as i32,
@@ -354,6 +377,21 @@ fn main() -> Result<(), slint::PlatformError> {
                         as i32,
                     age_steps: snap.brain_stats.age_steps as i32,
                 });
+
+                let points: Vec<UnitPoint> = snap
+                    .unit_plot
+                    .iter()
+                    .map(|p| UnitPoint {
+                        id: p.id as i32,
+                        amp: p.amp,
+                        amp01: p.amp01,
+                        rel_age: p.rel_age,
+                        is_reserved: p.is_reserved,
+                        is_sensor_member: p.is_sensor_member,
+                        is_group_member: p.is_group_member,
+                    })
+                    .collect();
+                ui.set_unit_points(ModelRc::new(VecModel::from(points)));
                 ui.set_is_braine_mode(snap.mode != "human");
                 ui.set_running(snap.running);
 

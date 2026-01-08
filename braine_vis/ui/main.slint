@@ -16,6 +16,9 @@ export struct HudData {
     recent-rate: float,
     last-100-rate: float,
     neuromod: float,
+    learning-at-trial: int,
+    learned-at-trial: int,
+    mastered-at-trial: int,
 }
 
 export struct LearningState {
@@ -43,6 +46,16 @@ export struct BrainStats {
     causal-last-directed-updates: int,
     causal-last-cooccur-updates: int,
     age-steps: int,
+}
+
+export struct UnitPoint {
+    id: int,
+    amp: float,
+    amp01: float,
+    rel_age: float,
+    is_reserved: bool,
+    is_sensor_member: bool,
+    is_group_member: bool,
 }
 
 export struct GameState {
@@ -189,6 +202,14 @@ component HudPanel inherits Rectangle {
             color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.accent-yellow;
             font-size: 14px;
             font-weight: 600;
+        }
+
+        Text {
+            text: "Reached @ trials — Learning: " + (hud.learning-at-trial < 0 ? "-" : hud.learning-at-trial) +
+                  "  Learned: " + (hud.learned-at-trial < 0 ? "-" : hud.learned-at-trial) +
+                  "  Mastered: " + (hud.mastered-at-trial < 0 ? "-" : hud.mastered-at-trial);
+            color: Theme.text-secondary;
+            font-size: 12px;
         }
     }
 }
@@ -371,6 +392,7 @@ export component MainWindow inherits Window {
     in property <HudData> hud;
     in property <GameState> game;
     in property <BrainStats> brain-stats;
+    in property <[UnitPoint]> unit-points;
     in-out property <LearningState> learning;
     
     // Control state
@@ -532,6 +554,46 @@ export component MainWindow inherits Window {
                                     Button { text: "Save"; clicked => { save-brain(); } }
                                     Button { text: "Load"; clicked => { load-brain(); } }
                                     Button { text: "Reset"; clicked => { reset-brain(); } }
+                                }
+                            }
+                        }
+                    }
+
+                    Tab {
+                        title: "Brain Plot";
+                        Rectangle {
+                            background: Theme.bg-panel;
+                            VerticalBox {
+                                padding: 12px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "Units (sampled): amp vs age";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+
+                                Rectangle {
+                                    height: 260px;
+                                    horizontal-stretch: 1;
+                                    background: Theme.bg-dark;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+
+                                    for p in unit-points: Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        x: p.rel_age * (parent.width - self.width);
+                                        y: (1.0 - p.amp01) * (parent.height - self.height);
+                                        background: p.is_reserved ? Theme.text-secondary : (p.is_sensor_member ? Theme.accent-blue : (p.is_group_member ? Theme.accent-green : Theme.accent-yellow));
+                                    }
+                                }
+
+                                Text {
+                                    text: "Legend: reserved, sensor, group, other";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
                                 }
                             }
                         }

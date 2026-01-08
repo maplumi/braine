@@ -32,6 +32,10 @@ impl AppPaths {
         self.data_dir.join("brain.bbi")
     }
 
+    pub fn runtime_state_file(&self) -> PathBuf {
+        self.data_dir.join("runtime.json")
+    }
+
     #[allow(dead_code)]
     pub fn config_file(&self) -> PathBuf {
         self.data_dir.join("config.json")
