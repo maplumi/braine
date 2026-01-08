@@ -103,3 +103,38 @@ Protocol:
 Expected behavior:
 - parent behavior stays stable during child exploration.
 - parent gains new association after consolidation.
+
+---
+
+## Daemon games: Pong (3 actions)
+
+The daemon (`brained`) includes a minimal `pong` task with **3 actions**:
+`up`, `down`, `stay`.
+
+### Discrete-bin sensors (current)
+The current implementation uses a small, discrete encoding:
+
+- One-hot bins for position:
+  - `pong_ball_x_00..07` (ball x in [0,1])
+  - `pong_ball_y_00..07` (ball y in [-1,1])
+  - `pong_paddle_y_00..07` (paddle y in [-1,1])
+- Velocity sign bits:
+  - `pong_vx_pos` / `pong_vx_neg`
+  - `pong_vy_pos` / `pong_vy_neg`
+
+For meaning/credit-assignment conditioning, the daemon also tags each timestep with a
+symbol key like:
+
+`pong_b08_bx03_by05_py04_vxp_vyn`
+
+This lets the causal/meaning system learn context-conditioned effects without requiring
+the symbol itself to be a sensor.
+
+### Path to continuous encodings (planned)
+No protocol change is needed to move beyond bins.
+The substrate already supports real-valued `Stimulus { strength }`, so “continuous” can be expressed as:
+
+- **Graded bins**: stimulate the nearest 2–3 bins with weights (e.g. linear or Gaussian falloff).
+- **Population coding**: use fixed centers and compute normalized activations (as in SpotXY).
+
+Both approaches preserve the same action space while increasing state resolution.

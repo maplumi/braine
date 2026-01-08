@@ -108,6 +108,7 @@ export struct GameState {
     chosen-action: string,
     pos-x: float,
     pos-y: float,
+    pong-paddle-y: float,
     spotxy-eval: bool,
     spotxy-mode: string,
     spotxy-grid-n: int,
@@ -227,6 +228,63 @@ component SpotCanvas inherits Rectangle {
         x: (game.chosen-action == "left") ? 0px : (game.chosen-action == "right") ? (parent.width / 2) : 0px;
         width: (game.chosen-action == "left" || game.chosen-action == "right") ? (parent.width / 2) : 0px;
         opacity: game.response-made ? 0.9 : 0.0;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Pong Canvas (ball + paddle)
+// ═══════════════════════════════════════════════════════════════════════════
+
+component PongCanvas inherits Rectangle {
+    in property <GameState> game;
+
+    background: Theme.bg-dark;
+    border-color: Theme.border;
+    border-width: 2px;
+
+    // Playfield bounds
+    field := Rectangle {
+        x: 12px;
+        y: 12px;
+        width: parent.width - 24px;
+        height: parent.height - 24px;
+        background: transparent;
+        border-color: Theme.border;
+        border-width: 1px;
+    }
+
+    // Center line
+    Rectangle {
+        x: field.x + field.width / 2 - 1px;
+        y: field.y;
+        width: 2px;
+        height: field.height;
+        background: #ffffff20;
+    }
+
+    // Paddle (left)
+    Rectangle {
+        property <length> paddle_w: 10px;
+        property <length> paddle_h: 72px;
+        width: self.paddle_w;
+        height: self.paddle_h;
+        x: field.x + 8px;
+        // game.pong-paddle-y is in [-1,1], map to pixels (invert like SpotXY)
+        y: field.y + (0.5 - 0.5 * game.pong-paddle-y) * (field.height - self.height);
+        background: Theme.accent-blue;
+        border-radius: 3px;
+        opacity: 0.95;
+    }
+
+    // Ball (pos-x,pos-y are in [-1,1])
+    Rectangle {
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.accent-yellow;
+        x: field.x + (0.5 + 0.5 * game.pos-x) * (field.width - self.width);
+        y: field.y + (0.5 - 0.5 * game.pos-y) * (field.height - self.height);
+        opacity: 0.95;
     }
 }
 
@@ -774,12 +832,17 @@ export component MainWindow inherits Window {
 
                 Text { text: "Game:"; color: Theme.text-secondary; vertical-alignment: center; }
                 Button {
-                    text: (root.game.kind == "bandit") ? "Bandit" : (root.game.kind == "spot_reversal") ? "Spot Reversal" : (root.game.kind == "spotxy") ? "SpotXY" : "Spot";
+                    text: (root.game.kind == "bandit") ? "Bandit" :
+                          (root.game.kind == "spot_reversal") ? "Spot Reversal" :
+                          (root.game.kind == "spotxy") ? "SpotXY" :
+                          (root.game.kind == "pong") ? "Pong" :
+                          "Spot";
                     enabled: !running;
                     clicked => {
                         game-changed((root.game.kind == "spot") ? "bandit" :
                                      (root.game.kind == "bandit") ? "spot_reversal" :
                                      (root.game.kind == "spot_reversal") ? "spotxy" :
+                                     (root.game.kind == "spotxy") ? "pong" :
                                      "spot");
                     }
                 }
@@ -827,7 +890,11 @@ export component MainWindow inherits Window {
                         frame: root.hud.frame;
                         vertical-stretch: 1;
                     }
-                    if root.game.kind != "spotxy": SpotCanvas {
+                    if root.game.kind == "pong": PongCanvas {
+                        game: root.game;
+                        vertical-stretch: 1;
+                    }
+                    if root.game.kind != "spotxy" && root.game.kind != "pong": SpotCanvas {
                         game: root.game;
                         vertical-stretch: 1;
                     }

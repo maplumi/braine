@@ -31,7 +31,7 @@ mod paths;
 mod state_image;
 
 use experts::{ExpertManager, ExpertsPersistenceMode, ParentLearningPolicy};
-use game::{BanditGame, SpotGame, SpotReversalGame, SpotXYGame};
+use game::{BanditGame, PongGame, SpotGame, SpotReversalGame, SpotXYGame};
 use paths::AppPaths;
 
 fn default_experts_max_depth() -> u32 {
@@ -49,6 +49,7 @@ enum ActiveGame {
     Bandit(BanditGame),
     SpotReversal(SpotReversalGame),
     SpotXY(SpotXYGame),
+    Pong(PongGame),
 }
 
 impl ActiveGame {
@@ -58,6 +59,7 @@ impl ActiveGame {
             ActiveGame::Bandit(_) => "bandit",
             ActiveGame::SpotReversal(_) => "spot_reversal",
             ActiveGame::SpotXY(_) => "spotxy",
+            ActiveGame::Pong(_) => "pong",
         }
     }
 
@@ -67,6 +69,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.update_timing(trial_period_ms),
             ActiveGame::SpotReversal(g) => g.update_timing(trial_period_ms),
             ActiveGame::SpotXY(g) => g.update_timing(trial_period_ms),
+            ActiveGame::Pong(g) => g.update_timing(trial_period_ms),
         }
     }
 
@@ -76,6 +79,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.stimulus_name(),
             ActiveGame::SpotReversal(g) => g.stimulus_name(),
             ActiveGame::SpotXY(g) => g.stimulus_name(),
+            ActiveGame::Pong(g) => g.stimulus_name(),
         }
     }
 
@@ -85,6 +89,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.best_action(),
             ActiveGame::SpotReversal(g) => g.correct_action(),
             ActiveGame::SpotXY(g) => g.correct_action(),
+            ActiveGame::Pong(g) => g.correct_action(),
         }
     }
 
@@ -95,6 +100,7 @@ impl ActiveGame {
                 ACTIONS.get_or_init(|| vec!["left".to_string(), "right".to_string()])
             }
             ActiveGame::SpotXY(g) => g.allowed_actions(),
+            ActiveGame::Pong(g) => g.allowed_actions(),
         }
     }
 
@@ -104,6 +110,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.response_made,
             ActiveGame::SpotReversal(g) => g.response_made,
             ActiveGame::SpotXY(g) => g.response_made,
+            ActiveGame::Pong(g) => g.response_made,
         }
     }
 
@@ -113,6 +120,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.trial_frame,
             ActiveGame::SpotReversal(g) => g.trial_frame,
             ActiveGame::SpotXY(g) => g.trial_frame,
+            ActiveGame::Pong(g) => g.trial_frame,
         }
     }
 
@@ -124,6 +132,8 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.spot_is_left,
             // For SpotXY, reuse this field as "correct side is left" (x < 0).
             ActiveGame::SpotXY(g) => g.pos_x < 0.0,
+            // For Pong, reuse this field as "ball is above paddle".
+            ActiveGame::Pong(g) => g.ball_y > g.paddle_y,
         }
     }
 
@@ -134,12 +144,13 @@ impl ActiveGame {
         }
     }
 
-    fn score_action(&mut self, action: &str) -> Option<(f32, bool)> {
+    fn score_action(&mut self, action: &str, trial_period_ms: u32) -> Option<(f32, bool)> {
         match self {
             ActiveGame::Spot(g) => g.score_action(action),
             ActiveGame::Bandit(g) => g.score_action(action),
             ActiveGame::SpotReversal(g) => g.score_action(action),
             ActiveGame::SpotXY(g) => g.score_action(action),
+            ActiveGame::Pong(g) => g.score_action(action, trial_period_ms),
         }
     }
 
@@ -149,6 +160,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => &g.stats,
             ActiveGame::SpotReversal(g) => &g.stats,
             ActiveGame::SpotXY(g) => &g.stats,
+            ActiveGame::Pong(g) => &g.stats,
         }
     }
 
@@ -158,6 +170,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => &mut g.stats,
             ActiveGame::SpotReversal(g) => &mut g.stats,
             ActiveGame::SpotXY(g) => &mut g.stats,
+            ActiveGame::Pong(g) => &mut g.stats,
         }
     }
 
@@ -167,12 +180,23 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.last_action.as_deref(),
             ActiveGame::SpotReversal(g) => g.last_action.as_deref(),
             ActiveGame::SpotXY(g) => g.last_action.as_deref(),
+            ActiveGame::Pong(g) => g.last_action.as_deref(),
         }
     }
 
-    fn spotxy_pos(&self) -> Option<(f32, f32)> {
+    fn stimulus_key(&self) -> Option<&str> {
+        match self {
+            ActiveGame::SpotXY(g) => Some(g.stimulus_key()),
+            ActiveGame::Pong(g) => Some(g.stimulus_key()),
+            _ => None,
+        }
+    }
+
+    fn pos_xy(&self) -> Option<(f32, f32)> {
         match self {
             ActiveGame::SpotXY(g) => Some((g.pos_x, g.pos_y)),
+            // Map pong ball_x in [0,1] into [-1,1] for the UI dot.
+            ActiveGame::Pong(g) => Some((g.ball_x * 2.0 - 1.0, g.ball_y)),
             _ => None,
         }
     }
@@ -454,6 +478,8 @@ struct GameState {
     #[serde(default)]
     pos_y: f32,
     #[serde(default)]
+    pong_paddle_y: f32,
+    #[serde(default)]
     spotxy_eval: bool,
     #[serde(default)]
     spotxy_mode: String,
@@ -572,6 +598,8 @@ impl DaemonState {
 
         brain.define_sensor("spot_left", 4);
         brain.define_sensor("spot_right", 4);
+        // Context bit for Spot Reversal (lets the substrate represent regime changes).
+        brain.define_sensor("spot_rev_ctx", 2);
         brain.define_sensor("bandit", 4);
         brain.define_action("left", 6);
         brain.define_action("right", 6);
@@ -624,10 +652,8 @@ impl DaemonState {
         if self.game.kind() == "spot_reversal" && self.game.reversal_active() {
             return std::borrow::Cow::Owned(format!("{}::rev", base));
         }
-        if self.game.kind() == "spotxy" {
-            if let Some(k) = self.game.spotxy_stimulus_key() {
-                return std::borrow::Cow::Owned(k.to_string());
-            }
+        if let Some(k) = self.game.stimulus_key() {
+            return std::borrow::Cow::Owned(k.to_string());
         }
         std::borrow::Cow::Borrowed(base)
     }
@@ -657,10 +683,23 @@ impl DaemonState {
         let a = correct_action;
         let b = if !wrong_or_chosen_action.is_empty() && wrong_or_chosen_action != correct_action {
             wrong_or_chosen_action
-        } else if correct_action == "left" {
-            "right"
         } else {
-            "left"
+            // Pick a second action deterministically.
+            // Prefer symmetric pairs for known action sets.
+            match correct_action {
+                "left" => "right",
+                "right" => "left",
+                "up" => "down",
+                "down" => "up",
+                "stay" => "up",
+                _ => self
+                    .game
+                    .allowed_actions()
+                    .iter()
+                    .find(|x| x.as_str() != correct_action)
+                    .map(|s| s.as_str())
+                    .unwrap_or("left"),
+            }
         };
 
         let pair_a = brain.pair_reward_edges(stimulus, a);
@@ -704,9 +743,13 @@ impl DaemonState {
                 self.ensure_spotxy_io();
                 self.game = ActiveGame::SpotXY(SpotXYGame::new(16));
             }
+            "pong" => {
+                self.ensure_pong_io();
+                self.game = ActiveGame::Pong(PongGame::new());
+            }
             _ => {
                 return Err(format!(
-                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy"
+                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|pong"
                 ))
             }
         }
@@ -735,6 +778,25 @@ impl DaemonState {
                 self.brain.ensure_action(name, 6);
             }
         }
+    }
+
+    fn ensure_pong_io(&mut self) {
+        // Bin sensors (must match PongGame constants).
+        let bins = 8u32;
+        for i in 0..bins {
+            self.brain.ensure_sensor(&format!("pong_ball_x_{i:02}"), 3);
+            self.brain.ensure_sensor(&format!("pong_ball_y_{i:02}"), 3);
+            self.brain
+                .ensure_sensor(&format!("pong_paddle_y_{i:02}"), 3);
+        }
+        self.brain.ensure_sensor("pong_vx_pos", 2);
+        self.brain.ensure_sensor("pong_vx_neg", 2);
+        self.brain.ensure_sensor("pong_vy_pos", 2);
+        self.brain.ensure_sensor("pong_vy_neg", 2);
+
+        self.brain.ensure_action("up", 6);
+        self.brain.ensure_action("down", 6);
+        self.brain.ensure_action("stay", 6);
     }
 
     fn push_history(buf: &mut Vec<f32>, v: f32, cap: usize) {
@@ -835,8 +897,15 @@ impl DaemonState {
                     g.apply_stimuli(brain);
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
+                ActiveGame::Pong(g) => {
+                    g.apply_stimuli(brain);
+                    brain.note_compound_symbol(&[stimulus_key]);
+                }
                 _ => {
                     brain.apply_stimulus(Stimulus::new(base_stimulus, 1.0));
+                    if self.game.kind() == "spot_reversal" && self.game.reversal_active() {
+                        brain.apply_stimulus(Stimulus::new("spot_rev_ctx", 1.0));
+                    }
                     if let Some(ref k) = stimulus_key_owned {
                         brain.note_compound_symbol(&[k.as_str()]);
                     }
@@ -890,7 +959,10 @@ impl DaemonState {
                 confidence_gap = gap_opt;
 
                 // Score once per trial.
-                if let Some((reward, done)) = self.game.score_action(action_name.as_str()) {
+                if let Some((reward, done)) = self
+                    .game
+                    .score_action(action_name.as_str(), self.trial_period_ms)
+                {
                     completed = done;
                     self.last_reward = reward;
                     scored_reward = Some(reward);
@@ -1022,7 +1094,11 @@ impl DaemonState {
             None
         };
         let stats = self.game.stats();
-        let (pos_x, pos_y) = self.game.spotxy_pos().unwrap_or((0.0, 0.0));
+        let (pos_x, pos_y) = self.game.pos_xy().unwrap_or((0.0, 0.0));
+        let pong_paddle_y = match &self.game {
+            ActiveGame::Pong(g) => g.paddle_y,
+            _ => 0.0,
+        };
 
         StateSnapshot {
             running: self.running,
@@ -1035,6 +1111,7 @@ impl DaemonState {
                 chosen_action: self.game.last_action().unwrap_or("").to_string(),
                 pos_x,
                 pos_y,
+                pong_paddle_y,
                 spotxy_eval: self.game.spotxy_eval_mode(),
                 spotxy_mode: self.game.spotxy_mode_name().to_string(),
                 spotxy_grid_n: self.game.spotxy_grid_n(),
@@ -1668,8 +1745,12 @@ impl DaemonState {
         // Ensure required IO groups exist (for backwards compatibility with older images).
         self.brain.ensure_sensor("spot_left", 4);
         self.brain.ensure_sensor("spot_right", 4);
+        self.brain.ensure_sensor("spot_rev_ctx", 2);
         self.brain.ensure_sensor("bandit", 4);
         self.ensure_spotxy_io();
+        if self.game.kind() == "pong" {
+            self.ensure_pong_io();
+        }
         self.brain.ensure_action("left", 6);
         self.brain.ensure_action("right", 6);
         self.brain.set_observer_telemetry(true);
@@ -1684,6 +1765,7 @@ impl DaemonState {
         self.experts.for_each_brain_mut(&mut |b: &mut Brain| {
             b.ensure_sensor("spot_left", 4);
             b.ensure_sensor("spot_right", 4);
+            b.ensure_sensor("spot_rev_ctx", 2);
             b.ensure_sensor("bandit", 4);
             // SpotXY IO is derived from current daemon game.
             if game_kind == "spotxy" {
@@ -1697,6 +1779,21 @@ impl DaemonState {
                         b.ensure_action(name, 6);
                     }
                 }
+            }
+            if game_kind == "pong" {
+                let bins = 8u32;
+                for i in 0..bins {
+                    b.ensure_sensor(&format!("pong_ball_x_{i:02}"), 3);
+                    b.ensure_sensor(&format!("pong_ball_y_{i:02}"), 3);
+                    b.ensure_sensor(&format!("pong_paddle_y_{i:02}"), 3);
+                }
+                b.ensure_sensor("pong_vx_pos", 2);
+                b.ensure_sensor("pong_vx_neg", 2);
+                b.ensure_sensor("pong_vy_pos", 2);
+                b.ensure_sensor("pong_vy_neg", 2);
+                b.ensure_action("up", 6);
+                b.ensure_action("down", 6);
+                b.ensure_action("stay", 6);
             }
             b.ensure_action("left", 6);
             b.ensure_action("right", 6);

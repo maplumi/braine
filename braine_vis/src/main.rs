@@ -449,6 +449,8 @@ struct DaemonGameState {
     #[serde(default)]
     pos_y: f32,
     #[serde(default)]
+    pong_paddle_y: f32,
+    #[serde(default)]
     spotxy_eval: bool,
     #[serde(default)]
     spotxy_mode: String,
@@ -981,6 +983,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     chosen_action: snap.game.chosen_action.clone().into(),
                     pos_x: snap.game.pos_x,
                     pos_y: snap.game.pos_y,
+                    pong_paddle_y: snap.game.pong_paddle_y,
                     spotxy_eval: snap.game.spotxy_eval,
                     spotxy_mode: snap.game.spotxy_mode.clone().into(),
                     spotxy_grid_n: snap.game.spotxy_grid_n as i32,
