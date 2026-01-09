@@ -1,4 +1,4 @@
-# braine
+# Braine
 
 A research prototype for a **brain-like** cognitive substrate based on **sparse local dynamics** (no matrices, no backprop, no transformers).
 
