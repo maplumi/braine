@@ -494,6 +494,10 @@ pub struct PongGame {
     stimulus_key: String,
     rng_seed: u64,
     trial_started_at: Instant,
+
+    last_step_at: Instant,
+    respawn_until: Option<Instant>,
+    pending_event_reward: f32,
 }
 
 impl PongGame {
@@ -518,7 +522,7 @@ impl PongGame {
             paddle_y: 0.0,
 
             paddle_speed: 1.3,
-            paddle_half_height: 0.25,
+            paddle_half_height: 0.15,
             ball_speed: 1.0,
             trial_frame: 0,
             response_made: false,
@@ -531,9 +535,20 @@ impl PongGame {
             stimulus_key: String::new(),
             rng_seed: 0xB0A7_F00Du64,
             trial_started_at: now,
+
+            last_step_at: now,
+            respawn_until: None,
+            pending_event_reward: 0.0,
         };
         g.reset_point();
         g
+    }
+
+    pub fn ball_visible(&self) -> bool {
+        match self.respawn_until {
+            Some(t) => Instant::now() >= t,
+            None => true,
+        }
     }
 
     pub fn set_param(&mut self, key: &str, value: f32) -> Result<(), String> {
@@ -588,6 +603,27 @@ impl PongGame {
         let trial_period = Duration::from_millis(trial_period_ms as u64);
 
         let now = Instant::now();
+
+        // Continuous physics step (independent of action cadence).
+        let dt = now
+            .duration_since(self.last_step_at)
+            .as_secs_f32()
+            .clamp(0.0, 0.05);
+        self.last_step_at = now;
+
+        // Ball can be briefly hidden after a miss to signal a new serve.
+        if let Some(t) = self.respawn_until {
+            if now < t {
+                // Keep paddle centered and don't advance the ball while hidden.
+            } else {
+                self.respawn_until = None;
+            }
+        }
+
+        if self.respawn_until.is_none() && dt > 0.0 {
+            self.step_physics(dt);
+        }
+
         let elapsed = now.duration_since(self.trial_started_at);
         if elapsed >= trial_period {
             // Allow exactly one action per timestep.
@@ -596,9 +632,47 @@ impl PongGame {
             self.trial_started_at = now;
         }
 
-        let now = Instant::now();
         let elapsed = now.duration_since(self.trial_started_at);
         self.trial_frame = elapsed.as_millis().min(u32::MAX as u128) as u32;
+    }
+
+    fn step_physics(&mut self, dt: f32) {
+        // Advance ball.
+        self.ball_x += self.ball_vx * self.ball_speed * dt;
+        self.ball_y += self.ball_vy * self.ball_speed * dt;
+
+        // Bounce on top/bottom.
+        if self.ball_y > 1.0 {
+            self.ball_y = 2.0 - self.ball_y;
+            self.ball_vy = -self.ball_vy;
+        } else if self.ball_y < -1.0 {
+            self.ball_y = -2.0 - self.ball_y;
+            self.ball_vy = -self.ball_vy;
+        }
+
+        // Right wall bounce so the ball keeps returning.
+        if self.ball_x >= 1.0 {
+            self.ball_x = 2.0 - self.ball_x;
+            self.ball_vx = -self.ball_vx.abs();
+        }
+
+        // Left paddle collision / miss.
+        if self.ball_x <= 0.0 {
+            let hit = (self.ball_y - self.paddle_y).abs() <= self.paddle_half_height;
+            if hit {
+                self.pending_event_reward += 1.0;
+                self.ball_x = 0.0;
+                self.ball_vx = self.ball_vx.abs();
+            } else {
+                self.pending_event_reward -= 1.0;
+
+                // Hide ball briefly, then respawn a new serve.
+                self.respawn_until = Some(Instant::now() + Duration::from_millis(180));
+                self.reset_point();
+            }
+        }
+
+        self.refresh_stimulus_key();
     }
 
     pub fn apply_stimuli(&self, brain: &mut Brain) {
@@ -639,6 +713,10 @@ impl PongGame {
         let is_correct = action == self.correct_action();
         let mut reward: f32 = if is_correct { 0.05f32 } else { -0.05f32 };
 
+        // Add any physics event reward (hit/miss) since the last action.
+        reward += self.pending_event_reward;
+        self.pending_event_reward = 0.0;
+
         // Apply action: move paddle.
         let dt = (trial_period_ms.clamp(10, 60_000) as f32) / 1000.0;
         match action {
@@ -647,40 +725,6 @@ impl PongGame {
             _ => {}
         }
         self.paddle_y = self.paddle_y.clamp(-1.0, 1.0);
-
-        // Advance ball.
-        self.ball_x += self.ball_vx * self.ball_speed * dt;
-        self.ball_y += self.ball_vy * self.ball_speed * dt;
-
-        // Bounce on top/bottom.
-        if self.ball_y > 1.0 {
-            self.ball_y = 2.0 - self.ball_y;
-            self.ball_vy = -self.ball_vy;
-        } else if self.ball_y < -1.0 {
-            self.ball_y = -2.0 - self.ball_y;
-            self.ball_vy = -self.ball_vy;
-        }
-
-        // Left paddle collision / miss.
-        // Treat x in [0,1] for bins, but sim uses ball_x in [0,1].
-        // Left paddle is at x=0.
-        if self.ball_x <= 0.0 {
-            let hit = (self.ball_y - self.paddle_y).abs() <= self.paddle_half_height;
-            if hit {
-                reward += 1.0f32;
-                self.ball_x = 0.0;
-                self.ball_vx = self.ball_vx.abs();
-            } else {
-                reward -= 1.0f32;
-                self.reset_point();
-            }
-        }
-
-        // Right wall bounce so the ball keeps returning.
-        if self.ball_x >= 1.0 {
-            self.ball_x = 2.0 - self.ball_x;
-            self.ball_vx = -self.ball_vx.abs();
-        }
 
         self.refresh_stimulus_key();
 

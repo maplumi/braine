@@ -36,7 +36,7 @@ Binary, little-endian, chunked.
 
 ### Header
 - magic: `BRAINE01` (8 bytes)
-- version: `u32` (currently `1`)
+- version: `u32` (currently `2`)
 
 There is no flags field in v1.
 
@@ -45,6 +45,22 @@ Each chunk:
 - tag: 4 bytes (ASCII)
 - len: `u32` payload length
 - payload bytes
+
+#### v2 chunk payload encoding (compressed)
+In **v2**, each chunk payload is **LZ4-compressed**.
+
+Chunk layout:
+- tag: 4 bytes
+- len: `u32` number of bytes that follow
+- `uncompressed_len`: `u32`
+- `lz4_payload`: bytes
+
+The reader:
+- reads `uncompressed_len`
+- LZ4-decompresses the remaining bytes
+- validates the decompressed size matches `uncompressed_len`
+
+This keeps the overall format chunked + forward-skippable while reducing disk and transfer size.
 
 Planned tags (v1):
 - `CFG0` — `BrainConfig`
@@ -57,6 +73,16 @@ Planned tags (v1):
 - `CAUS` — causal memory (base counts + directed edge counts)
 
 Unknown tags must be skipped.
+
+## Optimization options (documented; not all implemented)
+The format is intended to evolve. Typical next levers (beyond v2 LZ4) include:
+
+- **Stronger compression**: zstd for better ratios (often slower) or LZ4 HC for better ratio at higher CPU.
+- **Quantization**: store connection weights as `f16` or fixed-point `i16` with a per-chunk scale.
+- **Index width reduction**: store targets as `u16` when unit_count <= 65,535.
+- **Varint / delta encoding**: CSR offsets/targets are structured and often compress well with delta+varints.
+- **Sorted arrays instead of hash maps**: persist causality edges in sorted `(key,count)` arrays and rebuild hash maps on load.
+- **Delta snapshots**: persist incremental changes between checkpoints to reduce frequent save sizes.
 
 ## Notes
 - This format is intended for **research snapshots**, not as a security boundary.

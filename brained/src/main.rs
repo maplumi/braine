@@ -470,38 +470,71 @@ struct PersistedGameStats {
     mastered_at_trial: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GameState {
-    #[serde(default)]
-    kind: String,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct GameCommon {
     #[serde(default)]
     reversal_active: bool,
     #[serde(default)]
     chosen_action: String,
     #[serde(default)]
-    pos_x: f32,
-    #[serde(default)]
-    pos_y: f32,
-    #[serde(default)]
-    pong_paddle_y: f32,
-    #[serde(default)]
-    pong_paddle_half_height: f32,
-    #[serde(default)]
-    pong_paddle_speed: f32,
-    #[serde(default)]
-    pong_ball_speed: f32,
-    #[serde(default)]
-    spotxy_eval: bool,
-    #[serde(default)]
-    spotxy_mode: String,
-    #[serde(default)]
-    spotxy_grid_n: u32,
-    #[serde(default)]
     last_reward: f32,
-    spot_is_left: bool,
+    #[serde(default)]
     response_made: bool,
+    #[serde(default)]
     trial_frame: u32,
+    #[serde(default)]
     trial_duration: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+enum GameState {
+    #[serde(rename = "spot")]
+    Spot {
+        #[serde(flatten)]
+        common: GameCommon,
+        spot_is_left: bool,
+    },
+    #[serde(rename = "bandit")]
+    Bandit {
+        #[serde(flatten)]
+        common: GameCommon,
+    },
+    #[serde(rename = "spot_reversal")]
+    SpotReversal {
+        #[serde(flatten)]
+        common: GameCommon,
+        spot_is_left: bool,
+    },
+    #[serde(rename = "spotxy")]
+    SpotXY {
+        #[serde(flatten)]
+        common: GameCommon,
+        pos_x: f32,
+        pos_y: f32,
+        #[serde(default)]
+        spotxy_eval: bool,
+        #[serde(default)]
+        spotxy_mode: String,
+        #[serde(default)]
+        spotxy_grid_n: u32,
+    },
+    #[serde(rename = "pong")]
+    Pong {
+        #[serde(flatten)]
+        common: GameCommon,
+        pong_ball_x: f32,
+        pong_ball_y: f32,
+        #[serde(default)]
+        pong_ball_visible: bool,
+        pong_paddle_y: f32,
+        #[serde(default)]
+        pong_paddle_half_height: f32,
+        #[serde(default)]
+        pong_paddle_speed: f32,
+        #[serde(default)]
+        pong_ball_speed: f32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +565,12 @@ struct BrainStats {
     saturated: bool,
     avg_amp: f32,
     avg_weight: f32,
+    #[serde(default)]
+    osc_x: f32,
+    #[serde(default)]
+    osc_y: f32,
+    #[serde(default)]
+    osc_mag: f32,
     memory_bytes: usize,
     causal_base_symbols: usize,
     causal_edges: usize,
@@ -778,15 +817,17 @@ impl DaemonState {
     fn ensure_spotxy_io(&mut self) {
         let k = 16usize;
         for i in 0..k {
-            self.brain.ensure_sensor(&format!("pos_x_{i:02}"), 3);
-            self.brain.ensure_sensor(&format!("pos_y_{i:02}"), 3);
+            self.brain
+                .ensure_sensor_min_width(&format!("pos_x_{i:02}"), 3);
+            self.brain
+                .ensure_sensor_min_width(&format!("pos_y_{i:02}"), 3);
         }
-        self.brain.ensure_action("left", 6);
-        self.brain.ensure_action("right", 6);
+        self.brain.ensure_action_min_width("left", 6);
+        self.brain.ensure_action_min_width("right", 6);
 
         if let ActiveGame::SpotXY(g) = &self.game {
             for name in g.allowed_actions() {
-                self.brain.ensure_action(name, 6);
+                self.brain.ensure_action_min_width(name, 6);
             }
         }
     }
@@ -795,19 +836,21 @@ impl DaemonState {
         // Bin sensors (must match PongGame constants).
         let bins = 8u32;
         for i in 0..bins {
-            self.brain.ensure_sensor(&format!("pong_ball_x_{i:02}"), 3);
-            self.brain.ensure_sensor(&format!("pong_ball_y_{i:02}"), 3);
             self.brain
-                .ensure_sensor(&format!("pong_paddle_y_{i:02}"), 3);
+                .ensure_sensor_min_width(&format!("pong_ball_x_{i:02}"), 3);
+            self.brain
+                .ensure_sensor_min_width(&format!("pong_ball_y_{i:02}"), 3);
+            self.brain
+                .ensure_sensor_min_width(&format!("pong_paddle_y_{i:02}"), 3);
         }
-        self.brain.ensure_sensor("pong_vx_pos", 2);
-        self.brain.ensure_sensor("pong_vx_neg", 2);
-        self.brain.ensure_sensor("pong_vy_pos", 2);
-        self.brain.ensure_sensor("pong_vy_neg", 2);
+        self.brain.ensure_sensor_min_width("pong_vx_pos", 2);
+        self.brain.ensure_sensor_min_width("pong_vx_neg", 2);
+        self.brain.ensure_sensor_min_width("pong_vy_pos", 2);
+        self.brain.ensure_sensor_min_width("pong_vy_neg", 2);
 
-        self.brain.ensure_action("up", 6);
-        self.brain.ensure_action("down", 6);
-        self.brain.ensure_action("stay", 6);
+        self.brain.ensure_action_min_width("up", 6);
+        self.brain.ensure_action_min_width("down", 6);
+        self.brain.ensure_action_min_width("stay", 6);
     }
 
     fn push_history(buf: &mut Vec<f32>, v: f32, cap: usize) {
@@ -1105,42 +1148,57 @@ impl DaemonState {
             None
         };
         let stats = self.game.stats();
-        let (pos_x, pos_y) = self.game.pos_xy().unwrap_or((0.0, 0.0));
-        let (pong_paddle_y, pong_paddle_half_height, pong_paddle_speed, pong_ball_speed) =
-            match &self.game {
-                ActiveGame::Pong(g) => (
-                    g.paddle_y,
-                    g.paddle_half_height,
-                    g.paddle_speed,
-                    g.ball_speed,
-                ),
-                _ => (0.0, 0.25, 1.3, 1.0),
-            };
+
+        let common = || GameCommon {
+            reversal_active: self.game.reversal_active(),
+            chosen_action: self.game.last_action().unwrap_or("").to_string(),
+            last_reward: self.last_reward,
+            response_made: self.game.response_made(),
+            trial_frame: self.game.trial_frame(),
+            trial_duration: self.trial_period_ms,
+        };
+
+        let game = match &self.game {
+            ActiveGame::Spot(_) => GameState::Spot {
+                common: common(),
+                spot_is_left: self.game.spot_is_left(),
+            },
+            ActiveGame::Bandit(_) => GameState::Bandit { common: common() },
+            ActiveGame::SpotReversal(_) => GameState::SpotReversal {
+                common: common(),
+                spot_is_left: self.game.spot_is_left(),
+            },
+            ActiveGame::SpotXY(_) => {
+                let (pos_x, pos_y) = self.game.pos_xy().unwrap_or((0.0, 0.0));
+                GameState::SpotXY {
+                    common: common(),
+                    pos_x,
+                    pos_y,
+                    spotxy_eval: self.game.spotxy_eval_mode(),
+                    spotxy_mode: self.game.spotxy_mode_name().to_string(),
+                    spotxy_grid_n: self.game.spotxy_grid_n(),
+                }
+            }
+            ActiveGame::Pong(g) => GameState::Pong {
+                common: common(),
+                pong_ball_x: g.ball_x,
+                pong_ball_y: g.ball_y,
+                pong_ball_visible: g.ball_visible(),
+                pong_paddle_y: g.paddle_y,
+                pong_paddle_half_height: g.paddle_half_height,
+                pong_paddle_speed: g.paddle_speed,
+                pong_ball_speed: g.ball_speed,
+            },
+        };
+
+        let (osc_x, osc_y, osc_mag) = view_brain.oscillation_sample(512);
 
         StateSnapshot {
             running: self.running,
             mode: "braine".to_string(),
             frame: self.frame,
             target_fps: self.target_fps,
-            game: GameState {
-                kind: self.game.kind().to_string(),
-                reversal_active: self.game.reversal_active(),
-                chosen_action: self.game.last_action().unwrap_or("").to_string(),
-                pos_x,
-                pos_y,
-                pong_paddle_y,
-                pong_paddle_half_height,
-                pong_paddle_speed,
-                pong_ball_speed,
-                spotxy_eval: self.game.spotxy_eval_mode(),
-                spotxy_mode: self.game.spotxy_mode_name().to_string(),
-                spotxy_grid_n: self.game.spotxy_grid_n(),
-                last_reward: self.last_reward,
-                spot_is_left: self.game.spot_is_left(),
-                response_made: self.game.response_made(),
-                trial_frame: self.game.trial_frame(),
-                trial_duration: self.trial_period_ms,
-            },
+            game,
             hud: HudData {
                 trials: stats.trials,
                 correct: stats.correct,
@@ -1162,6 +1220,9 @@ impl DaemonState {
                 saturated: view_brain.should_grow(0.35),
                 avg_amp: diag.avg_amp,
                 avg_weight: diag.avg_weight,
+                osc_x,
+                osc_y,
+                osc_mag,
                 memory_bytes: diag.memory_bytes,
                 causal_base_symbols: causal.base_symbols,
                 causal_edges: causal.edges,
@@ -1763,16 +1824,16 @@ impl DaemonState {
         }
 
         // Ensure required IO groups exist (for backwards compatibility with older images).
-        self.brain.ensure_sensor("spot_left", 4);
-        self.brain.ensure_sensor("spot_right", 4);
-        self.brain.ensure_sensor("spot_rev_ctx", 2);
-        self.brain.ensure_sensor("bandit", 4);
+        self.brain.ensure_sensor_min_width("spot_left", 4);
+        self.brain.ensure_sensor_min_width("spot_right", 4);
+        self.brain.ensure_sensor_min_width("spot_rev_ctx", 2);
+        self.brain.ensure_sensor_min_width("bandit", 4);
         self.ensure_spotxy_io();
         if self.game.kind() == "pong" {
             self.ensure_pong_io();
         }
-        self.brain.ensure_action("left", 6);
-        self.brain.ensure_action("right", 6);
+        self.brain.ensure_action_min_width("left", 6);
+        self.brain.ensure_action_min_width("right", 6);
         self.brain.set_observer_telemetry(true);
 
         // Apply the same IO/back-compat fixups to all expert brains and fork points.
@@ -1783,40 +1844,40 @@ impl DaemonState {
             None
         };
         self.experts.for_each_brain_mut(&mut |b: &mut Brain| {
-            b.ensure_sensor("spot_left", 4);
-            b.ensure_sensor("spot_right", 4);
-            b.ensure_sensor("spot_rev_ctx", 2);
-            b.ensure_sensor("bandit", 4);
+            b.ensure_sensor_min_width("spot_left", 4);
+            b.ensure_sensor_min_width("spot_right", 4);
+            b.ensure_sensor_min_width("spot_rev_ctx", 2);
+            b.ensure_sensor_min_width("bandit", 4);
             // SpotXY IO is derived from current daemon game.
             if game_kind == "spotxy" {
                 let k = 16usize;
                 for i in 0..k {
-                    b.ensure_sensor(&format!("pos_x_{i:02}"), 3);
-                    b.ensure_sensor(&format!("pos_y_{i:02}"), 3);
+                    b.ensure_sensor_min_width(&format!("pos_x_{i:02}"), 3);
+                    b.ensure_sensor_min_width(&format!("pos_y_{i:02}"), 3);
                 }
                 if let Some(names) = spotxy_allowed {
                     for name in names {
-                        b.ensure_action(name, 6);
+                        b.ensure_action_min_width(name, 6);
                     }
                 }
             }
             if game_kind == "pong" {
                 let bins = 8u32;
                 for i in 0..bins {
-                    b.ensure_sensor(&format!("pong_ball_x_{i:02}"), 3);
-                    b.ensure_sensor(&format!("pong_ball_y_{i:02}"), 3);
-                    b.ensure_sensor(&format!("pong_paddle_y_{i:02}"), 3);
+                    b.ensure_sensor_min_width(&format!("pong_ball_x_{i:02}"), 3);
+                    b.ensure_sensor_min_width(&format!("pong_ball_y_{i:02}"), 3);
+                    b.ensure_sensor_min_width(&format!("pong_paddle_y_{i:02}"), 3);
                 }
-                b.ensure_sensor("pong_vx_pos", 2);
-                b.ensure_sensor("pong_vx_neg", 2);
-                b.ensure_sensor("pong_vy_pos", 2);
-                b.ensure_sensor("pong_vy_neg", 2);
-                b.ensure_action("up", 6);
-                b.ensure_action("down", 6);
-                b.ensure_action("stay", 6);
+                b.ensure_sensor_min_width("pong_vx_pos", 2);
+                b.ensure_sensor_min_width("pong_vx_neg", 2);
+                b.ensure_sensor_min_width("pong_vy_pos", 2);
+                b.ensure_sensor_min_width("pong_vy_neg", 2);
+                b.ensure_action_min_width("up", 6);
+                b.ensure_action_min_width("down", 6);
+                b.ensure_action_min_width("stay", 6);
             }
-            b.ensure_action("left", 6);
-            b.ensure_action("right", 6);
+            b.ensure_action_min_width("left", 6);
+            b.ensure_action_min_width("right", 6);
             b.set_observer_telemetry(true);
         });
 
@@ -2096,15 +2157,16 @@ async fn handle_client(
                 }
             }
             Request::SetMode { .. } => {
-                // Spot is Braine-only; mode switching disabled
-                Response::Error {
-                    message: "Spot game is Braine-only".to_string(),
+                // Spot is Braine-only; treat mode switching as a no-op.
+                // The UI may emit a SetMode on startup; returning Success avoids noisy errors.
+                Response::Success {
+                    message: "Spot is Braine-only; mode unchanged".to_string(),
                 }
             }
             Request::HumanAction { .. } => {
-                // Not supported in Spot game
-                Response::Error {
-                    message: "Human control not available for Spot".to_string(),
+                // Not supported in Spot game; ignore (no-op) to avoid UI log spam.
+                Response::Success {
+                    message: "Spot ignores human actions".to_string(),
                 }
             }
             Request::TriggerDream => {

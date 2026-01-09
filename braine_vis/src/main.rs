@@ -224,6 +224,12 @@ enum Request {
     LoadSnapshot {
         stem: String,
     },
+
+    // Experts (child brains)
+    SetExpertsEnabled {
+        enabled: bool,
+    },
+    CullExperts,
     HumanAction {
         action: String,
     },
@@ -442,38 +448,195 @@ struct DaemonUnitPlotPoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct DaemonGameState {
-    #[serde(default)]
-    kind: String,
+struct DaemonGameCommon {
     #[serde(default)]
     reversal_active: bool,
     #[serde(default)]
     chosen_action: String,
     #[serde(default)]
-    pos_x: f32,
-    #[serde(default)]
-    pos_y: f32,
-    #[serde(default)]
-    pong_paddle_y: f32,
-
-    #[serde(default)]
-    pong_paddle_half_height: f32,
-    #[serde(default)]
-    pong_paddle_speed: f32,
-    #[serde(default)]
-    pong_ball_speed: f32,
-    #[serde(default)]
-    spotxy_eval: bool,
-    #[serde(default)]
-    spotxy_mode: String,
-    #[serde(default)]
-    spotxy_grid_n: u32,
-    #[serde(default)]
     last_reward: f32,
-    spot_is_left: bool,
+    #[serde(default)]
     response_made: bool,
+    #[serde(default)]
     trial_frame: u32,
+    #[serde(default)]
     trial_duration: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(tag = "kind")]
+enum DaemonGameState {
+    #[serde(rename = "spot")]
+    Spot {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+        spot_is_left: bool,
+    },
+    #[serde(rename = "bandit")]
+    Bandit {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+    },
+    #[serde(rename = "spot_reversal")]
+    SpotReversal {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+        spot_is_left: bool,
+    },
+    #[serde(rename = "spotxy")]
+    SpotXY {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+        pos_x: f32,
+        pos_y: f32,
+        #[serde(default)]
+        spotxy_eval: bool,
+        #[serde(default)]
+        spotxy_mode: String,
+        #[serde(default)]
+        spotxy_grid_n: u32,
+    },
+    #[serde(rename = "pong")]
+    Pong {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+        #[serde(default)]
+        pong_ball_x: f32,
+        #[serde(default)]
+        pong_ball_y: f32,
+        #[serde(default)]
+        pong_ball_visible: bool,
+        pong_paddle_y: f32,
+        #[serde(default)]
+        pong_paddle_half_height: f32,
+        #[serde(default)]
+        pong_paddle_speed: f32,
+        #[serde(default)]
+        pong_ball_speed: f32,
+    },
+    #[serde(other)]
+    #[default]
+    Unknown,
+}
+
+impl DaemonGameState {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Spot { .. } => "spot",
+            Self::Bandit { .. } => "bandit",
+            Self::SpotReversal { .. } => "spot_reversal",
+            Self::SpotXY { .. } => "spotxy",
+            Self::Pong { .. } => "pong",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn common(&self) -> Option<&DaemonGameCommon> {
+        match self {
+            Self::Spot { common, .. }
+            | Self::Bandit { common }
+            | Self::SpotReversal { common, .. }
+            | Self::SpotXY { common, .. }
+            | Self::Pong { common, .. } => Some(common),
+            Self::Unknown => None,
+        }
+    }
+
+    fn reversal_active(&self) -> bool {
+        self.common().map(|c| c.reversal_active).unwrap_or(false)
+    }
+
+    fn chosen_action(&self) -> &str {
+        self.common()
+            .map(|c| c.chosen_action.as_str())
+            .unwrap_or("")
+    }
+
+    fn last_reward(&self) -> f32 {
+        self.common().map(|c| c.last_reward).unwrap_or(0.0)
+    }
+
+    fn response_made(&self) -> bool {
+        self.common().map(|c| c.response_made).unwrap_or(false)
+    }
+
+    fn trial_frame(&self) -> u32 {
+        self.common().map(|c| c.trial_frame).unwrap_or(0)
+    }
+
+    fn trial_duration(&self) -> u32 {
+        self.common().map(|c| c.trial_duration).unwrap_or(0)
+    }
+
+    fn spot_is_left(&self) -> bool {
+        match self {
+            Self::Spot { spot_is_left, .. } | Self::SpotReversal { spot_is_left, .. } => {
+                *spot_is_left
+            }
+            _ => false,
+        }
+    }
+
+    fn pos_xy(&self) -> (f32, f32) {
+        match self {
+            Self::SpotXY { pos_x, pos_y, .. } => (*pos_x, *pos_y),
+            // Pong sim uses x in [0,1] and y in [-1,1]. Map x to [-1,1] for the canvas.
+            Self::Pong {
+                pong_ball_x,
+                pong_ball_y,
+                ..
+            } => (pong_ball_x * 2.0 - 1.0, *pong_ball_y),
+            _ => (0.0, 0.0),
+        }
+    }
+
+    fn spotxy_eval(&self) -> bool {
+        match self {
+            Self::SpotXY { spotxy_eval, .. } => *spotxy_eval,
+            _ => false,
+        }
+    }
+
+    fn spotxy_mode(&self) -> &str {
+        match self {
+            Self::SpotXY { spotxy_mode, .. } => spotxy_mode.as_str(),
+            _ => "",
+        }
+    }
+
+    fn spotxy_grid_n(&self) -> u32 {
+        match self {
+            Self::SpotXY { spotxy_grid_n, .. } => *spotxy_grid_n,
+            _ => 0,
+        }
+    }
+
+    fn pong_params(&self) -> (f32, f32, f32, f32) {
+        match self {
+            Self::Pong {
+                pong_paddle_y,
+                pong_paddle_half_height,
+                pong_paddle_speed,
+                pong_ball_speed,
+                ..
+            } => (
+                *pong_paddle_y,
+                *pong_paddle_half_height,
+                *pong_paddle_speed,
+                *pong_ball_speed,
+            ),
+            _ => (0.0, 0.25, 1.3, 1.0),
+        }
+    }
+
+    fn pong_ball_visible(&self) -> bool {
+        match self {
+            Self::Pong {
+                pong_ball_visible, ..
+            } => *pong_ball_visible,
+            _ => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -507,6 +670,12 @@ struct DaemonBrainStats {
     saturated: bool,
     avg_amp: f32,
     avg_weight: f32,
+    #[serde(default)]
+    osc_x: f32,
+    #[serde(default)]
+    osc_y: f32,
+    #[serde(default)]
+    osc_mag: f32,
     memory_bytes: usize,
     #[serde(default)]
     causal_base_symbols: usize,
@@ -784,10 +953,22 @@ fn main() -> Result<(), slint::PlatformError> {
     // View toggle: parent vs active expert
     {
         let c = client.clone();
+        let ui_weak = ui.as_weak();
         ui.on_view_mode_changed(move |mode| {
             c.send(Request::SetView {
                 view: mode.to_string(),
             });
+
+            // Switching view changes what the daemon serves for plots/graphs.
+            // Trigger an immediate graph refresh so the UI reflects the new view.
+            if let Some(ui) = ui_weak.upgrade() {
+                c.send(Request::GetGraph {
+                    kind: ui.get_graph_kind().to_string(),
+                    max_nodes: ui.get_graph_max_nodes().max(1) as u32,
+                    max_edges: ui.get_graph_max_edges().max(0) as u32,
+                    include_isolated: ui.get_graph_include_isolated(),
+                });
+            }
         });
     }
 
@@ -813,6 +994,20 @@ fn main() -> Result<(), slint::PlatformError> {
             c.send(Request::LoadSnapshot {
                 stem: stem.to_string(),
             });
+        });
+    }
+
+    // Experts (child brains)
+    {
+        let c = client.clone();
+        ui.on_experts_enabled_changed(move |enabled| {
+            c.send(Request::SetExpertsEnabled { enabled });
+        });
+    }
+    {
+        let c = client.clone();
+        ui.on_cull_experts(move || {
+            c.send(Request::CullExperts);
         });
     }
 
@@ -948,23 +1143,34 @@ fn main() -> Result<(), slint::PlatformError> {
     // Human input
     {
         let c = client.clone();
-        ui.on_human_key_pressed(move |key| match key.as_str() {
-            "left" => c.send(Request::HumanAction {
-                action: "left".into(),
-            }),
-            "right" => c.send(Request::HumanAction {
-                action: "right".into(),
-            }),
-            "up" => c.send(Request::HumanAction {
-                action: "up".into(),
-            }),
-            "down" => c.send(Request::HumanAction {
-                action: "down".into(),
-            }),
-            "stay" => c.send(Request::HumanAction {
-                action: "stay".into(),
-            }),
-            _ => {}
+        let ui_weak = ui.as_weak();
+        ui.on_human_key_pressed(move |key| {
+            // Human actions are intentionally disabled in "Braine" mode.
+            // (We currently hide the Human toggle in the UI.)
+            if let Some(ui) = ui_weak.upgrade() {
+                if ui.get_is_braine_mode() {
+                    return;
+                }
+            }
+
+            match key.as_str() {
+                "left" => c.send(Request::HumanAction {
+                    action: "left".into(),
+                }),
+                "right" => c.send(Request::HumanAction {
+                    action: "right".into(),
+                }),
+                "up" => c.send(Request::HumanAction {
+                    action: "up".into(),
+                }),
+                "down" => c.send(Request::HumanAction {
+                    action: "down".into(),
+                }),
+                "stay" => c.send(Request::HumanAction {
+                    action: "stay".into(),
+                }),
+                _ => {}
+            }
         });
     }
     {
@@ -987,6 +1193,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let graph_pos_by_kind_poll = graph_pos_by_kind.clone();
     let graph_temp_by_kind_poll = graph_temp_by_kind.clone();
 
+    // Rolling oscilloscope buffer (UI plot).
+    let osc_samples: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
+    let osc_samples_poll = osc_samples.clone();
+
     type PollFn = Rc<dyn Fn(Duration)>;
     let poll_fn: Rc<RefCell<Option<PollFn>>> = Rc::new(RefCell::new(None));
     let poll_fn_setter = poll_fn.clone();
@@ -1002,16 +1212,38 @@ fn main() -> Result<(), slint::PlatformError> {
         let graph_hover_edges_poll = graph_hover_edges_poll.clone();
         let graph_pos_by_kind_poll = graph_pos_by_kind_poll.clone();
         let graph_temp_by_kind_poll = graph_temp_by_kind_poll.clone();
+        let osc_samples_poll = osc_samples_poll.clone();
 
         Timer::single_shot(delay, move || {
-            c.send(Request::GetState);
-            let snap = c.snapshot();
-            let g = c.graph_snapshot();
-
             let now = Instant::now();
 
             let mut next_delay = Duration::from_millis(100);
             if let Some(ui) = ui_weak.upgrade() {
+                // Pause freezes UI updates (daemon continues running).
+                if ui.get_paused() {
+                    if let Some(poll_fn) = poll_fn.borrow().as_ref() {
+                        poll_fn(next_delay);
+                    }
+                    return;
+                }
+
+                c.send(Request::GetState);
+                let snap = c.snapshot();
+                let g = c.graph_snapshot();
+
+                // Update oscillation series (signed waveform uses osc_y).
+                {
+                    let v = snap.brain_stats.osc_y;
+                    let mut buf = osc_samples_poll.borrow_mut();
+                    buf.push(v);
+                    const MAX: usize = 240;
+                    if buf.len() > MAX {
+                        let drop = buf.len() - MAX;
+                        buf.drain(0..drop);
+                    }
+                    ui.set_osc_samples(ModelRc::new(VecModel::from(buf.clone())));
+                }
+
                 let (spotxy_chosen_ix, spotxy_chosen_iy, spotxy_correct_ix, spotxy_correct_iy) = {
                     let parse = |action: &str, n: u32| -> Option<(i32, i32)> {
                         if n == 0 {
@@ -1030,40 +1262,44 @@ fn main() -> Result<(), slint::PlatformError> {
                         Some((ix, iy))
                     };
 
-                    let (cx, cy) = parse(&snap.game.chosen_action, snap.game.spotxy_grid_n)
-                        .unwrap_or((-1, -1));
-                    let (kx, ky) = parse(&snap.meaning.correct_action, snap.game.spotxy_grid_n)
-                        .unwrap_or((-1, -1));
+                    let grid_n = snap.game.spotxy_grid_n();
+                    let (cx, cy) = parse(snap.game.chosen_action(), grid_n).unwrap_or((-1, -1));
+                    let (kx, ky) = parse(&snap.meaning.correct_action, grid_n).unwrap_or((-1, -1));
                     (cx, cy, kx, ky)
                 };
 
+                let (pos_x, pos_y) = snap.game.pos_xy();
+                let (pong_paddle_y, pong_paddle_half_height, pong_paddle_speed, pong_ball_speed) =
+                    snap.game.pong_params();
+
                 ui.set_game(GameState {
-                    kind: snap.game.kind.clone().into(),
-                    reversal_active: snap.game.reversal_active,
-                    chosen_action: snap.game.chosen_action.clone().into(),
-                    pos_x: snap.game.pos_x,
-                    pos_y: snap.game.pos_y,
-                    pong_paddle_y: snap.game.pong_paddle_y,
-                    pong_paddle_half_height: snap.game.pong_paddle_half_height,
-                    pong_paddle_speed: snap.game.pong_paddle_speed,
-                    pong_ball_speed: snap.game.pong_ball_speed,
-                    spotxy_eval: snap.game.spotxy_eval,
-                    spotxy_mode: snap.game.spotxy_mode.clone().into(),
-                    spotxy_grid_n: snap.game.spotxy_grid_n as i32,
+                    kind: snap.game.kind().into(),
+                    reversal_active: snap.game.reversal_active(),
+                    chosen_action: snap.game.chosen_action().into(),
+                    pos_x,
+                    pos_y,
+                    pong_ball_visible: snap.game.pong_ball_visible(),
+                    pong_paddle_y,
+                    pong_paddle_half_height,
+                    pong_paddle_speed,
+                    pong_ball_speed,
+                    spotxy_eval: snap.game.spotxy_eval(),
+                    spotxy_mode: snap.game.spotxy_mode().into(),
+                    spotxy_grid_n: snap.game.spotxy_grid_n() as i32,
                     spotxy_chosen_ix,
                     spotxy_chosen_iy,
                     spotxy_correct_ix,
                     spotxy_correct_iy,
-                    last_reward: snap.game.last_reward,
-                    spot_is_left: snap.game.spot_is_left,
-                    response_made: snap.game.response_made,
-                    trial_frame: snap.game.trial_frame as i32,
-                    trial_duration: snap.game.trial_duration as i32,
+                    last_reward: snap.game.last_reward(),
+                    spot_is_left: snap.game.spot_is_left(),
+                    response_made: snap.game.response_made(),
+                    trial_frame: snap.game.trial_frame() as i32,
+                    trial_duration: snap.game.trial_duration() as i32,
                 });
 
                 // Keep the selected (non-running) game in sync with the daemon's active game.
                 if !ui.get_running() {
-                    ui.set_selected_game_kind(snap.game.kind.clone().into());
+                    ui.set_selected_game_kind(snap.game.kind().into());
                 }
                 ui.set_hud(HudData {
                     frame: snap.frame as i32,
@@ -1222,10 +1458,17 @@ fn main() -> Result<(), slint::PlatformError> {
                     } else {
                         "nested off".to_string()
                     };
-                    let active_id = snap
+                    let active_desc = snap
                         .active_expert
                         .as_ref()
-                        .map(|a| format!("active #{}", a.id))
+                        .map(|a| {
+                            let ctx = if a.context_key.trim().is_empty() {
+                                "?".to_string()
+                            } else {
+                                a.context_key.clone()
+                            };
+                            format!("active #{} ctx={} r={:.2}", a.id, ctx, a.reward_ema)
+                        })
                         .unwrap_or_else(|| "active -".to_string());
                     let deployed = if total > active {
                         format!("{active}/{max} (total {total})")
@@ -1234,12 +1477,13 @@ fn main() -> Result<(), slint::PlatformError> {
                     };
                     format!(
                         "Experts: {}  {}  persist={}  {}",
-                        deployed, active_id, persist, nested
+                        deployed, active_desc, persist, nested
                     )
                 } else {
                     String::new()
                 };
                 ui.set_experts_status(experts_status.into());
+                ui.set_experts_enabled(snap.experts_enabled);
 
                 // Graph auto-refresh (independent of the main poll cadence)
                 if ui.get_graph_auto_refresh() {
@@ -1490,16 +1734,17 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
 
                 // Keep the UI's displayed trial period in sync with the daemon.
-                if snap.game.trial_duration != 0 {
+                let trial_duration = snap.game.trial_duration();
+                if trial_duration != 0 {
                     let pending = *pending_trial_ms_poll.borrow();
                     let apply = match pending {
                         Some((want, t))
                             if now.duration_since(t) < Duration::from_millis(800)
-                                && snap.game.trial_duration != want =>
+                                && trial_duration != want =>
                         {
                             false
                         }
-                        Some((want, _)) if snap.game.trial_duration == want => {
+                        Some((want, _)) if trial_duration == want => {
                             pending_trial_ms_poll.borrow_mut().take();
                             true
                         }
@@ -1512,7 +1757,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     };
 
                     if apply {
-                        ui.set_trial_period_ms(snap.game.trial_duration as i32);
+                        ui.set_trial_period_ms(trial_duration as i32);
                     }
                 }
 

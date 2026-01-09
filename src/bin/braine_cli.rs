@@ -126,16 +126,102 @@ struct ActiveExpertSummary {
     reward_ema: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GameState {
-    #[serde(default)]
-    kind: String,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct GameCommon {
     #[serde(default)]
     reversal_active: bool,
-    spot_is_left: bool,
+    #[serde(default)]
     response_made: bool,
+    #[serde(default)]
     trial_frame: u32,
+    #[serde(default)]
     trial_duration: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(tag = "kind")]
+enum GameState {
+    #[serde(rename = "spot")]
+    Spot {
+        #[serde(flatten)]
+        common: GameCommon,
+        #[serde(default)]
+        spot_is_left: bool,
+    },
+    #[serde(rename = "bandit")]
+    Bandit {
+        #[serde(flatten)]
+        common: GameCommon,
+    },
+    #[serde(rename = "spot_reversal")]
+    SpotReversal {
+        #[serde(flatten)]
+        common: GameCommon,
+        #[serde(default)]
+        spot_is_left: bool,
+    },
+    #[serde(rename = "spotxy")]
+    SpotXY {
+        #[serde(flatten)]
+        common: GameCommon,
+    },
+    #[serde(rename = "pong")]
+    Pong {
+        #[serde(flatten)]
+        common: GameCommon,
+    },
+    #[serde(other)]
+    #[default]
+    Unknown,
+}
+
+impl GameState {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Spot { .. } => "spot",
+            Self::Bandit { .. } => "bandit",
+            Self::SpotReversal { .. } => "spot_reversal",
+            Self::SpotXY { .. } => "spotxy",
+            Self::Pong { .. } => "pong",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn common(&self) -> Option<&GameCommon> {
+        match self {
+            Self::Spot { common, .. }
+            | Self::Bandit { common }
+            | Self::SpotReversal { common, .. }
+            | Self::SpotXY { common }
+            | Self::Pong { common } => Some(common),
+            Self::Unknown => None,
+        }
+    }
+
+    fn reversal_active(&self) -> bool {
+        self.common().map(|c| c.reversal_active).unwrap_or(false)
+    }
+
+    fn response_made(&self) -> bool {
+        self.common().map(|c| c.response_made).unwrap_or(false)
+    }
+
+    fn trial_frame(&self) -> u32 {
+        self.common().map(|c| c.trial_frame).unwrap_or(0)
+    }
+
+    fn trial_duration(&self) -> u32 {
+        self.common().map(|c| c.trial_duration).unwrap_or(0)
+    }
+
+    fn spot_is_left(&self) -> Option<bool> {
+        match self {
+            Self::Spot { spot_is_left, .. } | Self::SpotReversal { spot_is_left, .. } => {
+                Some(*spot_is_left)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,18 +340,19 @@ fn print_state(s: StateSnapshot) {
         s.brain_stats.causal_edges,
         s.brain_stats.age_steps,
     );
+    let spot_is_left = s
+        .game
+        .spot_is_left()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "-".to_string());
     println!(
         "game: kind={} reversal_active={} spot_is_left={} response_made={} trial_frame={} / {}",
-        if s.game.kind.is_empty() {
-            "spot"
-        } else {
-            s.game.kind.as_str()
-        },
-        s.game.reversal_active,
-        s.game.spot_is_left,
-        s.game.response_made,
-        s.game.trial_frame,
-        s.game.trial_duration,
+        s.game.kind(),
+        s.game.reversal_active(),
+        spot_is_left,
+        s.game.response_made(),
+        s.game.trial_frame(),
+        s.game.trial_duration(),
     );
 
     if s.experts_enabled || s.experts.active_count > 0 {

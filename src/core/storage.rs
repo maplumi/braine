@@ -2,6 +2,16 @@ use std::io::{self, Read, Write};
 
 pub const MAGIC: &[u8; 8] = b"BRAINE01";
 pub const VERSION_V1: u32 = 1;
+pub const VERSION_V2: u32 = 2;
+
+pub fn compress_lz4(input: &[u8]) -> Vec<u8> {
+    lz4_flex::compress(input)
+}
+
+pub fn decompress_lz4(input: &[u8], expected_size: usize) -> io::Result<Vec<u8>> {
+    lz4_flex::decompress(input, expected_size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "lz4 decompression failed"))
+}
 
 pub struct CapacityWriter<W> {
     inner: W,
@@ -137,6 +147,27 @@ pub fn write_chunk<W: Write>(w: &mut W, tag: [u8; 4], payload: &[u8]) -> io::Res
     w.write_all(&tag)?;
     write_u32_le(w, payload.len() as u32)?;
     w.write_all(payload)
+}
+
+/// Write a V2 chunk: payload is LZ4-compressed and preceded by the uncompressed length (u32).
+///
+/// Layout:
+/// - tag: [u8;4]
+/// - len: u32 (bytes following, including the 4-byte uncompressed length)
+/// - uncompressed_len: u32
+/// - compressed payload bytes
+pub fn write_chunk_v2_lz4<W: Write>(w: &mut W, tag: [u8; 4], payload: &[u8]) -> io::Result<()> {
+    let compressed = compress_lz4(payload);
+    let uncompressed_len = payload.len() as u32;
+    let total_len = 4u32.saturating_add(
+        u32::try_from(compressed.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "chunk too large"))?,
+    );
+
+    w.write_all(&tag)?;
+    write_u32_le(w, total_len)?;
+    write_u32_le(w, uncompressed_len)?;
+    w.write_all(&compressed)
 }
 
 pub fn read_chunk_header<R: Read>(r: &mut R) -> io::Result<([u8; 4], u32)> {

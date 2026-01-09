@@ -108,6 +108,7 @@ export struct GameState {
     chosen-action: string,
     pos-x: float,
     pos-y: float,
+    pong-ball-visible: bool,
     pong-paddle-y: float,
     pong-paddle-half-height: float,
     pong-paddle-speed: float,
@@ -235,6 +236,88 @@ component SpotCanvas inherits Rectangle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Bandit Canvas (stochastic reward, no spot location)
+// ═══════════════════════════════════════════════════════════════════════════
+
+component BanditCanvas inherits Rectangle {
+    in property <GameState> game;
+
+    background: Theme.bg-dark;
+    border-color: Theme.border;
+    border-width: 2px;
+
+    // Two "arms" (left/right)
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width / 2;
+        height: parent.height;
+        background: #00000000;
+    }
+    Rectangle {
+        x: parent.width / 2;
+        y: 0px;
+        width: parent.width / 2;
+        height: parent.height;
+        background: #00000000;
+    }
+
+    Rectangle {
+        x: parent.width / 2 - 1px;
+        width: 2px;
+        height: parent.height;
+        background: #ffffff14;
+    }
+
+    Text {
+        x: parent.width * 0.25 - 35px;
+        y: 18px;
+        text: "ARM A";
+        color: Theme.text-secondary;
+        font-size: 16px;
+    }
+    Text {
+        x: parent.width * 0.75 - 35px;
+        y: 18px;
+        text: "ARM B";
+        color: Theme.text-secondary;
+        font-size: 16px;
+    }
+
+    // Choice highlight
+    Rectangle {
+        x: (game.chosen-action == "left") ? 10px : (game.chosen-action == "right") ? (parent.width / 2 + 10px) : 10px;
+        y: 52px;
+        width: parent.width / 2 - 20px;
+        height: parent.height - 64px;
+        background: Theme.accent-blue;
+        opacity: game.response-made ? 0.08 : 0.0;
+        border-radius: 8px;
+    }
+
+    // Reward flash (last reward)
+    Rectangle {
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        x: parent.width / 2 - self.width / 2;
+        y: parent.height / 2 - self.height / 2;
+        background: (game.last-reward > 0.0) ? Theme.accent-green : (game.last-reward < 0.0) ? Theme.accent-red : Theme.text-secondary;
+        opacity: game.response-made ? 0.65 : 0.15;
+    }
+
+    if !game.response-made: Text {
+        x: 0px;
+        y: parent.height - 40px;
+        width: parent.width;
+        text: "Choose ARM A (A) or ARM B (D)";
+        color: Theme.text-primary;
+        font-size: 14px;
+        horizontal-alignment: center;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Pong Canvas (ball + paddle)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -245,24 +328,14 @@ component PongCanvas inherits Rectangle {
     border-color: Theme.border;
     border-width: 2px;
 
-    // Playfield bounds
+    // Playfield bounds (no extra border; keep a single outline via the canvas itself)
     field := Rectangle {
         x: 12px;
         y: 12px;
         width: parent.width - 24px;
         height: parent.height - 24px;
         background: transparent;
-        border-color: Theme.border;
-        border-width: 1px;
-    }
-
-    // Center line
-    Rectangle {
-        x: field.x + field.width / 2 - 1px;
-        y: field.y;
-        width: 2px;
-        height: field.height;
-        background: #ffffff20;
+        border-width: 0px;
     }
 
     // Paddle (left)
@@ -288,7 +361,7 @@ component PongCanvas inherits Rectangle {
         background: Theme.accent-yellow;
         x: field.x + (0.5 + 0.5 * game.pos-x) * (field.width - self.width);
         y: field.y + (0.5 - 0.5 * game.pos-y) * (field.height - self.height);
-        opacity: 0.95;
+        opacity: game.pong-ball-visible ? 0.95 : 0.0;
     }
 }
 
@@ -313,8 +386,7 @@ component SpotXYCanvas inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         background: transparent;
-        border-color: Theme.border;
-        border-width: 1px;
+        border-width: 0px;
     }
 
     // Binary mode divider (x = 0)
@@ -415,11 +487,56 @@ component SpotXYCanvas inherits Rectangle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Game header (title + short instructions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+component GameHeader inherits Rectangle {
+    in property <string> kind;
+    in property <GameState> game;
+
+    background: transparent;
+    border-width: 0px;
+
+    property <string> title_text:
+        (kind == "bandit") ? "Bandit" :
+        (kind == "spot_reversal") ? "Spot Reversal" :
+        (kind == "spotxy") ? "SpotXY" :
+        (kind == "pong") ? "Pong" :
+        "Spot";
+
+    property <string> help_text:
+        (kind == "pong") ? "Keys: W/Up = up, S/Down = down, Space = stay" :
+        (kind == "bandit") ? "Two-armed bandit: rewards are stochastic; learn which arm pays." :
+        (kind == "spotxy") ? "Track the dot (TRAIN) or holdout (EVAL)." :
+        (kind == "spot_reversal") ? "Rule flips; context bit helps detect reversals." :
+        "Discriminate left vs right spot.";
+
+    VerticalBox {
+        spacing: 2px;
+        Text {
+            text: title_text;
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        Text {
+            text: help_text;
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HUD Panel
 // ═══════════════════════════════════════════════════════════════════════════
 
 component HudPanel inherits Rectangle {
     in property <HudData> hud;
+    in property <int> trial-ms: 250;
+
+    property <float> trial_s: (trial-ms <= 0) ? 0.25 : (trial-ms * 1.0) / 1000.0;
     
     background: Theme.bg-panel;
     border-color: Theme.border;
@@ -466,6 +583,14 @@ component HudPanel inherits Rectangle {
             text: "Reached @ trials — Learning: " + (hud.learning-at-trial < 0 ? "-" : hud.learning-at-trial) +
                   "  Learned: " + (hud.learned-at-trial < 0 ? "-" : hud.learned-at-trial) +
                   "  Mastered: " + (hud.mastered-at-trial < 0 ? "-" : hud.mastered-at-trial);
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        Text {
+            text: "Approx time — Learning: " + (hud.learning-at-trial < 0 ? "-" : (round(hud.learning-at-trial * trial_s * 10) / 10 + "s")) +
+                  "  Learned: " + (hud.learned-at-trial < 0 ? "-" : (round(hud.learned-at-trial * trial_s * 10) / 10 + "s")) +
+                  "  Mastered: " + (hud.mastered-at-trial < 0 ? "-" : (round(hud.mastered-at-trial * trial_s * 10) / 10 + "s"));
             color: Theme.text-secondary;
             font-size: 12px;
         }
@@ -631,7 +756,10 @@ component LearningPanel inherits Rectangle {
 component BrainPanel inherits Rectangle {
     in property <BrainStats> stats;
     in property <string> experts-status;
+    in property <bool> experts-enabled;
     callback set-max-units(int);
+    callback experts-enabled-changed(bool);
+    callback cull-experts();
     
     background: Theme.bg-panel;
     border-color: Theme.border;
@@ -653,6 +781,26 @@ component BrainPanel inherits Rectangle {
             text: experts-status;
             color: Theme.text-secondary;
             font-size: 12px;
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+            CheckBox {
+                text: "Experts";
+                checked: experts-enabled;
+                toggled => { experts-enabled-changed(self.checked); }
+            }
+            Button {
+                text: "Cull";
+                enabled: experts-enabled;
+                clicked => { cull-experts(); }
+            }
+            Text {
+                text: experts-enabled ? "(plots/graphs can switch to Active Expert)" : "(enable to allow child brains)";
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+            }
         }
         Text { text: "Units: " + stats.unit-count; color: Theme.text-secondary; font-size: 12px; }
         HorizontalBox {
@@ -694,6 +842,7 @@ export component MainWindow inherits Window {
     in property <GameState> game;
     in property <BrainStats> brain-stats;
     in property <[UnitPoint]> unit-points;
+    in property <[float]> osc-samples;
     in property <[ActionScore]> action-scores;
     in property <MeaningData> meaning;
     in property <[MeaningHistDot]> meaning-pair-gap-dots;
@@ -725,6 +874,12 @@ export component MainWindow inherits Window {
     // Auto snapshot settings (UI-driven timer)
     in-out property <bool> auto-snapshot-enabled: false;
     in-out property <int> auto-snapshot-interval-s: 300;
+
+    // Experts (child brains)
+    in-out property <bool> experts-enabled: false;
+
+    // Storage safety
+    in-out property <bool> reset-confirmed: false;
     
     // Callbacks to Rust
     callback mode-changed(bool);
@@ -755,6 +910,10 @@ export component MainWindow inherits Window {
 
     // Auto snapshot changes
     callback auto-snapshot-settings-changed(bool, int);
+
+    // Experts (child brains)
+    callback experts-enabled-changed(bool);
+    callback cull-experts();
 
     callback graph-request(string, int, int, bool);
     callback graph-hover(float, float);
@@ -877,15 +1036,6 @@ export component MainWindow inherits Window {
                         running-changed(running);
                     }
                 }
-                
-                Text { text: "Mode:"; color: Theme.text-secondary; vertical-alignment: center; }
-                Button {
-                    text: is-braine-mode ? "Braine" : "Human";
-                    clicked => {
-                        is-braine-mode = !is-braine-mode;
-                        mode-changed(is-braine-mode);
-                    }
-                }
 
                 Text { text: "Game:"; color: Theme.text-secondary; vertical-alignment: center; }
                 Button {
@@ -923,7 +1073,7 @@ export component MainWindow inherits Window {
                 }
                 
                 Button {
-                    text: paused ? "▶ Resume" : "⏸ Pause";
+                    text: paused ? "▶ Resume UI" : "⏸ Pause UI";
                     clicked => { paused = !paused; }
                     enabled: running;  // Only enable when running
                 }
@@ -942,6 +1092,11 @@ export component MainWindow inherits Window {
                     spacing: 8px;
                     vertical-stretch: 1;
 
+                    GameHeader {
+                        kind: root.effective-game-kind;
+                        game: root.game;
+                    }
+
                     if root.effective-game-kind == "spotxy": SpotXYCanvas {
                         game: root.game;
                         frame: root.hud.frame;
@@ -951,13 +1106,18 @@ export component MainWindow inherits Window {
                         game: root.game;
                         vertical-stretch: 1;
                     }
-                    if root.effective-game-kind != "spotxy" && root.effective-game-kind != "pong": SpotCanvas {
+                    if root.effective-game-kind == "bandit": BanditCanvas {
+                        game: root.game;
+                        vertical-stretch: 1;
+                    }
+                    if root.effective-game-kind != "spotxy" && root.effective-game-kind != "pong" && root.effective-game-kind != "bandit": SpotCanvas {
                         game: root.game;
                         vertical-stretch: 1;
                     }
                     
                     HudPanel {
                         hud: root.hud;
+                        trial-ms: root.game.trial-duration;
                         // Allow shrinking on small windows; keep a comfortable default.
                         preferred-height: 160px;
                         min-height: 120px;
@@ -1013,6 +1173,12 @@ export component MainWindow inherits Window {
                                     font-size: 12px;
                                 }
 
+                                if root.effective-game-kind == "pong": Text {
+                                    text: "Tip: Paddle height is a fraction of the playfield.";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
                                 if root.effective-game-kind == "pong": VerticalBox {
                                     spacing: 8px;
 
@@ -1044,7 +1210,7 @@ export component MainWindow inherits Window {
 
                                     HorizontalBox {
                                         spacing: 8px;
-                                        Text { text: "Paddle size:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Text { text: "Paddle height:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
                                         Slider {
                                             width: 220px;
                                             minimum: 0.10;
@@ -1054,6 +1220,13 @@ export component MainWindow inherits Window {
                                         }
                                         Text { text: "" + (round(root.game.pong-paddle-half-height * 100.0) / 100.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
                                     }
+                                }
+
+                                if root.effective-game-kind == "bandit": Text {
+                                    text: "Bandit: Choose an arm; rewards are stochastic. The goal is to learn which arm pays better.";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
                                 }
 
                                 if root.effective-game-kind == "spotxy": Text {
@@ -1146,6 +1319,9 @@ export component MainWindow inherits Window {
                                 stats: brain-stats;
                                 experts-status: root.experts-status;
                                 set-max-units(n) => { root.set-max-units(n); }
+                                experts-enabled: root.experts-enabled;
+                                experts-enabled-changed(v) => { root.experts-enabled = v; root.experts-enabled-changed(v); }
+                                cull-experts => { root.cull-experts(); }
                             }
                         }
                     }
@@ -1199,6 +1375,13 @@ export component MainWindow inherits Window {
                                     font-size: 12px;
                                 }
 
+                                Text {
+                                    text: "Reset brain wipes the in-memory brain AND overwrites the on-disk brain with a fresh state.";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
                                 HorizontalBox {
                                     spacing: 8px;
                                     Button { text: "Save snapshot"; clicked => { save-snapshot(); } }
@@ -1232,7 +1415,22 @@ export component MainWindow inherits Window {
                                     spacing: 8px;
                                     Button { text: "Save brain"; clicked => { save-brain(); } }
                                     Button { text: "Load brain"; clicked => { load-brain(); } }
-                                    Button { text: "Reset brain"; clicked => { reset-brain(); } }
+                                    CheckBox {
+                                        text: "Enable reset";
+                                        checked: root.reset-confirmed;
+                                        toggled => { root.reset-confirmed = self.checked; }
+                                    }
+                                    Button {
+                                        text: "Reset brain";
+                                        enabled: root.reset-confirmed;
+                                        clicked => { reset-brain(); root.reset-confirmed = false; }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Reset is disabled until you enable it.";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
                                 }
 
                                 Rectangle { height: 1px; background: Theme.border; }
@@ -1282,10 +1480,51 @@ export component MainWindow inherits Window {
                                     spacing: 8px;
 
                                 Text {
+                                    text: "Oscillation (sampled): amplitude-weighted phase mean";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+
+                                Rectangle {
+                                    height: 120px;
+                                    horizontal-stretch: 1;
+                                    background: Theme.bg-dark;
+                                    border-width: 1px;
+                                    border-color: Theme.border;
+
+                                    // Midline
+                                    Rectangle {
+                                        x: 0px;
+                                        y: parent.height / 2;
+                                        width: parent.width;
+                                        height: 1px;
+                                        background: #ffffff14;
+                                    }
+
+                                    property <int> n: root.osc-samples.length;
+
+                                    for v[i] in root.osc-samples: Rectangle {
+                                        width: 2px;
+                                        height: 2px;
+                                        property <float> vv: min(1.0, max(-1.0, v));
+                                        x: (n <= 1) ? 0px : (i * (parent.width - self.width) / (n - 1));
+                                        y: (0.5 - (vv * 0.45)) * (parent.height - self.height);
+                                        background: Theme.accent-green;
+                                    }
+                                }
+
+                                Text {
                                     text: "Units (sampled): amp vs age";
                                     color: Theme.text-primary;
                                     font-size: 14px;
                                     font-weight: 600;
+                                }
+
+                                Text {
+                                    text: "Sampled view for debugging (not a full brain dump).";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
                                 }
 
                                 Rectangle {
@@ -1319,15 +1558,23 @@ export component MainWindow inherits Window {
                                     font-weight: 600;
                                 }
 
-                                for s in action-scores: Text {
-                                    text: s.name +
-                                          "  habit=" + round(s.habit_norm * 1000) / 1000 +
-                                          "  meaning=" + round(s.meaning * 1000) / 1000 +
-                                          " (cond=" + round(s.meaning_conditional * 1000) / 1000 +
-                                          " global=" + round(s.meaning_global * 1000) / 1000 +
-                                          ")  score=" + round(s.score * 1000) / 1000;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
+                                ScrollView {
+                                    // Keep the unit plot visible even with many actions.
+                                    height: 220px;
+                                    horizontal-stretch: 1;
+                                    VerticalBox {
+                                        spacing: 4px;
+                                        for s in action-scores: Text {
+                                            text: s.name +
+                                                  "  habit=" + round(s.habit_norm * 1000) / 1000 +
+                                                  "  meaning=" + round(s.meaning * 1000) / 1000 +
+                                                  " (cond=" + round(s.meaning_conditional * 1000) / 1000 +
+                                                  " global=" + round(s.meaning_global * 1000) / 1000 +
+                                                  ")  score=" + round(s.score * 1000) / 1000;
+                                            color: Theme.text-secondary;
+                                            font-size: 12px;
+                                        }
+                                    }
                                 }
                                 }
                             }
@@ -1457,6 +1704,13 @@ export component MainWindow inherits Window {
                                     color: Theme.text-primary;
                                     font-size: 14px;
                                     font-weight: 600;
+                                }
+
+                                Text {
+                                    text: "This is a sampled snapshot of the working brain (limited nodes/edges), not the whole brain.";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
                                 }
 
                                 HorizontalBox {
@@ -1685,9 +1939,9 @@ export component MainWindow inherits Window {
                                         background: Theme.bg-panel;
                                         border-width: 1px;
                                         border-color: Theme.border;
-                                        border-radius: 6px;
-                                        width: 240px;
-                                        height: 36px;
+                                        border-radius: 4px;
+                                        width: 260px;
+                                        height: 28px;
                                         // ensure above the viewport drawings
                                         z: 2;
 
@@ -1699,14 +1953,15 @@ export component MainWindow inherits Window {
                                             : (root.graph-hover-y01 * graph_viewport.height + 12px);
 
                                         Text {
-                                            x: 8px;
-                                            y: 0px;
-                                            width: parent.width - 16px;
+                                            x: 6px;
+                                            y: 4px;
+                                            width: parent.width - 12px;
+                                            height: parent.height - 8px;
                                             text: root.graph-hover-text;
                                             color: Theme.text-primary;
                                             font-size: 12px;
-                                            vertical-alignment: center;
                                             horizontal-alignment: left;
+                                            vertical-alignment: center;
                                         }
                                     }
                                 }
