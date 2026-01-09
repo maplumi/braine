@@ -1,4 +1,4 @@
-# braine docs
+# Braine docs
 
 This folder documents the **braine** research project: a minimal, brain-like cognitive substrate built from **local scalar dynamics** (no matrices, no backprop, no transformers).
 
