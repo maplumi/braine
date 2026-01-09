@@ -687,14 +687,14 @@ for step in 0..1000 {
     brain.commit_observation();
 }
 
-// Some new units have specialized
+// Check which new units have specialized
 for id in 32..40 {
-    let avg_amp = /* compute average over last 100 steps */;
-    if avg_amp > 0.1 {
-        println!("Unit {} became active (avg_amp = {:.3})", id, avg_amp);
+    let amp = brain.units[id].amp;
+    if amp > 0.1 {
+        println!("Unit {} became active (amp = {:.3})", id, amp);
     }
 }
-// Output might show: "Unit 34 became active (avg_amp = 0.421)"
+// Output might show: "Unit 34 became active (amp = 0.421)"
 ```
 
 ---
