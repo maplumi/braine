@@ -2,7 +2,7 @@
 //! Connects to the `brained` daemon over TCP (127.0.0.1:9876)
 
 use serde::{Deserialize, Serialize};
-use slint::{ModelRc, Timer, VecModel};
+use slint::{ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -209,6 +209,11 @@ enum Request {
     SpotXYDecreaseGrid,
     SetMode {
         mode: String,
+    },
+    SetGameParam {
+        game: String,
+        key: String,
+        value: f32,
     },
     SetMaxUnits {
         max_units: u32,
@@ -450,6 +455,13 @@ struct DaemonGameState {
     pos_y: f32,
     #[serde(default)]
     pong_paddle_y: f32,
+
+    #[serde(default)]
+    pong_paddle_half_height: f32,
+    #[serde(default)]
+    pong_paddle_speed: f32,
+    #[serde(default)]
+    pong_ball_speed: f32,
     #[serde(default)]
     spotxy_eval: bool,
     #[serde(default)]
@@ -757,6 +769,18 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // Game parameter changes
+    {
+        let c = client.clone();
+        ui.on_set_game_param(move |game, key, value| {
+            c.send(Request::SetGameParam {
+                game: game.to_string(),
+                key: key.to_string(),
+                value,
+            });
+        });
+    }
+
     // View toggle: parent vs active expert
     {
         let c = client.clone();
@@ -863,6 +887,33 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_reset_brain(move || c.send(Request::ResetBrain));
     }
 
+    // Auto snapshot (UI-driven repeating timer)
+    {
+        let c = client.clone();
+        let auto_timer = Timer::default();
+
+        ui.on_auto_snapshot_settings_changed(move |enabled, interval_s| {
+            if !enabled {
+                auto_timer.stop();
+                return;
+            }
+
+            let interval_s = (interval_s as i64).max(10) as u64;
+            let c_tick = c.clone();
+            auto_timer.start(
+                TimerMode::Repeated,
+                Duration::from_secs(interval_s),
+                move || c_tick.send(Request::SaveSnapshot),
+            );
+        });
+
+        // Apply initial values (start/stop timer immediately)
+        ui.invoke_auto_snapshot_settings_changed(
+            ui.get_auto_snapshot_enabled(),
+            ui.get_auto_snapshot_interval_s(),
+        );
+    }
+
     // Framerate control
     {
         let c = client.clone();
@@ -903,6 +954,15 @@ fn main() -> Result<(), slint::PlatformError> {
             }),
             "right" => c.send(Request::HumanAction {
                 action: "right".into(),
+            }),
+            "up" => c.send(Request::HumanAction {
+                action: "up".into(),
+            }),
+            "down" => c.send(Request::HumanAction {
+                action: "down".into(),
+            }),
+            "stay" => c.send(Request::HumanAction {
+                action: "stay".into(),
             }),
             _ => {}
         });
@@ -984,6 +1044,9 @@ fn main() -> Result<(), slint::PlatformError> {
                     pos_x: snap.game.pos_x,
                     pos_y: snap.game.pos_y,
                     pong_paddle_y: snap.game.pong_paddle_y,
+                    pong_paddle_half_height: snap.game.pong_paddle_half_height,
+                    pong_paddle_speed: snap.game.pong_paddle_speed,
+                    pong_ball_speed: snap.game.pong_ball_speed,
                     spotxy_eval: snap.game.spotxy_eval,
                     spotxy_mode: snap.game.spotxy_mode.clone().into(),
                     spotxy_grid_n: snap.game.spotxy_grid_n as i32,
@@ -997,6 +1060,11 @@ fn main() -> Result<(), slint::PlatformError> {
                     trial_frame: snap.game.trial_frame as i32,
                     trial_duration: snap.game.trial_duration as i32,
                 });
+
+                // Keep the selected (non-running) game in sync with the daemon's active game.
+                if !ui.get_running() {
+                    ui.set_selected_game_kind(snap.game.kind.clone().into());
+                }
                 ui.set_hud(HudData {
                     frame: snap.frame as i32,
                     trials: snap.hud.trials as i32,

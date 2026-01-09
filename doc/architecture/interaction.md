@@ -106,10 +106,66 @@ Expected behavior:
 
 ---
 
+## Daemon games: input/output encoding
+
+The daemon (`brained`) runs small “games” that convert environment state into a set of
+`Stimulus { name, strength }` events, then scores an action and applies reward.
+
+General rules:
+
+- **Stimuli are named sensors** created at daemon init (or ensured on load). A “sensor” can have
+  multiple units, but the daemon generally uses either:
+  - **one-hot** stimulation (`strength=1.0`) for discrete state, or
+  - **graded/population-coded** stimulation (`strength in [0,1]`) for continuous state.
+- **Actions are named action groups**. The daemon asks the substrate to select one of the
+  allowed action names for the current game.
+- **Meaning conditioning key**: some games also attach a *symbol tag* (via
+  `note_compound_symbol([stimulus_key])`) to provide a more specific context for causal/meaning
+  credit assignment than the base stimulus name.
+
+Below are the current encodings for each daemon game kind.
+
+### `spot`
+
+- **Actions:** `left`, `right`
+- **Stimuli (one-hot, strength=1.0):** exactly one of
+  - `spot_left` (spot appears on left)
+  - `spot_right` (spot appears on right)
+
+### `bandit`
+
+- **Actions:** `left`, `right`
+- **Stimuli:** constant context sensor
+  - `bandit` (strength=1.0 every tick)
+
+### `spot_reversal`
+
+- **Actions:** `left`, `right`
+- **Stimuli (one-hot, strength=1.0):** exactly one of
+  - `spot_left`
+  - `spot_right`
+- **Extra context sensor (one-hot, strength=1.0):**
+  - `spot_rev_ctx` is applied only while the reversal regime is active.
+- **Meaning conditioning key (symbol tag):** while reversal is active, the daemon also conditions
+  the context key as `spot_left::rev` or `spot_right::rev`.
+
+### `spotxy`
+
+- **Actions:**
+  - Binary mode: `left`, `right`
+  - Grid mode: `spotxy_cell_{n:02}_{ix:02}_{iy:02}` for all $0 \le ix,iy < n$
+- **Stimuli (population-coded):**
+  - `pos_x_00..15` (graded strengths)
+  - `pos_y_00..15` (graded strengths)
+- **Meaning conditioning key (symbol tag):**
+  - Binary mode: `spotxy_xbin_{k:02}`
+  - Grid mode: `spotxy_bin_{n:02}_{ix:02}_{iy:02}`
+
+---
+
 ## Daemon games: Pong (3 actions)
 
-The daemon (`brained`) includes a minimal `pong` task with **3 actions**:
-`up`, `down`, `stay`.
+The daemon (`brained`) includes a minimal `pong` task with **3 actions**: `up`, `down`, `stay`.
 
 ### Discrete-bin sensors (current)
 The current implementation uses a small, discrete encoding:
@@ -129,6 +185,14 @@ symbol key like:
 
 This lets the causal/meaning system learn context-conditioned effects without requiring
 the symbol itself to be a sensor.
+
+### Tunable parameters (UI)
+
+The visualizer exposes a few runtime tunables:
+
+- `paddle_speed` (units/sec in normalized y range [-1,1])
+- `paddle_half_height` (half height in normalized y units)
+- `ball_speed` (multiplier applied to ball velocity per step)
 
 ### Path to continuous encodings (planned)
 No protocol change is needed to move beyond bins.

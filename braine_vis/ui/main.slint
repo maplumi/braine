@@ -109,6 +109,9 @@ export struct GameState {
     pos-x: float,
     pos-y: float,
     pong-paddle-y: float,
+    pong-paddle-half-height: float,
+    pong-paddle-speed: float,
+    pong-ball-speed: float,
     spotxy-eval: bool,
     spotxy-mode: string,
     spotxy-grid-n: int,
@@ -265,7 +268,8 @@ component PongCanvas inherits Rectangle {
     // Paddle (left)
     Rectangle {
         property <length> paddle_w: 10px;
-        property <length> paddle_h: 72px;
+        // paddle-half-height is in normalized [-1,1] units; full height fraction ~= half-height.
+        property <length> paddle_h: max(24px, field.height * game.pong-paddle-half-height);
         width: self.paddle_w;
         height: self.paddle_h;
         x: field.x + 8px;
@@ -676,7 +680,7 @@ component BrainPanel inherits Rectangle {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export component MainWindow inherits Window {
-    title: "Braine Visualizer - Spot Game";
+    title: "Braine Visualizer";
     // Don't bind Window width/height: it prevents resizing/maximize/minimize.
     // Use preferred + min sizes so the UI is scalable and responsive.
     preferred-width: 1040px;
@@ -712,6 +716,15 @@ export component MainWindow inherits Window {
     in-out property <bool> is-braine-mode: true;
     in-out property <bool> paused: false;
     in-out property <bool> running: false;  // Whether game loop is active
+
+    // When not running, allow selecting a different game UI/settings.
+    // The daemon's active game is still reflected by `game.kind`.
+    in-out property <string> selected-game-kind: "spot";
+    property <string> effective-game-kind: running ? game.kind : selected-game-kind;
+
+    // Auto snapshot settings (UI-driven timer)
+    in-out property <bool> auto-snapshot-enabled: false;
+    in-out property <int> auto-snapshot-interval-s: 300;
     
     // Callbacks to Rust
     callback mode-changed(bool);
@@ -736,6 +749,12 @@ export component MainWindow inherits Window {
     callback human-key-released(string);
     callback set-framerate(int);
     callback set-trial-period-ms(int);
+
+    // Game-scoped parameter updates
+    callback set-game-param(string, string, float);
+
+    // Auto snapshot changes
+    callback auto-snapshot-settings-changed(bool, int);
 
     callback graph-request(string, int, int, bool);
     callback graph-hover(float, float);
@@ -773,9 +792,29 @@ export component MainWindow inherits Window {
     // Keyboard input
     in-out property <bool> human-left-pressed: false;
     in-out property <bool> human-right-pressed: false;
+    in-out property <bool> human-up-pressed: false;
+    in-out property <bool> human-down-pressed: false;
     
     FocusScope {
         capture-key-pressed(event) => {
+            if (root.effective-game-kind == "pong") {
+                if (event.text == "w" || event.text == "W" || event.text == "ArrowUp" || event.text == "Up" || event.text == "↑") {
+                    root.human-up-pressed = true;
+                    root.human-key-pressed("up");
+                    return accept;
+                }
+                if (event.text == "s" || event.text == "S" || event.text == "ArrowDown" || event.text == "Down" || event.text == "↓") {
+                    root.human-down-pressed = true;
+                    root.human-key-pressed("down");
+                    return accept;
+                }
+                if (event.text == " " || event.text == "Space") {
+                    root.human-key-pressed("stay");
+                    return accept;
+                }
+                return reject;
+            }
+
             if (event.text == "a" || event.text == "A" || event.text == "ArrowLeft" || event.text == "Left" || event.text == "←") {
                 root.human-left-pressed = true;
                 root.human-key-pressed("left");
@@ -790,6 +829,24 @@ export component MainWindow inherits Window {
         }
         
         capture-key-released(event) => {
+            if (root.effective-game-kind == "pong") {
+                if (event.text == "w" || event.text == "W" || event.text == "ArrowUp" || event.text == "Up" || event.text == "↑") {
+                    root.human-up-pressed = false;
+                    root.human-key-released("up");
+                    return accept;
+                }
+                if (event.text == "s" || event.text == "S" || event.text == "ArrowDown" || event.text == "Down" || event.text == "↓") {
+                    root.human-down-pressed = false;
+                    root.human-key-released("down");
+                    return accept;
+                }
+                if (event.text == " " || event.text == "Space") {
+                    root.human-key-released("stay");
+                    return accept;
+                }
+                return reject;
+            }
+
             if (event.text == "a" || event.text == "A" || event.text == "ArrowLeft" || event.text == "Left" || event.text == "←") {
                 root.human-left-pressed = false;
                 root.human-key-released("left");
@@ -832,18 +889,19 @@ export component MainWindow inherits Window {
 
                 Text { text: "Game:"; color: Theme.text-secondary; vertical-alignment: center; }
                 Button {
-                    text: (root.game.kind == "bandit") ? "Bandit" :
-                          (root.game.kind == "spot_reversal") ? "Spot Reversal" :
-                          (root.game.kind == "spotxy") ? "SpotXY" :
-                          (root.game.kind == "pong") ? "Pong" :
+                    text: (root.effective-game-kind == "bandit") ? "Bandit" :
+                          (root.effective-game-kind == "spot_reversal") ? "Spot Reversal" :
+                          (root.effective-game-kind == "spotxy") ? "SpotXY" :
+                          (root.effective-game-kind == "pong") ? "Pong" :
                           "Spot";
                     enabled: !running;
                     clicked => {
-                        game-changed((root.game.kind == "spot") ? "bandit" :
-                                     (root.game.kind == "bandit") ? "spot_reversal" :
-                                     (root.game.kind == "spot_reversal") ? "spotxy" :
-                                     (root.game.kind == "spotxy") ? "pong" :
-                                     "spot");
+                        root.selected-game-kind = (root.selected-game-kind == "spot") ? "bandit" :
+                                                  (root.selected-game-kind == "bandit") ? "spot_reversal" :
+                                                  (root.selected-game-kind == "spot_reversal") ? "spotxy" :
+                                                  (root.selected-game-kind == "spotxy") ? "pong" :
+                                                  "spot";
+                        game-changed(root.selected-game-kind);
                     }
                 }
                 
@@ -878,23 +936,22 @@ export component MainWindow inherits Window {
                 
                 // Left: Game canvas
                 VerticalBox {
-                    // Size hints: allow resize/maximize without layout binding loops.
+                    // Keep the game area ~1/3 of the window.
+                    horizontal-stretch: 1;
                     min-width: 320px;
-                    preferred-width: 420px;
-                    max-width: 520px;
                     spacing: 8px;
                     vertical-stretch: 1;
 
-                    if root.game.kind == "spotxy": SpotXYCanvas {
+                    if root.effective-game-kind == "spotxy": SpotXYCanvas {
                         game: root.game;
                         frame: root.hud.frame;
                         vertical-stretch: 1;
                     }
-                    if root.game.kind == "pong": PongCanvas {
+                    if root.effective-game-kind == "pong": PongCanvas {
                         game: root.game;
                         vertical-stretch: 1;
                     }
-                    if root.game.kind != "spotxy" && root.game.kind != "pong": SpotCanvas {
+                    if root.effective-game-kind != "spotxy" && root.effective-game-kind != "pong": SpotCanvas {
                         game: root.game;
                         vertical-stretch: 1;
                     }
@@ -909,7 +966,7 @@ export component MainWindow inherits Window {
                 
                 // Right: Control panels
                 TabWidget {
-                    horizontal-stretch: 1;
+                    horizontal-stretch: 2;
                     vertical-stretch: 1;
                     
                     Tab {
@@ -932,7 +989,7 @@ export component MainWindow inherits Window {
                     }
 
                     Tab {
-                        title: "SpotXY";
+                        title: "Game Settings";
                         ScrollView {
                             horizontal-stretch: 1;
                             vertical-stretch: 1;
@@ -943,7 +1000,63 @@ export component MainWindow inherits Window {
                                     padding: 12px;
                                     spacing: 10px;
 
-                                Text {
+                                if root.effective-game-kind == "pong": Text {
+                                    text: "Pong";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+
+                                if root.effective-game-kind == "pong": Text {
+                                    text: "Keys: W/Up = up, S/Down = down, Space = stay";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                if root.effective-game-kind == "pong": VerticalBox {
+                                    spacing: 8px;
+
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Paddle speed:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Slider {
+                                            width: 220px;
+                                            minimum: 0.3;
+                                            maximum: 3.0;
+                                            value: root.game.pong-paddle-speed;
+                                            changed => { set-game-param("pong", "paddle_speed", self.value); }
+                                        }
+                                        Text { text: "" + (round(root.game.pong-paddle-speed * 1000.0) / 1000.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    }
+
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Ball speed:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Slider {
+                                            width: 220px;
+                                            minimum: 0.2;
+                                            maximum: 2.0;
+                                            value: root.game.pong-ball-speed;
+                                            changed => { set-game-param("pong", "ball_speed", self.value); }
+                                        }
+                                        Text { text: "" + (round(root.game.pong-ball-speed * 1000.0) / 1000.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    }
+
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Paddle size:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Slider {
+                                            width: 220px;
+                                            minimum: 0.10;
+                                            maximum: 0.45;
+                                            value: root.game.pong-paddle-half-height;
+                                            changed => { set-game-param("pong", "paddle_half_height", self.value); }
+                                        }
+                                        Text { text: "" + (round(root.game.pong-paddle-half-height * 100.0) / 100.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    }
+                                }
+
+                                if root.effective-game-kind == "spotxy": Text {
                                     text: (root.game.spotxy-grid-n > 0) ?
                                         "SpotXY (2D position, " + root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n + " grid)" :
                                         "SpotXY (2D position, 2 actions)";
@@ -952,14 +1065,14 @@ export component MainWindow inherits Window {
                                     font-weight: 600;
                                 }
 
-                                CheckBox {
+                                if root.effective-game-kind == "spotxy": CheckBox {
                                     text: "Eval (held-out x-band, no learning)";
                                     enabled: root.game.kind == "spotxy";
                                     checked: root.game.spotxy-eval;
                                     toggled => { spotxy-eval-changed(self.checked); }
                                 }
 
-                                Text {
+                                if root.effective-game-kind == "spotxy": Text {
                                     text: (root.game.spotxy-grid-n > 0) ?
                                         ("Rule: choose the correct cell (" + root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n + ")") :
                                         "Rule: left if x < 0 else right";
@@ -967,7 +1080,7 @@ export component MainWindow inherits Window {
                                     font-size: 12px;
                                 }
 
-                                HorizontalBox {
+                                if root.effective-game-kind == "spotxy": HorizontalBox {
                                     spacing: 8px;
                                     Text { text: "Grid:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
 
@@ -1002,14 +1115,20 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
-                                Text {
+                                if root.effective-game-kind == "spotxy": Text {
                                     text: "Chosen: " + root.game.chosen-action;
                                     color: Theme.text-secondary;
                                     font-size: 12px;
                                 }
 
-                                Text {
+                                if root.effective-game-kind == "spotxy": Text {
                                     text: "Last reward: " + (round(root.game.last-reward * 100.0) / 100.0);
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                if root.effective-game-kind != "spotxy" && root.effective-game-kind != "pong": Text {
+                                    text: "No game-specific settings yet for this game.";
                                     color: Theme.text-secondary;
                                     font-size: 12px;
                                 }
@@ -1083,6 +1202,37 @@ export component MainWindow inherits Window {
                                 HorizontalBox {
                                     spacing: 8px;
                                     Button { text: "Save snapshot"; clicked => { save-snapshot(); } }
+                                    CheckBox {
+                                        text: "Auto";
+                                        checked: root.auto-snapshot-enabled;
+                                        toggled => {
+                                            root.auto-snapshot-enabled = self.checked;
+                                            auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
+                                        }
+                                    }
+                                    Text { text: "Interval (s):"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    Button {
+                                        text: "-";
+                                        clicked => {
+                                            root.auto-snapshot-interval-s = max(10, root.auto-snapshot-interval-s - 60);
+                                            auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
+                                        }
+                                    }
+                                    Text { text: root.auto-snapshot-interval-s; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    Button {
+                                        text: "+";
+                                        clicked => {
+                                            root.auto-snapshot-interval-s = min(86400, root.auto-snapshot-interval-s + 60);
+                                            auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
+                                        }
+                                    }
+                                }
+
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    Button { text: "Save brain"; clicked => { save-brain(); } }
+                                    Button { text: "Load brain"; clicked => { load-brain(); } }
+                                    Button { text: "Reset brain"; clicked => { reset-brain(); } }
                                 }
 
                                 Rectangle { height: 1px; background: Theme.border; }

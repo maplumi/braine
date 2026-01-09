@@ -262,6 +262,11 @@ enum Request {
     SetGame {
         game: String,
     },
+    SetGameParam {
+        game: String,
+        key: String,
+        value: f32,
+    },
     SetSpotXYEval {
         eval: bool,
     },
@@ -479,6 +484,12 @@ struct GameState {
     pos_y: f32,
     #[serde(default)]
     pong_paddle_y: f32,
+    #[serde(default)]
+    pong_paddle_half_height: f32,
+    #[serde(default)]
+    pong_paddle_speed: f32,
+    #[serde(default)]
+    pong_ball_speed: f32,
     #[serde(default)]
     spotxy_eval: bool,
     #[serde(default)]
@@ -1095,10 +1106,16 @@ impl DaemonState {
         };
         let stats = self.game.stats();
         let (pos_x, pos_y) = self.game.pos_xy().unwrap_or((0.0, 0.0));
-        let pong_paddle_y = match &self.game {
-            ActiveGame::Pong(g) => g.paddle_y,
-            _ => 0.0,
-        };
+        let (pong_paddle_y, pong_paddle_half_height, pong_paddle_speed, pong_ball_speed) =
+            match &self.game {
+                ActiveGame::Pong(g) => (
+                    g.paddle_y,
+                    g.paddle_half_height,
+                    g.paddle_speed,
+                    g.ball_speed,
+                ),
+                _ => (0.0, 0.25, 1.3, 1.0),
+            };
 
         StateSnapshot {
             running: self.running,
@@ -1112,6 +1129,9 @@ impl DaemonState {
                 pos_x,
                 pos_y,
                 pong_paddle_y,
+                pong_paddle_half_height,
+                pong_paddle_speed,
+                pong_ball_speed,
                 spotxy_eval: self.game.spotxy_eval_mode(),
                 spotxy_mode: self.game.spotxy_mode_name().to_string(),
                 spotxy_grid_n: self.game.spotxy_grid_n(),
@@ -1974,6 +1994,33 @@ async fn handle_client(
                             message: format!("Game set to {}", game),
                         },
                         Err(e) => Response::Error { message: e },
+                    }
+                }
+            }
+            Request::SetGameParam { game, key, value } => {
+                let mut s = state.write().await;
+                let game = game.trim();
+                let key = key.trim();
+
+                if s.game.kind() != game {
+                    Response::Error {
+                        message: format!(
+                            "Game param applies to active game only (active={}, requested={})",
+                            s.game.kind(),
+                            game
+                        ),
+                    }
+                } else {
+                    match &mut s.game {
+                        ActiveGame::Pong(g) => match g.set_param(key, value) {
+                            Ok(_) => Response::Success {
+                                message: format!("Set {game}.{key} = {value}"),
+                            },
+                            Err(e) => Response::Error { message: e },
+                        },
+                        _ => Response::Error {
+                            message: format!("No tunable params implemented for game '{game}'"),
+                        },
                     }
                 }
             }

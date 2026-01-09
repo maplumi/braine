@@ -478,6 +478,10 @@ pub struct PongGame {
     pub ball_vy: f32,
     pub paddle_y: f32,
 
+    pub paddle_speed: f32,
+    pub paddle_half_height: f32,
+    pub ball_speed: f32,
+
     pub trial_frame: u32,
     pub response_made: bool,
     pub last_action: Option<String>,
@@ -512,6 +516,10 @@ impl PongGame {
             ball_vx: 0.6,
             ball_vy: 0.35,
             paddle_y: 0.0,
+
+            paddle_speed: 1.3,
+            paddle_half_height: 0.25,
+            ball_speed: 1.0,
             trial_frame: 0,
             response_made: false,
             last_action: None,
@@ -526,6 +534,26 @@ impl PongGame {
         };
         g.reset_point();
         g
+    }
+
+    pub fn set_param(&mut self, key: &str, value: f32) -> Result<(), String> {
+        match key {
+            "paddle_speed" => {
+                self.paddle_speed = value.clamp(0.1, 5.0);
+                Ok(())
+            }
+            "paddle_half_height" => {
+                self.paddle_half_height = value.clamp(0.05, 0.9);
+                Ok(())
+            }
+            "ball_speed" => {
+                self.ball_speed = value.clamp(0.1, 3.0);
+                Ok(())
+            }
+            _ => Err(format!(
+                "Unknown Pong param '{key}'. Use paddle_speed|paddle_half_height|ball_speed"
+            )),
+        }
     }
 
     pub fn stimulus_name(&self) -> &'static str {
@@ -612,18 +640,17 @@ impl PongGame {
         let mut reward: f32 = if is_correct { 0.05f32 } else { -0.05f32 };
 
         // Apply action: move paddle.
-        let paddle_speed = 1.3f32; // units per second in normalized [-1,1]
         let dt = (trial_period_ms.clamp(10, 60_000) as f32) / 1000.0;
         match action {
-            "up" => self.paddle_y += paddle_speed * dt,
-            "down" => self.paddle_y -= paddle_speed * dt,
+            "up" => self.paddle_y += self.paddle_speed * dt,
+            "down" => self.paddle_y -= self.paddle_speed * dt,
             _ => {}
         }
         self.paddle_y = self.paddle_y.clamp(-1.0, 1.0);
 
         // Advance ball.
-        self.ball_x += self.ball_vx * dt;
-        self.ball_y += self.ball_vy * dt;
+        self.ball_x += self.ball_vx * self.ball_speed * dt;
+        self.ball_y += self.ball_vy * self.ball_speed * dt;
 
         // Bounce on top/bottom.
         if self.ball_y > 1.0 {
@@ -637,9 +664,8 @@ impl PongGame {
         // Left paddle collision / miss.
         // Treat x in [0,1] for bins, but sim uses ball_x in [0,1].
         // Left paddle is at x=0.
-        let paddle_half = 0.25f32;
         if self.ball_x <= 0.0 {
-            let hit = (self.ball_y - self.paddle_y).abs() <= paddle_half;
+            let hit = (self.ball_y - self.paddle_y).abs() <= self.paddle_half_height;
             if hit {
                 reward += 1.0f32;
                 self.ball_x = 0.0;
