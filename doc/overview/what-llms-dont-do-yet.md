@@ -82,5 +82,5 @@ The aim is to build a minimal, edge-friendly **continual learning substrate** fo
 ## How we will keep this honest
 
 We only claim a capability when it is **tested**.
-- Use the checklist in [capabilities-checklist.md](capabilities-checklist.md).
-- Log experiments in [experiments.md](experiments.md) with explicit determinism and encoder configs.
+- Use the checklist in [capabilities-checklist.md](../games/capabilities-checklist.md).
+- Log experiments in [experiments.md](../games/experiments.md) with explicit determinism and encoder configs.

@@ -725,6 +725,6 @@ for id in 32..40 {
 
 For more details:
 - Implementation: `src/core/substrate.rs`
-- Architecture: `doc/architecture.md`
-- Learning mechanisms: `doc/accelerated-learning.md`
-- Research context: `doc/research-landscape.md`
+- Architecture: `../architecture/architecture.md`
+- Learning mechanisms: `../learning/accelerated-learning.md`
+- Research context: `../research/research-landscape.md`

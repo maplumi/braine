@@ -19,7 +19,7 @@ This project behaves like a **continuous-time recurrent substrate** with **local
 - **Overlap (spirit):** closed-loop interaction, continual adaptation, and internal structure that stabilizes into habits/attractors.
 - **Difference:** no explicit generative model, no variational inference, and no prediction-error objective is being optimized.
 
-If you want a longer version, see [doc/research-landscape.md](doc/research-landscape.md).
+If you want a longer version, see [doc/research/research-landscape.md](doc/research/research-landscape.md).
 
 ## Quick start
 
@@ -68,7 +68,7 @@ Snapshots live under the same data directory in `snapshots/`.
 After building with `./scripts/dev.sh`, the Windows installer bundle is at:
 - `dist/braine-portable.zip` — unzip and run `run_braine.bat` (starts daemon + UI)
 
-See [doc/packaging.md](doc/packaging.md) for details.
+See [doc/development/packaging.md](doc/development/packaging.md) for details.
 
 ## Feature flags
 
@@ -116,13 +116,13 @@ The core `braine` crate stays std-only; treat `braine_viz` as a demo tool rather
 security-hardened component.
 
 ## Docs
-- **New to braine?** Start with [How It Works](doc/how-it-works.md) for a comprehensive guide with detailed neurogenesis explanation
-- See [doc/README.md](doc/README.md)
-- Interaction + I/O: [doc/interaction.md](doc/interaction.md)
-- Persistence + storage adapters: [doc/brain-image.md](doc/brain-image.md)
-- Visualizer games (what each measures): [doc/visualizer-games.md](doc/visualizer-games.md)
-- What this does that LLMs don’t (yet): [doc/what-llms-dont-do-yet.md](doc/what-llms-dont-do-yet.md)
-- **Accelerated Learning**: [doc/accelerated-learning.md](doc/accelerated-learning.md)
+- **New to braine?** Start with [How It Works](doc/overview/how-it-works.md) for a comprehensive guide with detailed neurogenesis explanation
+- See [doc/README.md](doc/README.md) for complete documentation index
+- Interaction + I/O: [doc/architecture/interaction.md](doc/architecture/interaction.md)
+- Persistence + storage adapters: [doc/architecture/brain-image.md](doc/architecture/brain-image.md)
+- Visualizer games (what each measures): [doc/games/visualizer-games.md](doc/games/visualizer-games.md)
+- What this does that LLMs don’t (yet): [doc/overview/what-llms-dont-do-yet.md](doc/overview/what-llms-dont-do-yet.md)
+- **Accelerated Learning**: [doc/learning/accelerated-learning.md](doc/learning/accelerated-learning.md)
 
 ### Learning actions (UI)
 The visualizer exposes a few manual “accelerators”:

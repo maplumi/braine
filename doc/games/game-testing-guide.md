@@ -21,7 +21,7 @@ what metrics indicate success, and how to measure learning rate.
 ## Cross-cutting: Experts (child brains) across all games
 
 This repo is adding a general expert/child-brain mechanism intended to work across every game. The canonical design contract lives in:
-- [Expert / Child-Brain Mechanism](experts.md)
+- [Expert / Child-Brain Mechanism](../architecture/experts.md)
 
 ### What stays the same
 - Games still apply stimuli, read an action, and compute reward.
