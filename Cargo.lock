@@ -722,6 +722,7 @@ name = "braine_web"
 version = "0.1.0"
 dependencies = [
  "braine",
+ "braine_games",
  "leptos",
  "wasm-bindgen",
  "web-sys",
