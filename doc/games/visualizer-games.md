@@ -13,7 +13,7 @@ This document describes each interactive environment in the `braine_viz` macroqu
 - Persistence hotkeys:
   - `S` queues a save of the current brain image (`.bbi`).
   - `L` queues a load (replaces the current in-memory brain).
-- Autosave: enabled by default (every ~2s). Configure via env/args documented in [brain-image.md](brain-image.md).
+- Autosave: enabled by default (every ~2s). Configure via env/args documented in [brain-image.md](../architecture/brain-image.md).
 
 ## Logging and “what to look at”
 - Metrics log file: `braine_viz_metrics.log`
@@ -149,4 +149,4 @@ Use `FLIP_MARKER` as a ground-truth timestamp for “adaptation” questions.
 - Because reward is delayed by one step, watch whether the brain learns a consistent next-token prediction.
 - If it collapses to a single token, you’ll see persistently negative reward after the novelty wears off.
 
-If you want a more formalized version of these ideas, see [metrics.md](metrics.md).
+If you want a more formalized version of these ideas, see [metrics.md](../development/metrics.md).
