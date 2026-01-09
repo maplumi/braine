@@ -6,6 +6,11 @@ edition = "2021"
 [features]
 default = ["std"]
 std = []
+braine = ["std", "dep:braine"]
 
 [dependencies]
 # Keep this crate lightweight and wasm-friendly.
+
+# Optional: allow certain games to directly apply stimuli to a `braine::substrate::Brain`.
+# This is used by the daemon today, and can be disabled for WASM builds.
+braine = { workspace = true, optional = true, features = ["std"] }

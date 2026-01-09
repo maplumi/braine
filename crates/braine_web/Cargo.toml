@@ -11,7 +11,6 @@ web = ["dep:leptos", "dep:wasm-bindgen", "dep:web-sys"]
 
 [dependencies]
 braine = { path = "../core", default-features = false, features = ["serde"] }
-braine_games = { path = "../shared/braine_games", default-features = false }
 
 leptos = { version = "0.7", optional = true, default-features = false, features = ["csr"] }
 wasm-bindgen = { version = "0.2", optional = true }
