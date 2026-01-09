@@ -5,8 +5,14 @@
 //!
 //! Enable the real app with: `--features web` (and a wasm32 target).
 
-/// Placeholder function for non-web builds.
-#[cfg(not(feature = "web"))]
+/// Placeholder function for non-web (or non-wasm) builds.
+#[cfg(not(all(feature = "web", target_arch = "wasm32")))]
 pub fn placeholder() {
     // No-op.
 }
+
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+mod web;
+
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use web::start;

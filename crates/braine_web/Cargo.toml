@@ -7,14 +7,14 @@ edition = "2021"
 # Default build is a stub so native/windows builds and ./scripts/dev.sh keep working.
 default = []
 # Enable the real Leptos WASM app.
-web = ["dep:leptos", "dep:wasm-bindgen", "dep:web-sys"]
+web = ["dep:leptos", "dep:wasm-bindgen", "dep:web-sys", "braine/std"]
 
 [dependencies]
 braine = { path = "../core", default-features = false, features = ["serde"] }
 
 leptos = { version = "0.7", optional = true, default-features = false, features = ["csr"] }
 wasm-bindgen = { version = "0.2", optional = true }
-web-sys = { version = "0.3", optional = true, features = ["Window", "Storage"], default-features = false }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Storage", "console"], default-features = false }
 
 [lib]
 path = "src/lib.rs"
