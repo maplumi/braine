@@ -1107,6 +1107,31 @@ impl Brain {
         Ok(cw.written())
     }
 
+    // -------------------------------------------------------------------------
+    // WASM-friendly byte array persistence API
+    // -------------------------------------------------------------------------
+
+    /// Serialize the brain image to a byte vector.
+    ///
+    /// This is the primary API for WASM targets, where the caller can then
+    /// persist the bytes to IndexedDB or send over the wire.
+    #[cfg(feature = "std")]
+    pub fn save_image_bytes(&self) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        self.save_image_to(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// Load a brain image from a byte slice.
+    ///
+    /// This is the primary API for WASM targets, where the caller can load
+    /// bytes from IndexedDB or receive over the wire.
+    #[cfg(feature = "std")]
+    pub fn load_image_bytes(bytes: &[u8]) -> io::Result<Self> {
+        let mut cursor = io::Cursor::new(bytes);
+        Self::load_image_from(&mut cursor)
+    }
+
     #[cfg(feature = "std")]
     fn write_cfg_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let payload_len = Self::cfg_payload_len_bytes();

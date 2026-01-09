@@ -21,10 +21,10 @@ cargo build --release --all --target x86_64-pc-windows-gnu
 
 echo "[5/5] Create portable zip"
 mkdir -p dist/windows
-cp target/x86_64-pc-windows-gnu/release/braine_viz.exe dist/windows/
+cp target/x86_64-pc-windows-gnu/release/braine_desktop.exe dist/windows/
 cp target/x86_64-pc-windows-gnu/release/brained.exe dist/windows/
 cp target/x86_64-pc-windows-gnu/release/braine.exe dist/windows/
-cp braine_vis/assets/braine.ico dist/windows/
+cp crates/braine_desktop/assets/braine.ico dist/windows/
 cat > dist/windows/run_braine.bat <<'EOF'
 @echo off
 rem Ensure we run from the folder containing this script.
@@ -33,7 +33,7 @@ pushd "%~dp0" || (echo Failed to enter script directory & exit /b 1)
 
 start "brained" "%~dp0brained.exe"
 timeout /t 1 >NUL
-start "braine_viz" "%~dp0braine_viz.exe"
+start "braine_desktop" "%~dp0braine_desktop.exe"
 
 popd
 EOF
@@ -75,6 +75,6 @@ AUTO-SAVE:
 EOF
 (
   cd dist/windows
-  7z a -tzip ../braine-portable.zip braine_viz.exe brained.exe braine.exe braine.ico run_braine.bat README.txt >/dev/null
+  7z a -tzip ../braine-portable.zip braine_desktop.exe brained.exe braine.exe braine.ico run_braine.bat README.txt >/dev/null
 )
 echo "Portable bundle: dist/braine-portable.zip"

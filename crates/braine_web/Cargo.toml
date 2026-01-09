@@ -1,0 +1,21 @@
+[package]
+name = "braine_web"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Default build is a stub so native/windows builds and ./scripts/dev.sh keep working.
+default = []
+# Enable the real Leptos WASM app.
+web = ["dep:leptos", "dep:wasm-bindgen", "dep:web-sys"]
+
+[dependencies]
+braine = { path = "../core", default-features = false, features = ["serde"] }
+braine_games = { path = "../shared/braine_games", default-features = false }
+
+leptos = { version = "0.7", optional = true, default-features = false, features = ["csr"] }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "Storage"], default-features = false }
+
+[lib]
+path = "src/lib.rs"

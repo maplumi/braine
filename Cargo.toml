@@ -1,50 +1,26 @@
-[package]
-name = "braine"
+# Braine workspace root
+# All crates live under crates/ directory
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/brained",
+    "crates/braine_desktop",
+    "crates/shared/braine_games",
+    "crates/braine_web",
+]
+
+# Shared settings for all workspace members
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-members = [
-	"braine_vis",
-	"brained",
-]
-
-[features]
-default = ["std", "serde"]
-# Standard library support (disable for no_std environments)
-std = []
-# Enable parallel execution using rayon (adds ~200KB to binary)
-parallel = ["rayon", "std"]
-# Enable SIMD optimizations using the wide crate
-simd = ["wide"]
-# Enable GPU compute using wgpu (for very large substrates, 10k+ units)
-gpu = ["wgpu", "pollster", "bytemuck/derive", "std"]
-# Enable serde serialization support
-serde = ["dep:serde"]
-
-[dependencies]
-rayon = { version = "1.10", optional = true }
-wide = { version = "0.7", optional = true }
-wgpu = { version = "24.0", optional = true }
-pollster = { version = "0.4", optional = true }
-bytemuck = { version = "1.24", optional = true }
-serde = { version = "1.0", features = ["derive"], optional = true }
+# Common dependencies used by multiple crates
+[workspace.dependencies]
+braine = { path = "crates/core", default-features = false }
+braine_games = { path = "crates/shared/braine_games" }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-hashbrown = "0.15"
+tokio = { version = "1", features = ["full"] }
 lz4_flex = { version = "0.11", default-features = false }
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bin]]
-name = "braine"
-required-features = ["std"]
-
-[[bin]]
-name = "braine-cli"
-path = "src/bin/braine_cli.rs"
-required-features = ["std", "serde"]
-
-[[bench]]
-name = "substrate"
-harness = false
