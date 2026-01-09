@@ -1,6 +1,7 @@
 //! Spot game implementations for daemon
 
 use braine::substrate::{Brain, Stimulus};
+use braine_games::pong::{PongAction, PongSim};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -472,15 +473,7 @@ pub struct SpotXYGame {
 
 #[derive(Debug)]
 pub struct PongGame {
-    pub ball_x: f32,
-    pub ball_y: f32,
-    pub ball_vx: f32,
-    pub ball_vy: f32,
-    pub paddle_y: f32,
-
-    pub paddle_speed: f32,
-    pub paddle_half_height: f32,
-    pub ball_speed: f32,
+    pub sim: PongSim,
 
     pub trial_frame: u32,
     pub response_made: bool,
@@ -492,12 +485,9 @@ pub struct PongGame {
     ball_y_names: Vec<String>,
     paddle_y_names: Vec<String>,
     stimulus_key: String,
-    rng_seed: u64,
     trial_started_at: Instant,
 
     last_step_at: Instant,
-    respawn_until: Option<Instant>,
-    pending_event_reward: f32,
 }
 
 impl PongGame {
@@ -515,15 +505,7 @@ impl PongGame {
         }
 
         let mut g = Self {
-            ball_x: 0.0,
-            ball_y: 0.0,
-            ball_vx: 0.6,
-            ball_vy: 0.35,
-            paddle_y: 0.0,
-
-            paddle_speed: 1.3,
-            paddle_half_height: 0.15,
-            ball_speed: 1.0,
+            sim: PongSim::new(0xB0A7_F00Du64),
             trial_frame: 0,
             response_made: false,
             last_action: None,
@@ -533,36 +515,31 @@ impl PongGame {
             ball_y_names,
             paddle_y_names,
             stimulus_key: String::new(),
-            rng_seed: 0xB0A7_F00Du64,
             trial_started_at: now,
 
             last_step_at: now,
-            respawn_until: None,
-            pending_event_reward: 0.0,
         };
-        g.reset_point();
+        g.sim.reset_point();
+        g.refresh_stimulus_key();
         g
     }
 
     pub fn ball_visible(&self) -> bool {
-        match self.respawn_until {
-            Some(t) => Instant::now() >= t,
-            None => true,
-        }
+        self.sim.ball_visible()
     }
 
     pub fn set_param(&mut self, key: &str, value: f32) -> Result<(), String> {
         match key {
             "paddle_speed" => {
-                self.paddle_speed = value.clamp(0.1, 5.0);
+                self.sim.params.paddle_speed = value.clamp(0.1, 5.0);
                 Ok(())
             }
             "paddle_half_height" => {
-                self.paddle_half_height = value.clamp(0.05, 0.9);
+                self.sim.params.paddle_half_height = value.clamp(0.05, 0.9);
                 Ok(())
             }
             "ball_speed" => {
-                self.ball_speed = value.clamp(0.1, 3.0);
+                self.sim.params.ball_speed = value.clamp(0.1, 3.0);
                 Ok(())
             }
             _ => Err(format!(
@@ -588,7 +565,7 @@ impl PongGame {
         // Simple shaping target: move toward the ball's y position.
         // This is not the only viable policy, but it gives the agent a dense
         // supervisory signal while still requiring closed-loop control.
-        let dy = self.ball_y - self.paddle_y;
+        let dy = self.sim.state.ball_y - self.sim.state.paddle_y;
         if dy > 0.12 {
             "up"
         } else if dy < -0.12 {
@@ -611,18 +588,9 @@ impl PongGame {
             .clamp(0.0, 0.05);
         self.last_step_at = now;
 
-        // Ball can be briefly hidden after a miss to signal a new serve.
-        if let Some(t) = self.respawn_until {
-            if now < t {
-                // Keep paddle centered and don't advance the ball while hidden.
-            } else {
-                self.respawn_until = None;
-            }
-        }
-
-        if self.respawn_until.is_none() && dt > 0.0 {
-            self.step_physics(dt);
-        }
+        // Continuous physics step (independent of action cadence).
+        self.sim.update(dt);
+        self.refresh_stimulus_key();
 
         let elapsed = now.duration_since(self.trial_started_at);
         if elapsed >= trial_period {
@@ -636,52 +604,13 @@ impl PongGame {
         self.trial_frame = elapsed.as_millis().min(u32::MAX as u128) as u32;
     }
 
-    fn step_physics(&mut self, dt: f32) {
-        // Advance ball.
-        self.ball_x += self.ball_vx * self.ball_speed * dt;
-        self.ball_y += self.ball_vy * self.ball_speed * dt;
-
-        // Bounce on top/bottom.
-        if self.ball_y > 1.0 {
-            self.ball_y = 2.0 - self.ball_y;
-            self.ball_vy = -self.ball_vy;
-        } else if self.ball_y < -1.0 {
-            self.ball_y = -2.0 - self.ball_y;
-            self.ball_vy = -self.ball_vy;
-        }
-
-        // Right wall bounce so the ball keeps returning.
-        if self.ball_x >= 1.0 {
-            self.ball_x = 2.0 - self.ball_x;
-            self.ball_vx = -self.ball_vx.abs();
-        }
-
-        // Left paddle collision / miss.
-        if self.ball_x <= 0.0 {
-            let hit = (self.ball_y - self.paddle_y).abs() <= self.paddle_half_height;
-            if hit {
-                self.pending_event_reward += 1.0;
-                self.ball_x = 0.0;
-                self.ball_vx = self.ball_vx.abs();
-            } else {
-                self.pending_event_reward -= 1.0;
-
-                // Hide ball briefly, then respawn a new serve.
-                self.respawn_until = Some(Instant::now() + Duration::from_millis(180));
-                self.reset_point();
-            }
-        }
-
-        self.refresh_stimulus_key();
-    }
-
     pub fn apply_stimuli(&self, brain: &mut Brain) {
         // Discrete bins (one-hot). Keep this intentionally small; later we can
         // migrate to graded/population coding without changing the action space.
         let bins = self.ball_x_names.len().max(2) as u32;
-        let bx = pong_bin_01(self.ball_x, bins);
-        let by = pong_bin_signed(self.ball_y, bins);
-        let py = pong_bin_signed(self.paddle_y, bins);
+        let bx = PongSim::bin_01(self.sim.state.ball_x, bins);
+        let by = PongSim::bin_signed(self.sim.state.ball_y, bins);
+        let py = PongSim::bin_signed(self.sim.state.paddle_y, bins);
 
         brain.apply_stimulus(Stimulus::new(self.ball_x_names[bx as usize].as_str(), 1.0));
         brain.apply_stimulus(Stimulus::new(self.ball_y_names[by as usize].as_str(), 1.0));
@@ -690,12 +619,12 @@ impl PongGame {
             1.0,
         ));
 
-        let vx_name = if self.ball_vx >= 0.0 {
+        let vx_name = if self.sim.state.ball_vx >= 0.0 {
             "pong_vx_pos"
         } else {
             "pong_vx_neg"
         };
-        let vy_name = if self.ball_vy >= 0.0 {
+        let vy_name = if self.sim.state.ball_vy >= 0.0 {
             "pong_vy_pos"
         } else {
             "pong_vy_neg"
@@ -714,17 +643,16 @@ impl PongGame {
         let mut reward: f32 = if is_correct { 0.05f32 } else { -0.05f32 };
 
         // Add any physics event reward (hit/miss) since the last action.
-        reward += self.pending_event_reward;
-        self.pending_event_reward = 0.0;
+        reward += self.sim.take_pending_event_reward();
 
         // Apply action: move paddle.
         let dt = (trial_period_ms.clamp(10, 60_000) as f32) / 1000.0;
-        match action {
-            "up" => self.paddle_y += self.paddle_speed * dt,
-            "down" => self.paddle_y -= self.paddle_speed * dt,
-            _ => {}
-        }
-        self.paddle_y = self.paddle_y.clamp(-1.0, 1.0);
+        let a = match action {
+            "up" => PongAction::Up,
+            "down" => PongAction::Down,
+            _ => PongAction::Stay,
+        };
+        self.sim.apply_action(a, dt);
 
         self.refresh_stimulus_key();
 
@@ -736,60 +664,23 @@ impl PongGame {
         Some((reward.clamp(-1.0, 1.0), true))
     }
 
-    fn reset_point(&mut self) {
-        self.ball_x = 0.5;
-        self.ball_y = self.sample_uniform(-0.6, 0.6);
-        self.ball_vx = 0.75;
-        self.ball_vy = self.sample_uniform(-0.55, 0.55);
-        if self.ball_vy.abs() < 0.15 {
-            self.ball_vy = if self.ball_vy >= 0.0 { 0.15 } else { -0.15 };
-        }
-        self.paddle_y = 0.0;
-        self.refresh_stimulus_key();
-    }
-
     fn refresh_stimulus_key(&mut self) {
         let bins = self.ball_x_names.len().max(2) as u32;
-        let bx = pong_bin_01(self.ball_x, bins);
-        let by = pong_bin_signed(self.ball_y, bins);
-        let py = pong_bin_signed(self.paddle_y, bins);
-        let vx = if self.ball_vx >= 0.0 { "p" } else { "n" };
-        let vy = if self.ball_vy >= 0.0 { "p" } else { "n" };
+        let bx = PongSim::bin_01(self.sim.state.ball_x, bins);
+        let by = PongSim::bin_signed(self.sim.state.ball_y, bins);
+        let py = PongSim::bin_signed(self.sim.state.paddle_y, bins);
+        let vx = if self.sim.state.ball_vx >= 0.0 {
+            "p"
+        } else {
+            "n"
+        };
+        let vy = if self.sim.state.ball_vy >= 0.0 {
+            "p"
+        } else {
+            "n"
+        };
         self.stimulus_key = format!("pong_b{bins:02}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}");
     }
-
-    fn sample_uniform(&mut self, lo: f32, hi: f32) -> f32 {
-        let u = self.rng_next_f32();
-        lo + (hi - lo) * u
-    }
-
-    fn rng_next_u32(&mut self) -> u32 {
-        self.rng_seed = self
-            .rng_seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
-        (self.rng_seed >> 11) as u32
-    }
-
-    fn rng_next_f32(&mut self) -> f32 {
-        let u = self.rng_next_u32();
-        let mantissa = u >> 8; // 24 bits
-        (mantissa as f32) / ((1u32 << 24) as f32)
-    }
-}
-
-fn pong_bin_signed(v: f32, bins: u32) -> u32 {
-    let bins = bins.max(2);
-    let t = ((v.clamp(-1.0, 1.0) + 1.0) * 0.5).clamp(0.0, 0.999_999);
-    let b = (t * bins as f32).floor() as u32;
-    b.min(bins - 1)
-}
-
-fn pong_bin_01(v: f32, bins: u32) -> u32 {
-    let bins = bins.max(2);
-    let t = v.clamp(0.0, 0.999_999);
-    let b = (t * bins as f32).floor() as u32;
-    b.min(bins - 1)
 }
 
 impl SpotXYGame {

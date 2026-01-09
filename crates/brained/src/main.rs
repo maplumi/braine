@@ -133,7 +133,7 @@ impl ActiveGame {
             // For SpotXY, reuse this field as "correct side is left" (x < 0).
             ActiveGame::SpotXY(g) => g.pos_x < 0.0,
             // For Pong, reuse this field as "ball is above paddle".
-            ActiveGame::Pong(g) => g.ball_y > g.paddle_y,
+            ActiveGame::Pong(g) => g.sim.state.ball_y > g.sim.state.paddle_y,
         }
     }
 
@@ -196,7 +196,7 @@ impl ActiveGame {
         match self {
             ActiveGame::SpotXY(g) => Some((g.pos_x, g.pos_y)),
             // Map pong ball_x in [0,1] into [-1,1] for the UI dot.
-            ActiveGame::Pong(g) => Some((g.ball_x * 2.0 - 1.0, g.ball_y)),
+            ActiveGame::Pong(g) => Some((g.sim.state.ball_x * 2.0 - 1.0, g.sim.state.ball_y)),
             _ => None,
         }
     }
@@ -1181,13 +1181,13 @@ impl DaemonState {
             }
             ActiveGame::Pong(g) => GameState::Pong {
                 common: common(),
-                pong_ball_x: g.ball_x,
-                pong_ball_y: g.ball_y,
+                pong_ball_x: g.sim.state.ball_x,
+                pong_ball_y: g.sim.state.ball_y,
                 pong_ball_visible: g.ball_visible(),
-                pong_paddle_y: g.paddle_y,
-                pong_paddle_half_height: g.paddle_half_height,
-                pong_paddle_speed: g.paddle_speed,
-                pong_ball_speed: g.ball_speed,
+                pong_paddle_y: g.sim.state.paddle_y,
+                pong_paddle_half_height: g.sim.params.paddle_half_height,
+                pong_paddle_speed: g.sim.params.paddle_speed,
+                pong_ball_speed: g.sim.params.ball_speed,
             },
         };
 

@@ -730,6 +730,7 @@ name = "brained"
 version = "0.1.0"
 dependencies = [
  "braine",
+ "braine_games",
  "dirs",
  "serde",
  "serde_json",

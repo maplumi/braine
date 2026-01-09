@@ -5,9 +5,7 @@
 //!
 //! Enable the real app with: `--features web` (and a wasm32 target).
 
-#[cfg(feature = "web")]
-mod app;
-
+/// Placeholder function for non-web builds.
 #[cfg(not(feature = "web"))]
 pub fn placeholder() {
     // No-op.
