@@ -116,6 +116,7 @@ The core `braine` crate stays std-only; treat `braine_viz` as a demo tool rather
 security-hardened component.
 
 ## Docs
+- **New to braine?** Start with [How It Works](doc/how-it-works.md) for a comprehensive guide with detailed neurogenesis explanation
 - See [doc/README.md](doc/README.md)
 - Interaction + I/O: [doc/interaction.md](doc/interaction.md)
 - Persistence + storage adapters: [doc/brain-image.md](doc/brain-image.md)

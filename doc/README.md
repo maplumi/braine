@@ -13,6 +13,11 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 - Dense vector embeddings, matrix multiplications, gradient descent, or pretraining.
 
 ## How to navigate
+
+**New to braine? Start here:**
+- [How It Works](how-it-works.md): comprehensive guide to how braine operates, with detailed neurogenesis explanation.
+
+**Core documentation:**
 - [Architecture](architecture.md): core substrate + "body/frame" interface + execution tiers.
 - (In Architecture) `brained` daemon + UI/CLI protocol, including FPS vs trial-period controls.
 - [Experts / child brains](experts.md): general sandbox learning mechanism for all games (design contract; implemented later).
