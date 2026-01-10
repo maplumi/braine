@@ -9,7 +9,9 @@ default = []
 # Enable the real Leptos WASM app.
 web = [
 	"dep:leptos",
+	"dep:js-sys",
 	"dep:wasm-bindgen",
+	"dep:wasm-bindgen-futures",
 	"dep:web-sys",
 	"dep:braine_games",
 	"braine/std",
@@ -20,8 +22,34 @@ braine = { path = "../core", default-features = false, features = ["serde"] }
 braine_games = { path = "../shared/braine_games", default-features = false, features = ["braine"], optional = true }
 
 leptos = { version = "0.7", optional = true, default-features = false, features = ["csr"] }
+js-sys = { version = "0.3", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
-web-sys = { version = "0.3", optional = true, features = ["Window", "Storage", "console"], default-features = false }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", optional = true, default-features = false, features = [
+	"Window",
+	"Document",
+	"Storage",
+	"console",
+	"Blob",
+	"Url",
+	"HtmlAnchorElement",
+	"HtmlInputElement",
+	"File",
+	"FileList",
+	"FileReader",
+	"ProgressEvent",
+	"HtmlCanvasElement",
+	"CanvasRenderingContext2d",
+	"IdbFactory",
+	"IdbOpenDbRequest",
+	"IdbDatabase",
+	"IdbObjectStore",
+	"IdbRequest",
+	"IdbTransaction",
+	"IdbTransactionMode",
+	"Event",
+	"Navigator",
+] }
 
 [lib]
 path = "src/lib.rs"

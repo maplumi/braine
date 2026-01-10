@@ -1,0 +1,138 @@
+// Braine Desktop - Data Types
+// Shared data structures used across UI components
+
+export struct HudData {
+    frame: int,
+    trials: int,
+    correct: int,
+    incorrect: int,
+    accuracy: float,
+    recent-rate: float,
+    last-100-rate: float,
+    neuromod: float,
+    learning-at-trial: int,
+    learned-at-trial: int,
+    mastered-at-trial: int,
+}
+
+export struct LearningState {
+    learning-enabled: bool,
+    attention-boost: float,
+    attention-enabled: bool,
+    burst-mode-enabled: bool,
+    auto-dream-on-flip: bool,
+    auto-burst-on-slump: bool,
+    prediction-enabled: bool,
+    prediction-weight: float,
+}
+
+export struct BrainStats {
+    unit-count: int,
+    max-units-limit: int,
+    connection-count: int,
+    pruned-last-step: int,
+    births-last-step: int,
+    saturated: bool,
+    avg-amp: float,
+    avg-weight: float,
+    memory-bytes: int,
+    causal-base-symbols: int,
+    causal-edges: int,
+    causal-last-directed-updates: int,
+    causal-last-cooccur-updates: int,
+    age-steps: int,
+}
+
+export struct UnitPoint {
+    id: int,
+    amp: float,
+    amp01: float,
+    rel_age: float,
+    is_reserved: bool,
+    is_sensor_member: bool,
+    is_group_member: bool,
+}
+
+export struct ActionScore {
+    name: string,
+    habit_norm: float,
+    meaning_global: float,
+    meaning_conditional: float,
+    meaning: float,
+    score: float,
+}
+
+export struct MeaningEdges {
+    to-reward-pos: float,
+    to-reward-neg: float,
+    meaning: float,
+}
+
+export struct SnapshotItem {
+    stem: string,
+    modified-unix: int,
+    brain-bytes: int,
+    runtime-bytes: int,
+}
+
+export struct MeaningData {
+    stimulus: string,
+    correct-action: string,
+    action-a-name: string,
+    action-b-name: string,
+    pair-left: MeaningEdges,
+    pair-right: MeaningEdges,
+    action-left: MeaningEdges,
+    action-right: MeaningEdges,
+    pair-gap: float,
+    global-gap: float,
+}
+
+export struct MeaningHistDot {
+    x01: float,
+    v: float,
+    positive: bool,
+}
+
+export struct GameState {
+    kind: string,
+    reversal-active: bool,
+    chosen-action: string,
+    pos-x: float,
+    pos-y: float,
+    pong-ball-visible: bool,
+    pong-paddle-y: float,
+    pong-paddle-half-height: float,
+    pong-paddle-speed: float,
+    pong-ball-speed: float,
+    spotxy-eval: bool,
+    spotxy-mode: string,
+    spotxy-grid-n: int,
+    spotxy-chosen-ix: int,
+    spotxy-chosen-iy: int,
+    spotxy-correct-ix: int,
+    spotxy-correct-iy: int,
+    last-reward: float,
+    spot-is-left: bool,
+    response-made: bool,
+    trial-frame: int,
+    trial-duration: int,
+}
+
+export struct GraphNodeDot {
+    x01: float,
+    y01: float,
+    label: string,
+    value: float,
+    domain: string,
+}
+
+export struct GraphEdgeSeg {
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    positive: bool,
+    strength01: float,
+    thickness01: float,
+}

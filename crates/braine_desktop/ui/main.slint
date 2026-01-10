@@ -1,827 +1,14 @@
-// Braine Visualizer UI - Minimal Spot Game
-// Simple left/right discrimination task to test brain learning
+// Braine Desktop - Main Window (Modular)
+// Imports components from separate files for maintainability
 
 import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox, ScrollView } from "std-widgets.slint";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Data structures
-// ═══════════════════════════════════════════════════════════════════════════
-
-export struct HudData {
-    frame: int,
-    trials: int,
-    correct: int,
-    incorrect: int,
-    accuracy: float,
-    recent-rate: float,
-    last-100-rate: float,
-    neuromod: float,
-    learning-at-trial: int,
-    learned-at-trial: int,
-    mastered-at-trial: int,
-}
-
-export struct LearningState {
-    learning-enabled: bool,
-    attention-boost: float,
-    attention-enabled: bool,
-    burst-mode-enabled: bool,
-    auto-dream-on-flip: bool,
-    auto-burst-on-slump: bool,
-    prediction-enabled: bool,
-    prediction-weight: float,
-}
-
-export struct BrainStats {
-    unit-count: int,
-    max-units-limit: int,
-    connection-count: int,
-    pruned-last-step: int,
-    births-last-step: int,
-    saturated: bool,
-    avg-amp: float,
-    avg-weight: float,
-    memory-bytes: int,
-    causal-base-symbols: int,
-    causal-edges: int,
-    causal-last-directed-updates: int,
-    causal-last-cooccur-updates: int,
-    age-steps: int,
-}
-
-export struct UnitPoint {
-    id: int,
-    amp: float,
-    amp01: float,
-    rel_age: float,
-    is_reserved: bool,
-    is_sensor_member: bool,
-    is_group_member: bool,
-}
-
-export struct ActionScore {
-    name: string,
-    habit_norm: float,
-    meaning_global: float,
-    meaning_conditional: float,
-    meaning: float,
-    score: float,
-}
-
-export struct MeaningEdges {
-    to-reward-pos: float,
-    to-reward-neg: float,
-    meaning: float,
-}
-
-export struct SnapshotItem {
-    stem: string,
-    modified-unix: int,
-    brain-bytes: int,
-    runtime-bytes: int,
-}
-
-export struct MeaningData {
-    stimulus: string,
-    correct-action: string,
-
-    action-a-name: string,
-    action-b-name: string,
-
-    pair-left: MeaningEdges,
-    pair-right: MeaningEdges,
-    action-left: MeaningEdges,
-    action-right: MeaningEdges,
-    pair-gap: float,
-    global-gap: float,
-}
-
-export struct MeaningHistDot {
-    x01: float,
-    v: float,
-    positive: bool,
-}
-
-export struct GameState {
-    kind: string,
-    reversal-active: bool,
-    chosen-action: string,
-    pos-x: float,
-    pos-y: float,
-    pong-ball-visible: bool,
-    pong-paddle-y: float,
-    pong-paddle-half-height: float,
-    pong-paddle-speed: float,
-    pong-ball-speed: float,
-    spotxy-eval: bool,
-    spotxy-mode: string,
-    spotxy-grid-n: int,
-    spotxy-chosen-ix: int,
-    spotxy-chosen-iy: int,
-    spotxy-correct-ix: int,
-    spotxy-correct-iy: int,
-    last-reward: float,
-    spot-is-left: bool,
-    response-made: bool,
-    trial-frame: int,
-    trial-duration: int,
-}
-
-export struct GraphNodeDot {
-    x01: float,
-    y01: float,
-    label: string,
-    value: float,
-    domain: string,
-}
-
-export struct GraphEdgeSeg {
-    x1: float,
-    y1: float,
-    x2: float,
-    y2: float,
-    positive: bool,
-    strength01: float,
-    thickness01: float,
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Theme
-// ═══════════════════════════════════════════════════════════════════════════
-
-global Theme {
-    out property <color> bg-dark: #0d0d10;
-    out property <color> bg-panel: #1a1a1f;
-    out property <color> border: #333340;
-    out property <color> text-primary: #ffffff;
-    out property <color> text-secondary: #888899;
-    out property <color> accent-blue: #4080aa;
-    out property <color> accent-green: #40aa60;
-    out property <color> accent-red: #aa4040;
-    out property <color> accent-yellow: #aaaa40;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Spot Game Canvas
-// ═══════════════════════════════════════════════════════════════════════════
-
-component SpotCanvas inherits Rectangle {
-    in property <GameState> game;
-    
-    background: Theme.bg-dark;
-    border-color: Theme.border;
-    border-width: 2px;
-    
-    // Center divider
-    Rectangle {
-        x: parent.width / 2 - 1px;
-        width: 2px;
-        height: parent.height;
-        background: #ffffff20;
-    }
-    
-    // Left label
-    Text {
-        x: parent.width * 0.25 - 25px;
-        y: 20px;
-        text: "LEFT";
-        color: Theme.text-secondary;
-        font-size: 18px;
-    }
-    
-    // Right label
-    Text {
-        x: parent.width * 0.75 - 30px;
-        y: 20px;
-        text: "RIGHT";
-        color: Theme.text-secondary;
-        font-size: 18px;
-    }
-    
-    // Spot (bright yellow circle)
-    Rectangle {
-        x: ((game.kind == "bandit") ? (parent.width * 0.5) :
-            (((game.kind == "spot_reversal") ? (game.spot-is-left != game.reversal-active) : game.spot-is-left)
-                ? parent.width * 0.25 : parent.width * 0.75)) - 40px;
-        y: parent.height / 2 - 40px;
-        width: 80px;
-        height: 80px;
-        background: Theme.accent-yellow;
-        border-radius: 40px;
-        opacity: game.response-made ? 0.25 : 1.0;
-    }
-    
-    // Instruction text (when waiting for response)
-    if !game.response-made: Text {
-        x: 0px;
-        y: parent.height - 40px;
-        width: parent.width;
-        text: (game.kind == "bandit") ? "Choose LEFT (A) or RIGHT (D)" :
-              ((game.spot-is-left != game.reversal-active) ? "← Press LEFT (A)" : "Press RIGHT (D) →");
-        color: Theme.text-primary;
-        font-size: 16px;
-        horizontal-alignment: center;
-    }
-    
-    // Choice indicator bar (brain's selected action)
-    Rectangle {
-        y: parent.height - 10px;
-        height: 4px;
-        background: Theme.accent-blue;
-
-        x: (game.chosen-action == "left") ? 0px : (game.chosen-action == "right") ? (parent.width / 2) : 0px;
-        width: (game.chosen-action == "left" || game.chosen-action == "right") ? (parent.width / 2) : 0px;
-        opacity: game.response-made ? 0.9 : 0.0;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Bandit Canvas (stochastic reward, no spot location)
-// ═══════════════════════════════════════════════════════════════════════════
-
-component BanditCanvas inherits Rectangle {
-    in property <GameState> game;
-
-    background: Theme.bg-dark;
-    border-color: Theme.border;
-    border-width: 2px;
-
-    // Two "arms" (left/right)
-    Rectangle {
-        x: 0px;
-        y: 0px;
-        width: parent.width / 2;
-        height: parent.height;
-        background: #00000000;
-    }
-    Rectangle {
-        x: parent.width / 2;
-        y: 0px;
-        width: parent.width / 2;
-        height: parent.height;
-        background: #00000000;
-    }
-
-    Rectangle {
-        x: parent.width / 2 - 1px;
-        width: 2px;
-        height: parent.height;
-        background: #ffffff14;
-    }
-
-    Text {
-        x: parent.width * 0.25 - 35px;
-        y: 18px;
-        text: "ARM A";
-        color: Theme.text-secondary;
-        font-size: 16px;
-    }
-    Text {
-        x: parent.width * 0.75 - 35px;
-        y: 18px;
-        text: "ARM B";
-        color: Theme.text-secondary;
-        font-size: 16px;
-    }
-
-    // Choice highlight
-    Rectangle {
-        x: (game.chosen-action == "left") ? 10px : (game.chosen-action == "right") ? (parent.width / 2 + 10px) : 10px;
-        y: 52px;
-        width: parent.width / 2 - 20px;
-        height: parent.height - 64px;
-        background: Theme.accent-blue;
-        opacity: game.response-made ? 0.08 : 0.0;
-        border-radius: 8px;
-    }
-
-    // Reward flash (last reward)
-    Rectangle {
-        width: 14px;
-        height: 14px;
-        border-radius: 7px;
-        x: parent.width / 2 - self.width / 2;
-        y: parent.height / 2 - self.height / 2;
-        background: (game.last-reward > 0.0) ? Theme.accent-green : (game.last-reward < 0.0) ? Theme.accent-red : Theme.text-secondary;
-        opacity: game.response-made ? 0.65 : 0.15;
-    }
-
-    if !game.response-made: Text {
-        x: 0px;
-        y: parent.height - 40px;
-        width: parent.width;
-        text: "Choose ARM A (A) or ARM B (D)";
-        color: Theme.text-primary;
-        font-size: 14px;
-        horizontal-alignment: center;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Pong Canvas (ball + paddle)
-// ═══════════════════════════════════════════════════════════════════════════
-
-component PongCanvas inherits Rectangle {
-    in property <GameState> game;
-
-    background: Theme.bg-dark;
-    border-color: Theme.border;
-    border-width: 2px;
-
-    // Playfield bounds (no extra border; keep a single outline via the canvas itself)
-    field := Rectangle {
-        x: 12px;
-        y: 12px;
-        width: parent.width - 24px;
-        height: parent.height - 24px;
-        background: transparent;
-        border-width: 0px;
-    }
-
-    // Paddle (left)
-    Rectangle {
-        property <length> paddle_w: 10px;
-        // paddle-half-height is in normalized [-1,1] units; full height fraction ~= half-height.
-        property <length> paddle_h: max(24px, field.height * game.pong-paddle-half-height);
-        width: self.paddle_w;
-        height: self.paddle_h;
-        x: field.x + 8px;
-        // game.pong-paddle-y is in [-1,1], map to pixels (invert like SpotXY)
-        y: field.y + (0.5 - 0.5 * game.pong-paddle-y) * (field.height - self.height);
-        background: Theme.accent-blue;
-        border-radius: 3px;
-        opacity: 0.95;
-    }
-
-    // Ball (pos-x,pos-y are in [-1,1])
-    Rectangle {
-        width: 10px;
-        height: 10px;
-        border-radius: 5px;
-        background: Theme.accent-yellow;
-        x: field.x + (0.5 + 0.5 * game.pos-x) * (field.width - self.width);
-        y: field.y + (0.5 - 0.5 * game.pos-y) * (field.height - self.height);
-        opacity: game.pong-ball-visible ? 0.95 : 0.0;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SpotXY Canvas (2D dot)
-// ═══════════════════════════════════════════════════════════════════════════
-
-component SpotXYCanvas inherits Rectangle {
-    in property <GameState> game;
-    in property <int> frame;
-
-    background: Theme.bg-dark;
-    border-color: Theme.border;
-    border-width: 2px;
-
-    // Fixed drawing bounds for the grid so increasing N doesn't resize the UI;
-    // instead, cells get smaller inside a constant square.
-    grid := Rectangle {
-        property <length> size: max(140px, min(parent.width, parent.height) - 24px);
-        width: self.size;
-        height: self.size;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        background: transparent;
-        border-width: 0px;
-    }
-
-    // Binary mode divider (x = 0)
-    if game.spotxy-grid-n <= 0: Rectangle {
-        x: grid.x + grid.width / 2 - 1px;
-        width: 2px;
-        y: grid.y;
-        height: grid.height;
-        background: #ffffff20;
-    }
-
-    // Grid mode lines (N×N). Slint doesn't support dynamic range repeaters here,
-    // so we render up to 8×8 with conditional lines.
-    if game.spotxy-grid-n > 0: Rectangle {
-        x: 0px; y: 0px; width: 0px; height: 0px; background: transparent;
-
-        // Vertical lines k=1..7
-        if game.spotxy-grid-n > 1: Rectangle { width: 1px; height: grid.height; x: grid.x + (1.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 2: Rectangle { width: 1px; height: grid.height; x: grid.x + (2.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 3: Rectangle { width: 1px; height: grid.height; x: grid.x + (3.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 4: Rectangle { width: 1px; height: grid.height; x: grid.x + (4.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 5: Rectangle { width: 1px; height: grid.height; x: grid.x + (5.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 6: Rectangle { width: 1px; height: grid.height; x: grid.x + (6.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 7: Rectangle { width: 1px; height: grid.height; x: grid.x + (7.0 / (game.spotxy-grid-n * 1.0)) * grid.width - self.width / 2; y: grid.y; background: Theme.border; opacity: 0.65; }
-
-        // Horizontal lines k=1..7
-        if game.spotxy-grid-n > 1: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (1.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 2: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (2.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 3: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (3.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 4: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (4.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 5: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (5.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 6: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (6.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
-        if game.spotxy-grid-n > 7: Rectangle { width: grid.width; height: 1px; x: grid.x; y: grid.y + (7.0 / (game.spotxy-grid-n * 1.0)) * grid.height - self.height / 2; background: Theme.border; opacity: 0.65; }
-    }
-
-    // Flash correct vs chosen cell (grid mode) so errors are obvious.
-    // Note: y is inverted to match the [-1,1] coordinate system used for pos-y.
-    if game.spotxy-grid-n > 0 && game.spotxy-correct-ix >= 0 && game.spotxy-correct-iy >= 0: Rectangle {
-        property <float> n: game.spotxy-grid-n * 1.0;
-        property <float> ix: game.spotxy-correct-ix * 1.0;
-        property <float> iy: (game.spotxy-grid-n - 1 - game.spotxy-correct-iy) * 1.0;
-        x: grid.x + (ix / n) * grid.width;
-        y: grid.y + (iy / n) * grid.height;
-        width: grid.width / n;
-        height: grid.height / n;
-        background: Theme.accent-green;
-        border-color: Theme.accent-green;
-        border-width: 2px;
-        opacity: game.response-made ? ((Math.mod(frame, 16) < 8) ? 0.18 : 0.04) : 0.0;
-    }
-
-    if game.spotxy-grid-n > 0 && game.spotxy-chosen-ix >= 0 && game.spotxy-chosen-iy >= 0
-        && (game.spotxy-correct-ix < 0 || game.spotxy-correct-iy < 0
-            || game.spotxy-chosen-ix != game.spotxy-correct-ix
-            || game.spotxy-chosen-iy != game.spotxy-correct-iy): Rectangle {
-        property <float> n: game.spotxy-grid-n * 1.0;
-        property <float> ix: game.spotxy-chosen-ix * 1.0;
-        property <float> iy: (game.spotxy-grid-n - 1 - game.spotxy-chosen-iy) * 1.0;
-        x: grid.x + (ix / n) * grid.width;
-        y: grid.y + (iy / n) * grid.height;
-        width: grid.width / n;
-        height: grid.height / n;
-        background: Theme.accent-blue;
-        border-color: Theme.accent-blue;
-        border-width: 2px;
-        opacity: game.response-made ? ((Math.mod(frame, 12) < 6) ? 0.22 : 0.05) : 0.0;
-    }
-
-    // Dot position in normalized space [-1,1] -> pixels (mapped into the fixed grid bounds)
-    Rectangle {
-        width: 12px;
-        height: 12px;
-        border-radius: 6px;
-        background: Theme.accent-yellow;
-        x: grid.x + (0.5 + 0.5 * game.pos-x) * (grid.width - self.width);
-        y: grid.y + (0.5 - 0.5 * game.pos-y) * (grid.height - self.height);
-        opacity: game.response-made ? 0.35 : 1.0;
-    }
-
-    Text {
-        x: 10px;
-        y: 10px;
-        text: game.spotxy-eval ? "EVAL" : "TRAIN";
-        color: Theme.text-secondary;
-        font-size: 14px;
-    }
-
-    // Choice indicator bar (brain's selected action) - only meaningful in binary mode.
-    if game.spotxy-grid-n <= 0: Rectangle {
-        y: parent.height - 10px;
-        height: 4px;
-        background: Theme.accent-blue;
-
-        x: (game.chosen-action == "left") ? 0px : (game.chosen-action == "right") ? (parent.width / 2) : 0px;
-        width: (game.chosen-action == "left" || game.chosen-action == "right") ? (parent.width / 2) : 0px;
-        opacity: game.response-made ? 0.9 : 0.0;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Game header (title + short instructions)
-// ═══════════════════════════════════════════════════════════════════════════
-
-component GameHeader inherits Rectangle {
-    in property <string> kind;
-    in property <GameState> game;
-
-    background: transparent;
-    border-width: 0px;
-
-    property <string> title_text:
-        (kind == "bandit") ? "Bandit" :
-        (kind == "spot_reversal") ? "Spot Reversal" :
-        (kind == "spotxy") ? "SpotXY" :
-        (kind == "pong") ? "Pong" :
-        "Spot";
-
-    property <string> help_text:
-        (kind == "pong") ? "Keys: W/Up = up, S/Down = down, Space = stay" :
-        (kind == "bandit") ? "Two-armed bandit: rewards are stochastic; learn which arm pays." :
-        (kind == "spotxy") ? "Track the dot (TRAIN) or holdout (EVAL)." :
-        (kind == "spot_reversal") ? "Rule flips; context bit helps detect reversals." :
-        "Discriminate left vs right spot.";
-
-    VerticalBox {
-        spacing: 2px;
-        Text {
-            text: title_text;
-            color: Theme.text-primary;
-            font-size: 14px;
-            font-weight: 600;
-        }
-        Text {
-            text: help_text;
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// HUD Panel
-// ═══════════════════════════════════════════════════════════════════════════
-
-component HudPanel inherits Rectangle {
-    in property <HudData> hud;
-    in property <int> trial-ms: 250;
-
-    property <float> trial_s: (trial-ms <= 0) ? 0.25 : (trial-ms * 1.0) / 1000.0;
-    
-    background: Theme.bg-panel;
-    border-color: Theme.border;
-    border-width: 1px;
-    border-radius: 6px;
-    
-    VerticalBox {
-        padding: 10px;
-        spacing: 4px;
-        
-        Text {
-            text: "Frame: " + hud.frame + "  Trials: " + hud.trials;
-            color: Theme.text-primary;
-            font-size: 13px;
-        }
-        Text {
-            text: "Correct: " + hud.correct + "  Incorrect: " + hud.incorrect + "  Accuracy: " + round(hud.accuracy * 100) + "%";
-            color: Theme.text-primary;
-            font-size: 13px;
-        }
-        Text {
-            text: "Recent: " + round(hud.recent-rate * 100) + "%  Last 100: " + round(hud.last-100-rate * 100) + "%";
-            color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.text-secondary;
-            font-size: 13px;
-        }
-        Text {
-            text: "Neuromodulator: " + round(hud.neuromod * 1000) / 1000;
-            color: Theme.text-secondary;
-            font-size: 12px;
-        }
-        
-        // Learning milestones
-        Text {
-            text: hud.last-100-rate >= 0.95 ? "MASTERED" : 
-                hud.last-100-rate >= 0.85 ? "LEARNED" :
-                hud.last-100-rate >= 0.70 ? "LEARNING" :
-                  hud.trials < 20 ? "Starting..." : "Not yet learned";
-            color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.accent-yellow;
-            font-size: 14px;
-            font-weight: 600;
-        }
-
-        Text {
-            text: "Reached @ trials — Learning: " + (hud.learning-at-trial < 0 ? "-" : hud.learning-at-trial) +
-                  "  Learned: " + (hud.learned-at-trial < 0 ? "-" : hud.learned-at-trial) +
-                  "  Mastered: " + (hud.mastered-at-trial < 0 ? "-" : hud.mastered-at-trial);
-            color: Theme.text-secondary;
-            font-size: 12px;
-        }
-
-        Text {
-            text: "Approx time — Learning: " + (hud.learning-at-trial < 0 ? "-" : (round(hud.learning-at-trial * trial_s * 10) / 10 + "s")) +
-                  "  Learned: " + (hud.learned-at-trial < 0 ? "-" : (round(hud.learned-at-trial * trial_s * 10) / 10 + "s")) +
-                  "  Mastered: " + (hud.mastered-at-trial < 0 ? "-" : (round(hud.mastered-at-trial * trial_s * 10) / 10 + "s"));
-            color: Theme.text-secondary;
-            font-size: 12px;
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Learning Panel
-// ═══════════════════════════════════════════════════════════════════════════
-
-component LearningPanel inherits Rectangle {
-    in-out property <LearningState> state;
-    
-    callback trigger-dream();
-    callback trigger-burst();
-    callback trigger-sync();
-    callback trigger-imprint();
-    callback set-framerate(int);
-    callback set-trial-period-ms(int);
-    
-    in-out property <int> framerate: 60;
-    in-out property <int> trial-period-ms: 250;
-    
-    background: Theme.bg-panel;
-    border-color: Theme.border;
-    border-width: 1px;
-    border-radius: 6px;
-    
-    VerticalBox {
-        padding: 12px;
-        spacing: 8px;
-        
-        Text {
-            text: "Accelerated Learning";
-            color: Theme.text-primary;
-            font-size: 14px;
-            font-weight: 600;
-        }
-        
-        CheckBox {
-            text: "Learning Enabled";
-            checked: state.learning-enabled;
-            toggled => { state.learning-enabled = self.checked; }
-        }
-        
-        HorizontalBox {
-            spacing: 6px;
-            Button {
-                text: "Dream";
-                clicked => { trigger-dream(); }
-            }
-            Button {
-                text: "Burst";
-                clicked => { trigger-burst(); }
-            }
-            Button {
-                text: "Sync";
-                clicked => { trigger-sync(); }
-            }
-            Button {
-                text: "Imprint";
-                clicked => { trigger-imprint(); }
-            }
-        }
-
-        Text {
-            text: "Dream: offline replay to consolidate recent structure (stabilizes what just worked).";
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-        Text {
-            text: "Burst: temporary learning-rate boost (helps rapid adaptation; can increase drift if overused).";
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-        Text {
-            text: "Sync: aligns sensor phases for cleaner encoding (use after a regime shift / reversal).";
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-        Text {
-            text: "Imprint: one-shot linking of the current context (fast association when the brain is missing a concept).";
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-        
-        Rectangle {
-            height: 1px;
-            background: Theme.border;
-        }
-        
-        Text {
-            text: "Simulation Speed";
-            color: Theme.text-primary;
-            font-size: 14px;
-            font-weight: 600;
-        }
-        
-        HorizontalBox {
-            spacing: 8px;
-            Text {
-                text: "FPS: " + framerate;
-                color: Theme.text-secondary;
-                font-size: 12px;
-                min-width: 60px;
-            }
-            Slider {
-                minimum: 1;
-                maximum: 120;
-                value: framerate;
-                changed(val) => {
-                    framerate = val;
-                    set-framerate(val);
-                }
-                horizontal-stretch: 1;
-            }
-            Button {
-                text: "Reset";
-                clicked => {
-                    framerate = 60;
-                    set-framerate(60);
-                }
-            }
-        }
-
-        HorizontalBox {
-            spacing: 8px;
-            Text {
-                text: "Trial: " + trial-period-ms + "ms";
-                color: Theme.text-secondary;
-                font-size: 12px;
-                min-width: 100px;
-            }
-            Slider {
-                minimum: 50;
-                maximum: 2000;
-                value: trial-period-ms;
-                changed(val) => {
-                    trial-period-ms = val;
-                    set-trial-period-ms(val);
-                }
-                horizontal-stretch: 1;
-            }
-            Button {
-                text: "Reset";
-                clicked => {
-                    trial-period-ms = 250;
-                    set-trial-period-ms(250);
-                }
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Brain Stats Panel
-// ═══════════════════════════════════════════════════════════════════════════
-
-component BrainPanel inherits Rectangle {
-    in property <BrainStats> stats;
-    in property <string> experts-status;
-    in property <bool> experts-enabled;
-    callback set-max-units(int);
-    callback experts-enabled-changed(bool);
-    callback cull-experts();
-    
-    background: Theme.bg-panel;
-    border-color: Theme.border;
-    border-width: 1px;
-    border-radius: 6px;
-    
-    VerticalBox {
-        padding: 12px;
-        spacing: 6px;
-        
-        Text {
-            text: "Brain Substrate";
-            color: Theme.text-primary;
-            font-size: 14px;
-            font-weight: 600;
-        }
-
-        if experts-status != "": Text {
-            text: experts-status;
-            color: Theme.text-secondary;
-            font-size: 12px;
-        }
-
-        HorizontalBox {
-            spacing: 10px;
-            CheckBox {
-                text: "Experts";
-                checked: experts-enabled;
-                toggled => { experts-enabled-changed(self.checked); }
-            }
-            Button {
-                text: "Cull";
-                enabled: experts-enabled;
-                clicked => { cull-experts(); }
-            }
-            Text {
-                text: experts-enabled ? "(plots/graphs can switch to Active Expert)" : "(enable to allow child brains)";
-                color: Theme.text-secondary;
-                vertical-alignment: center;
-                font-size: 12px;
-            }
-        }
-        Text { text: "Units: " + stats.unit-count; color: Theme.text-secondary; font-size: 12px; }
-        HorizontalBox {
-            spacing: 8px;
-            Text { text: "Max units: " + stats.max-units-limit; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-            Button { text: "-32"; clicked => { set-max-units(stats.max-units-limit - 32); } }
-            Button { text: "+32"; clicked => { set-max-units(stats.max-units-limit + 32); } }
-        }
-        Text { text: "Connections: " + stats.connection-count; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Pruned (last): " + stats.pruned-last-step; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Births (last): " + stats.births-last-step; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Saturated: " + (stats.saturated ? "yes" : "no"); color: stats.saturated ? Theme.accent-yellow : Theme.text-secondary; font-size: 12px; }
-        Text { text: "Causal symbols: " + stats.causal-base-symbols; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Causal edges: " + stats.causal-edges; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Causal updates (last): " + stats.causal-last-directed-updates + " dir, " + stats.causal-last-cooccur-updates + " co"; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Avg amplitude: " + round(stats.avg-amp * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Avg weight: " + round(stats.avg-weight * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Memory: " + stats.memory-bytes + " bytes"; color: Theme.text-secondary; font-size: 12px; }
-        Text { text: "Age: " + stats.age-steps + " steps"; color: Theme.text-secondary; font-size: 12px; }
-    }
-}
+// Import modular components
+import { Theme } from "theme.slint";
+import { HudData, LearningState, BrainStats, UnitPoint, ActionScore, MeaningEdges, SnapshotItem, MeaningData, MeaningHistDot, GameState, GraphNodeDot, GraphEdgeSeg } from "types.slint";
+import { SpotCanvas, BanditCanvas, PongCanvas, SpotXYCanvas } from "canvases.slint";
+import { GameHeader, HudPanel, LearningPanel, BrainPanel } from "panels.slint";
+import { AboutPanel } from "about.slint";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Main Window
@@ -829,8 +16,6 @@ component BrainPanel inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "Braine Visualizer";
-    // Don't bind Window width/height: it prevents resizing/maximize/minimize.
-    // Use preferred + min sizes so the UI is scalable and responsive.
     preferred-width: 1040px;
     preferred-height: 740px;
     min-width: 860px;
@@ -861,17 +46,29 @@ export component MainWindow inherits Window {
     in property <[GraphEdgeSeg]> graph-edge-segs;
     in-out property <LearningState> learning;
     
+    // Game param schema properties (set by Rust from daemon)
+    in-out property <float> pong-paddle-speed-min: 0.3;
+    in-out property <float> pong-paddle-speed-max: 3.0;
+    in-out property <float> pong-paddle-speed-default: 1.0;
+    in-out property <float> pong-ball-speed-min: 0.2;
+    in-out property <float> pong-ball-speed-max: 2.0;
+    in-out property <float> pong-ball-speed-default: 0.5;
+    in-out property <float> pong-paddle-half-height-min: 0.10;
+    in-out property <float> pong-paddle-half-height-max: 0.45;
+    in-out property <float> pong-paddle-half-height-default: 0.20;
+    in-out property <int> spotxy-grid-n-min: 0;
+    in-out property <int> spotxy-grid-n-max: 8;
+    in-out property <int> spotxy-grid-n-default: 0;
+    
     // Control state
     in-out property <bool> is-braine-mode: true;
     in-out property <bool> paused: false;
-    in-out property <bool> running: false;  // Whether game loop is active
+    in-out property <bool> running: false;
 
-    // When not running, allow selecting a different game UI/settings.
-    // The daemon's active game is still reflected by `game.kind`.
     in-out property <string> selected-game-kind: "spot";
     property <string> effective-game-kind: running ? game.kind : selected-game-kind;
 
-    // Auto snapshot settings (UI-driven timer)
+    // Auto snapshot settings
     in-out property <bool> auto-snapshot-enabled: false;
     in-out property <int> auto-snapshot-interval-s: 300;
 
@@ -883,7 +80,7 @@ export component MainWindow inherits Window {
     
     // Callbacks to Rust
     callback mode-changed(bool);
-    callback running-changed(bool);  // New callback for start/stop
+    callback running-changed(bool);
     callback game-changed(string);
     callback spotxy-eval-changed(bool);
     callback spotxy-increase-grid();
@@ -896,27 +93,19 @@ export component MainWindow inherits Window {
     callback load-brain();
     callback reset-brain();
     callback set-max-units(int);
-
-    // Snapshot management
     callback save-snapshot();
     callback load-snapshot(string);
     callback human-key-pressed(string);
     callback human-key-released(string);
     callback set-framerate(int);
     callback set-trial-period-ms(int);
-
-    // Game-scoped parameter updates
     callback set-game-param(string, string, float);
-
-    // Auto snapshot changes
     callback auto-snapshot-settings-changed(bool, int);
-
-    // Experts (child brains)
     callback experts-enabled-changed(bool);
     callback cull-experts();
-
     callback graph-request(string, int, int, bool);
     callback graph-hover(float, float);
+    callback view-mode-changed(string);
     
     // Control state
     in-out property <int> framerate: 60;
@@ -934,19 +123,14 @@ export component MainWindow inherits Window {
     in-out property <float> graph-pan-x01: 0.0;
     in-out property <float> graph-pan-y01: 0.0;
 
-    // Graph hover tooltip (node label/value)
+    // Graph hover tooltip
     in-out property <bool> graph-hover-visible: false;
     in-out property <float> graph-hover-x01: 0.0;
     in-out property <float> graph-hover-y01: 0.0;
     in-out property <string> graph-hover-text: "";
 
-    // Read-only status line (computed in Rust)
     in property <string> experts-status: "";
-
-    // View mode for plots/graphs: parent | active_expert
     in-out property <string> view-mode: "parent";
-    callback view-mode-changed(string);
-
     
     // Keyboard input
     in-out property <bool> human-left-pressed: false;
@@ -1028,7 +212,6 @@ export component MainWindow inherits Window {
                 spacing: 8px;
                 height: 36px;
                 
-                // Start/Stop button
                 Button {
                     text: running ? "⏹ Stop" : "▶ Start";
                     clicked => {
@@ -1075,7 +258,7 @@ export component MainWindow inherits Window {
                 Button {
                     text: paused ? "▶ Resume UI" : "⏸ Pause UI";
                     clicked => { paused = !paused; }
-                    enabled: running;  // Only enable when running
+                    enabled: running;
                 }
             }
             
@@ -1086,7 +269,6 @@ export component MainWindow inherits Window {
                 
                 // Left: Game canvas
                 VerticalBox {
-                    // Keep the game area ~1/3 of the window.
                     horizontal-stretch: 1;
                     min-width: 320px;
                     spacing: 8px;
@@ -1118,13 +300,12 @@ export component MainWindow inherits Window {
                     HudPanel {
                         hud: root.hud;
                         trial-ms: root.game.trial-duration;
-                        // Allow shrinking on small windows; keep a comfortable default.
                         preferred-height: 160px;
                         min-height: 120px;
                     }
                 }
                 
-                // Right: Control panels
+                // Right: Control panels (tabs)
                 TabWidget {
                     horizontal-stretch: 2;
                     vertical-stretch: 1;
@@ -1160,151 +341,113 @@ export component MainWindow inherits Window {
                                     padding: 12px;
                                     spacing: 10px;
 
-                                if root.effective-game-kind == "pong": Text {
-                                    text: "Pong";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
-
-                                if root.effective-game-kind == "pong": Text {
-                                    text: "Keys: W/Up = up, S/Down = down, Space = stay";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                if root.effective-game-kind == "pong": Text {
-                                    text: "Tip: Paddle height is a fraction of the playfield.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                if root.effective-game-kind == "pong": VerticalBox {
-                                    spacing: 8px;
-
-                                    HorizontalBox {
-                                        spacing: 8px;
-                                        Text { text: "Paddle speed:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                        Slider {
-                                            width: 220px;
-                                            minimum: 0.3;
-                                            maximum: 3.0;
-                                            value: root.game.pong-paddle-speed;
-                                            changed => { set-game-param("pong", "paddle_speed", self.value); }
-                                        }
-                                        Text { text: "" + (round(root.game.pong-paddle-speed * 1000.0) / 1000.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                    if root.effective-game-kind == "pong": Text {
+                                        text: "Pong";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
                                     }
 
-                                    HorizontalBox {
-                                        spacing: 8px;
-                                        Text { text: "Ball speed:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                        Slider {
-                                            width: 220px;
-                                            minimum: 0.2;
-                                            maximum: 2.0;
-                                            value: root.game.pong-ball-speed;
-                                            changed => { set-game-param("pong", "ball_speed", self.value); }
-                                        }
-                                        Text { text: "" + (round(root.game.pong-ball-speed * 1000.0) / 1000.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                    }
-
-                                    HorizontalBox {
-                                        spacing: 8px;
-                                        Text { text: "Paddle height:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                        Slider {
-                                            width: 220px;
-                                            minimum: 0.10;
-                                            maximum: 0.45;
-                                            value: root.game.pong-paddle-half-height;
-                                            changed => { set-game-param("pong", "paddle_half_height", self.value); }
-                                        }
-                                        Text { text: "" + (round(root.game.pong-paddle-half-height * 100.0) / 100.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                    }
-                                }
-
-                                if root.effective-game-kind == "bandit": Text {
-                                    text: "Bandit: Choose an arm; rewards are stochastic. The goal is to learn which arm pays better.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-
-                                if root.effective-game-kind == "spotxy": Text {
-                                    text: (root.game.spotxy-grid-n > 0) ?
-                                        "SpotXY (2D position, " + root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n + " grid)" :
-                                        "SpotXY (2D position, 2 actions)";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
-
-                                if root.effective-game-kind == "spotxy": CheckBox {
-                                    text: "Eval (held-out x-band, no learning)";
-                                    enabled: root.game.kind == "spotxy";
-                                    checked: root.game.spotxy-eval;
-                                    toggled => { spotxy-eval-changed(self.checked); }
-                                }
-
-                                if root.effective-game-kind == "spotxy": Text {
-                                    text: (root.game.spotxy-grid-n > 0) ?
-                                        ("Rule: choose the correct cell (" + root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n + ")") :
-                                        "Rule: left if x < 0 else right";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                if root.effective-game-kind == "spotxy": HorizontalBox {
-                                    spacing: 8px;
-                                    Text { text: "Grid:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-
-                                    Button {
-                                        text: "+";
-                                        enabled: root.game.kind == "spotxy" && !root.game.spotxy-eval && root.hud.mastered-at-trial >= 0;
-                                        clicked => { spotxy-increase-grid(); }
-                                    }
-
-                                    Text {
-                                        text: (root.game.spotxy-grid-n > 0) ?
-                                              (root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n) :
-                                              "2 actions";
+                                    if root.effective-game-kind == "pong": Text {
+                                        text: "Keys: W/Up = up, S/Down = down, Space = stay";
                                         color: Theme.text-secondary;
-                                        vertical-alignment: center;
                                         font-size: 12px;
                                     }
 
-                                    Button {
-                                        text: "-";
-                                        enabled: root.game.kind == "spotxy" && !root.game.spotxy-eval && root.game.spotxy-grid-n > 0;
-                                        clicked => { spotxy-decrease-grid(); }
+                                    if root.effective-game-kind == "pong": VerticalBox {
+                                        spacing: 8px;
+
+                                        HorizontalBox {
+                                            spacing: 8px;
+                                            Text { text: "Paddle speed:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                            Slider {
+                                                width: 220px;
+                                                minimum: 0.3;
+                                                maximum: 3.0;
+                                                value: root.game.pong-paddle-speed;
+                                                changed => { set-game-param("pong", "paddle_speed", self.value); }
+                                            }
+                                            Text { text: "" + (round(root.game.pong-paddle-speed * 1000.0) / 1000.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        }
+
+                                        HorizontalBox {
+                                            spacing: 8px;
+                                            Text { text: "Ball speed:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                            Slider {
+                                                width: 220px;
+                                                minimum: 0.2;
+                                                maximum: 2.0;
+                                                value: root.game.pong-ball-speed;
+                                                changed => { set-game-param("pong", "ball_speed", self.value); }
+                                            }
+                                            Text { text: "" + (round(root.game.pong-ball-speed * 1000.0) / 1000.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        }
+
+                                        HorizontalBox {
+                                            spacing: 8px;
+                                            Text { text: "Paddle height:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                            Slider {
+                                                width: 220px;
+                                                minimum: 0.10;
+                                                maximum: 0.45;
+                                                value: root.game.pong-paddle-half-height;
+                                                changed => { set-game-param("pong", "paddle_half_height", self.value); }
+                                            }
+                                            Text { text: "" + (round(root.game.pong-paddle-half-height * 100.0) / 100.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        }
                                     }
 
-                                    Text {
-                                        text: (root.game.spotxy-grid-n > 0) ?
-                                              ("(" + (root.game.spotxy-grid-n * root.game.spotxy-grid-n) + " actions)") :
-                                              "";
+                                    if root.effective-game-kind == "bandit": Text {
+                                        text: "Bandit: Choose an arm; rewards are stochastic.";
                                         color: Theme.text-secondary;
-                                        vertical-alignment: center;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    if root.effective-game-kind == "spotxy": Text {
+                                        text: (root.game.spotxy-grid-n > 0) ?
+                                            "SpotXY (" + root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n + " grid)" :
+                                            "SpotXY (2 actions)";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                    }
+
+                                    if root.effective-game-kind == "spotxy": CheckBox {
+                                        text: "Eval (held-out, no learning)";
+                                        enabled: root.game.kind == "spotxy";
+                                        checked: root.game.spotxy-eval;
+                                        toggled => { spotxy-eval-changed(self.checked); }
+                                    }
+
+                                    if root.effective-game-kind == "spotxy": HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Grid:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Button {
+                                            text: "+";
+                                            enabled: root.game.kind == "spotxy" && !root.game.spotxy-eval && root.hud.mastered-at-trial >= 0;
+                                            clicked => { spotxy-increase-grid(); }
+                                        }
+                                        Text {
+                                            text: (root.game.spotxy-grid-n > 0) ?
+                                                  (root.game.spotxy-grid-n + "×" + root.game.spotxy-grid-n) :
+                                                  "2 actions";
+                                            color: Theme.text-secondary;
+                                            vertical-alignment: center;
+                                            font-size: 12px;
+                                        }
+                                        Button {
+                                            text: "-";
+                                            enabled: root.game.kind == "spotxy" && !root.game.spotxy-eval && root.game.spotxy-grid-n > 0;
+                                            clicked => { spotxy-decrease-grid(); }
+                                        }
+                                    }
+
+                                    if root.effective-game-kind != "spotxy" && root.effective-game-kind != "pong" && root.effective-game-kind != "bandit": Text {
+                                        text: "No game-specific settings yet.";
+                                        color: Theme.text-secondary;
                                         font-size: 12px;
                                     }
-                                }
-
-                                if root.effective-game-kind == "spotxy": Text {
-                                    text: "Chosen: " + root.game.chosen-action;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                if root.effective-game-kind == "spotxy": Text {
-                                    text: "Last reward: " + (round(root.game.last-reward * 100.0) / 100.0);
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                if root.effective-game-kind != "spotxy" && root.effective-game-kind != "pong": Text {
-                                    text: "No game-specific settings yet for this game.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
                                 }
                             }
                         }
@@ -1338,130 +481,104 @@ export component MainWindow inherits Window {
                                     padding: 12px;
                                     spacing: 8px;
                                 
-                                Text {
-                                    text: "Brain Persistence";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
-
-                                Text {
-                                    text: "Data dir: " + root.storage-data-dir;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                if root.storage-loaded-snapshot != "": Text {
-                                    text: "Loaded snapshot: " + root.storage-loaded-snapshot;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Text {
-                                    text: "Current brain: " + root.storage-brain-bytes + " bytes";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Text {
-                                    text: "Current runtime: " + root.storage-runtime-bytes + " bytes";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Text {
-                                    text: "Snapshots are timestamped copies (brain + runtime).";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Text {
-                                    text: "Reset brain wipes the in-memory brain AND overwrites the on-disk brain with a fresh state.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-
-                                HorizontalBox {
-                                    spacing: 8px;
-                                    Button { text: "Save snapshot"; clicked => { save-snapshot(); } }
-                                    CheckBox {
-                                        text: "Auto";
-                                        checked: root.auto-snapshot-enabled;
-                                        toggled => {
-                                            root.auto-snapshot-enabled = self.checked;
-                                            auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
-                                        }
-                                    }
-                                    Text { text: "Interval (s):"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                    Button {
-                                        text: "-";
-                                        clicked => {
-                                            root.auto-snapshot-interval-s = max(10, root.auto-snapshot-interval-s - 60);
-                                            auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
-                                        }
-                                    }
-                                    Text { text: root.auto-snapshot-interval-s; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                    Button {
-                                        text: "+";
-                                        clicked => {
-                                            root.auto-snapshot-interval-s = min(86400, root.auto-snapshot-interval-s + 60);
-                                            auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
-                                        }
-                                    }
-                                }
-
-                                HorizontalBox {
-                                    spacing: 8px;
-                                    Button { text: "Save brain"; clicked => { save-brain(); } }
-                                    Button { text: "Load brain"; clicked => { load-brain(); } }
-                                    CheckBox {
-                                        text: "Enable reset";
-                                        checked: root.reset-confirmed;
-                                        toggled => { root.reset-confirmed = self.checked; }
-                                    }
-                                    Button {
-                                        text: "Reset brain";
-                                        enabled: root.reset-confirmed;
-                                        clicked => { reset-brain(); root.reset-confirmed = false; }
-                                    }
-                                }
-
-                                Text {
-                                    text: "Reset is disabled until you enable it.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Rectangle { height: 1px; background: Theme.border; }
-
-                                Text {
-                                    text: "Snapshots";
-                                    color: Theme.text-primary;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                }
-
-                                if root.storage-snapshots.length == 0: Text {
-                                    text: "No snapshots yet.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                for s in root.storage-snapshots: HorizontalBox {
-                                    spacing: 8px;
                                     Text {
-                                        text: s.stem + "  (" + s.brain-bytes + "b brain, " + s.runtime-bytes + "b runtime)";
+                                        text: "Brain Persistence";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                    }
+
+                                    Text {
+                                        text: "Data dir: " + root.storage-data-dir;
                                         color: Theme.text-secondary;
                                         font-size: 12px;
-                                        horizontal-stretch: 1;
-                                        wrap: word-wrap;
                                     }
-                                    Button {
-                                        text: "Load";
-                                        clicked => { load-snapshot(s.stem); }
+
+                                    if root.storage-loaded-snapshot != "": Text {
+                                        text: "Loaded snapshot: " + root.storage-loaded-snapshot;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
                                     }
-                                }
+
+                                    Text {
+                                        text: "Current brain: " + root.storage-brain-bytes + " bytes";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                    }
+
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Button { text: "Save snapshot"; clicked => { save-snapshot(); } }
+                                        CheckBox {
+                                            text: "Auto";
+                                            checked: root.auto-snapshot-enabled;
+                                            toggled => {
+                                                root.auto-snapshot-enabled = self.checked;
+                                                auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
+                                            }
+                                        }
+                                        Text { text: "Interval (s):"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Button {
+                                            text: "-";
+                                            clicked => {
+                                                root.auto-snapshot-interval-s = max(10, root.auto-snapshot-interval-s - 60);
+                                                auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
+                                            }
+                                        }
+                                        Text { text: root.auto-snapshot-interval-s; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Button {
+                                            text: "+";
+                                            clicked => {
+                                                root.auto-snapshot-interval-s = min(86400, root.auto-snapshot-interval-s + 60);
+                                                auto-snapshot-settings-changed(root.auto-snapshot-enabled, root.auto-snapshot-interval-s);
+                                            }
+                                        }
+                                    }
+
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Button { text: "Save brain"; clicked => { save-brain(); } }
+                                        Button { text: "Load brain"; clicked => { load-brain(); } }
+                                        CheckBox {
+                                            text: "Enable reset";
+                                            checked: root.reset-confirmed;
+                                            toggled => { root.reset-confirmed = self.checked; }
+                                        }
+                                        Button {
+                                            text: "Reset brain";
+                                            enabled: root.reset-confirmed;
+                                            clicked => { reset-brain(); root.reset-confirmed = false; }
+                                        }
+                                    }
+
+                                    Rectangle { height: 1px; background: Theme.border; }
+
+                                    Text {
+                                        text: "Snapshots";
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+
+                                    if root.storage-snapshots.length == 0: Text {
+                                        text: "No snapshots yet.";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                    }
+
+                                    for s in root.storage-snapshots: HorizontalBox {
+                                        spacing: 8px;
+                                        Text {
+                                            text: s.stem + " (" + s.brain-bytes + "b)";
+                                            color: Theme.text-secondary;
+                                            font-size: 12px;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Button {
+                                            text: "Load";
+                                            clicked => { load-snapshot(s.stem); }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1479,103 +596,90 @@ export component MainWindow inherits Window {
                                     padding: 12px;
                                     spacing: 8px;
 
-                                Text {
-                                    text: "Oscillation (sampled): amplitude-weighted phase mean";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
+                                    Text {
+                                        text: "Oscillation (sampled)";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                    }
 
-                                Rectangle {
-                                    height: 120px;
-                                    horizontal-stretch: 1;
-                                    background: Theme.bg-dark;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-
-                                    // Midline
                                     Rectangle {
-                                        x: 0px;
-                                        y: parent.height / 2;
-                                        width: parent.width;
-                                        height: 1px;
-                                        background: #ffffff14;
-                                    }
+                                        height: 120px;
+                                        horizontal-stretch: 1;
+                                        background: Theme.bg-dark;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
 
-                                    property <int> n: root.osc-samples.length;
+                                        Rectangle {
+                                            x: 0px;
+                                            y: parent.height / 2;
+                                            width: parent.width;
+                                            height: 1px;
+                                            background: #ffffff14;
+                                        }
 
-                                    for v[i] in root.osc-samples: Rectangle {
-                                        width: 2px;
-                                        height: 2px;
-                                        property <float> vv: min(1.0, max(-1.0, v));
-                                        x: (n <= 1) ? 0px : (i * (parent.width - self.width) / (n - 1));
-                                        y: (0.5 - (vv * 0.45)) * (parent.height - self.height);
-                                        background: Theme.accent-green;
-                                    }
-                                }
+                                        property <int> n: root.osc-samples.length;
 
-                                Text {
-                                    text: "Units (sampled): amp vs age";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
-
-                                Text {
-                                    text: "Sampled view for debugging (not a full brain dump).";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Rectangle {
-                                    height: 260px;
-                                    horizontal-stretch: 1;
-                                    background: Theme.bg-dark;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-
-                                    for p in unit-points: Rectangle {
-                                        width: 6px;
-                                        height: 6px;
-                                        x: p.rel_age * (parent.width - self.width);
-                                        y: (1.0 - p.amp01) * (parent.height - self.height);
-                                        background: p.is_reserved ? Theme.text-secondary : (p.is_sensor_member ? Theme.accent-blue : (p.is_group_member ? Theme.accent-green : Theme.accent-yellow));
-                                    }
-                                }
-
-                                Text {
-                                    text: "Legend: reserved, sensor, group, other";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Rectangle { height: 1px; background: Theme.border; }
-
-                                Text {
-                                    text: "Action preference (habit vs meaning)";
-                                    color: Theme.text-primary;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                }
-
-                                ScrollView {
-                                    // Keep the unit plot visible even with many actions.
-                                    height: 220px;
-                                    horizontal-stretch: 1;
-                                    VerticalBox {
-                                        spacing: 4px;
-                                        for s in action-scores: Text {
-                                            text: s.name +
-                                                  "  habit=" + round(s.habit_norm * 1000) / 1000 +
-                                                  "  meaning=" + round(s.meaning * 1000) / 1000 +
-                                                  " (cond=" + round(s.meaning_conditional * 1000) / 1000 +
-                                                  " global=" + round(s.meaning_global * 1000) / 1000 +
-                                                  ")  score=" + round(s.score * 1000) / 1000;
-                                            color: Theme.text-secondary;
-                                            font-size: 12px;
+                                        for v[i] in root.osc-samples: Rectangle {
+                                            width: 2px;
+                                            height: 2px;
+                                            property <float> vv: min(1.0, max(-1.0, v));
+                                            x: (n <= 1) ? 0px : (i * (parent.width - self.width) / (n - 1));
+                                            y: (0.5 - (vv * 0.45)) * (parent.height - self.height);
+                                            background: Theme.accent-green;
                                         }
                                     }
-                                }
+
+                                    Text {
+                                        text: "Units (sampled): amp vs age";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                    }
+
+                                    Rectangle {
+                                        height: 260px;
+                                        horizontal-stretch: 1;
+                                        background: Theme.bg-dark;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
+
+                                        for p in unit-points: Rectangle {
+                                            width: 6px;
+                                            height: 6px;
+                                            x: p.rel_age * (parent.width - self.width);
+                                            y: (1.0 - p.amp01) * (parent.height - self.height);
+                                            background: p.is_reserved ? Theme.text-secondary : (p.is_sensor_member ? Theme.accent-blue : (p.is_group_member ? Theme.accent-green : Theme.accent-yellow));
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "Legend: reserved, sensor, group, other";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                    }
+
+                                    Rectangle { height: 1px; background: Theme.border; }
+
+                                    Text {
+                                        text: "Action preference (habit vs meaning)";
+                                        color: Theme.text-primary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+
+                                    ScrollView {
+                                        height: 180px;
+                                        horizontal-stretch: 1;
+                                        VerticalBox {
+                                            spacing: 4px;
+                                            for s in action-scores: Text {
+                                                text: s.name + " h=" + round(s.habit_norm * 1000) / 1000 + " m=" + round(s.meaning * 1000) / 1000 + " s=" + round(s.score * 1000) / 1000;
+                                                color: Theme.text-secondary;
+                                                font-size: 12px;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1593,100 +697,80 @@ export component MainWindow inherits Window {
                                     padding: 12px;
                                     spacing: 8px;
 
-                                Text {
-                                    text: "Meaning evidence (reward edges)";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
-
-                                Text {
-                                    text: "Stimulus: " + meaning.stimulus + "   correct: " + meaning.correct-action;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Text {
-                                    text: "pair(stim, " + meaning.action-a-name + ")  +" + round(meaning.pair-left.to-reward-pos * 1000) / 1000 +
-                                          "  -" + round(meaning.pair-left.to-reward-neg * 1000) / 1000 +
-                                          "  meaning=" + round(meaning.pair-left.meaning * 1000) / 1000;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-                                Text {
-                                    text: "pair(stim, " + meaning.action-b-name + ") +" + round(meaning.pair-right.to-reward-pos * 1000) / 1000 +
-                                          "  -" + round(meaning.pair-right.to-reward-neg * 1000) / 1000 +
-                                          "  meaning=" + round(meaning.pair-right.meaning * 1000) / 1000;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Rectangle { height: 1px; background: Theme.border; }
-
-                                Text {
-                                    text: "action(" + meaning.action-a-name + ")      +" + round(meaning.action-left.to-reward-pos * 1000) / 1000 +
-                                          "  -" + round(meaning.action-left.to-reward-neg * 1000) / 1000 +
-                                          "  meaning=" + round(meaning.action-left.meaning * 1000) / 1000;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-                                Text {
-                                    text: "action(" + meaning.action-b-name + ")     +" + round(meaning.action-right.to-reward-pos * 1000) / 1000 +
-                                          "  -" + round(meaning.action-right.to-reward-neg * 1000) / 1000 +
-                                          "  meaning=" + round(meaning.action-right.meaning * 1000) / 1000;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Rectangle { height: 1px; background: Theme.border; }
-
-                                Text {
-                                    text: "Gaps (correct - wrong): pair=" + round(meaning.pair-gap * 1000) / 1000 + "   global=" + round(meaning.global-gap * 1000) / 1000;
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                }
-
-                                Text { text: "Pair gap history"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
-                                Rectangle {
-                                    height: 110px;
-                                    horizontal-stretch: 1;
-                                    background: Theme.bg-dark;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-
-                                    Rectangle { x: 0px; y: parent.height / 2; width: parent.width; height: 1px; background: Theme.border; }
-
-                                    for d in meaning-pair-gap-dots: Rectangle {
-                                        width: 5px;
-                                        height: 5px;
-                                        x: d.x01 * (parent.width - self.width);
-                                        y: (0.5 - 0.45 * d.v) * (parent.height - self.height);
-                                        background: d.positive ? Theme.accent-green : Theme.accent-red;
+                                    Text {
+                                        text: "Meaning evidence (reward edges)";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
                                     }
-                                }
 
-                                Text { text: "Global gap history"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
-                                Rectangle {
-                                    height: 110px;
-                                    horizontal-stretch: 1;
-                                    background: Theme.bg-dark;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-
-                                    Rectangle { x: 0px; y: parent.height / 2; width: parent.width; height: 1px; background: Theme.border; }
-
-                                    for d in meaning-global-gap-dots: Rectangle {
-                                        width: 5px;
-                                        height: 5px;
-                                        x: d.x01 * (parent.width - self.width);
-                                        y: (0.5 - 0.45 * d.v) * (parent.height - self.height);
-                                        background: d.positive ? Theme.accent-green : Theme.accent-red;
+                                    Text {
+                                        text: "Stimulus: " + meaning.stimulus + "  correct: " + meaning.correct-action;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
                                     }
-                                }
+
+                                    Text {
+                                        text: "pair(stim, " + meaning.action-a-name + ") m=" + round(meaning.pair-left.meaning * 1000) / 1000;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                    }
+                                    Text {
+                                        text: "pair(stim, " + meaning.action-b-name + ") m=" + round(meaning.pair-right.meaning * 1000) / 1000;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                    }
+
+                                    Rectangle { height: 1px; background: Theme.border; }
+
+                                    Text {
+                                        text: "Gaps: pair=" + round(meaning.pair-gap * 1000) / 1000 + " global=" + round(meaning.global-gap * 1000) / 1000;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                    }
+
+                                    Text { text: "Pair gap history"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
+                                    Rectangle {
+                                        height: 110px;
+                                        horizontal-stretch: 1;
+                                        background: Theme.bg-dark;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
+
+                                        Rectangle { x: 0px; y: parent.height / 2; width: parent.width; height: 1px; background: Theme.border; }
+
+                                        for d in meaning-pair-gap-dots: Rectangle {
+                                            width: 5px;
+                                            height: 5px;
+                                            x: d.x01 * (parent.width - self.width);
+                                            y: (0.5 - 0.45 * d.v) * (parent.height - self.height);
+                                            background: d.positive ? Theme.accent-green : Theme.accent-red;
+                                        }
+                                    }
+
+                                    Text { text: "Global gap history"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
+                                    Rectangle {
+                                        height: 110px;
+                                        horizontal-stretch: 1;
+                                        background: Theme.bg-dark;
+                                        border-width: 1px;
+                                        border-color: Theme.border;
+
+                                        Rectangle { x: 0px; y: parent.height / 2; width: parent.width; height: 1px; background: Theme.border; }
+
+                                        for d in meaning-global-gap-dots: Rectangle {
+                                            width: 5px;
+                                            height: 5px;
+                                            x: d.x01 * (parent.width - self.width);
+                                            y: (0.5 - 0.45 * d.v) * (parent.height - self.height);
+                                            background: d.positive ? Theme.accent-green : Theme.accent-red;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+
                     Tab {
                         title: "Graph";
                         ScrollView {
@@ -1699,279 +783,221 @@ export component MainWindow inherits Window {
                                     padding: 12px;
                                     spacing: 8px;
 
-                                Text {
-                                    text: "Connectivity Graph";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
+                                    Text {
+                                        text: "Connectivity Graph";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                    }
 
-                                Text {
-                                    text: "This is a sampled snapshot of the working brain (limited nodes/edges), not the whole brain.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-
-                                HorizontalBox {
-                                    spacing: 8px;
-                                    Text { text: "Kind:"; color: Theme.text-secondary; vertical-alignment: center; }
-                                    Button {
-                                        text: (root.graph-kind == "causal") ? "Causal" : "Substrate";
-                                        clicked => {
-                                            root.graph-kind = (root.graph-kind == "causal") ? "substrate" : "causal";
-                                            graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Kind:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                        Button {
+                                            text: (root.graph-kind == "causal") ? "Causal" : "Substrate";
+                                            clicked => {
+                                                root.graph-kind = (root.graph-kind == "causal") ? "substrate" : "causal";
+                                                graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                            }
+                                        }
+                                        Text { text: "Layout:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                        Button {
+                                            text: (root.graph-layout == "circle") ? "Circle" : "Force";
+                                            clicked => {
+                                                root.graph-layout = (root.graph-layout == "circle") ? "force" : "circle";
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Button {
+                                            text: "Refresh";
+                                            clicked => {
+                                                graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                            }
                                         }
                                     }
 
-                                    Text { text: "Layout:"; color: Theme.text-secondary; vertical-alignment: center; }
-                                    Button {
-                                        text: (root.graph-layout == "circle") ? "Circle" : "Force";
-                                        clicked => {
-                                            root.graph-layout = (root.graph-layout == "circle") ? "force" : "circle";
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Nodes:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                        Slider {
+                                            minimum: 8;
+                                            maximum: 128;
+                                            value: root.graph-max-nodes;
+                                            changed(val) => { root.graph-max-nodes = val; }
+                                            horizontal-stretch: 1;
                                         }
-                                    }
-
-                                    Rectangle { horizontal-stretch: 1; }
-
-                                    Button {
-                                        text: "Refresh";
-                                        clicked => {
-                                            graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                        Text { text: root.graph-max-nodes; color: Theme.text-secondary; vertical-alignment: center; }
+                                        Text { text: "Edges:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                        Slider {
+                                            minimum: 0;
+                                            maximum: 320;
+                                            value: root.graph-max-edges;
+                                            changed(val) => { root.graph-max-edges = val; }
+                                            horizontal-stretch: 1;
                                         }
+                                        Text { text: root.graph-max-edges; color: Theme.text-secondary; vertical-alignment: center; }
                                     }
-                                }
 
-                                HorizontalBox {
-                                    spacing: 8px;
-                                    Text { text: "Nodes:"; color: Theme.text-secondary; vertical-alignment: center; }
-                                    Slider {
-                                        minimum: 8;
-                                        maximum: 128;
-                                        value: root.graph-max-nodes;
-                                        changed(val) => { root.graph-max-nodes = val; }
-                                        horizontal-stretch: 1;
-                                    }
-                                    Text { text: root.graph-max-nodes; color: Theme.text-secondary; vertical-alignment: center; }
-
-                                    Text { text: "Edges:"; color: Theme.text-secondary; vertical-alignment: center; }
-                                    Slider {
-                                        minimum: 0;
-                                        maximum: 320;
-                                        value: root.graph-max-edges;
-                                        changed(val) => { root.graph-max-edges = val; }
-                                        horizontal-stretch: 1;
-                                    }
-                                    Text { text: root.graph-max-edges; color: Theme.text-secondary; vertical-alignment: center; }
-                                }
-
-                                HorizontalBox {
-                                    spacing: 8px;
-                                    CheckBox { text: "Auto"; checked <=> root.graph-auto-refresh; }
-                                    CheckBox {
-                                        text: "Include isolated";
-                                        checked <=> root.graph-include-isolated;
-                                        toggled => {
-                                            graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        CheckBox { text: "Auto"; checked <=> root.graph-auto-refresh; }
+                                        CheckBox {
+                                            text: "Include isolated";
+                                            checked <=> root.graph-include-isolated;
+                                            toggled => {
+                                                graph-request(root.graph-kind, root.graph-max-nodes, root.graph-max-edges, root.graph-include-isolated);
+                                            }
                                         }
+                                        Text { text: "Interval:"; color: Theme.text-secondary; vertical-alignment: center; }
+                                        Slider {
+                                            minimum: 250;
+                                            maximum: 5000;
+                                            value: root.graph-interval-ms;
+                                            changed(val) => { root.graph-interval-ms = val; }
+                                            horizontal-stretch: 1;
+                                        }
+                                        Text { text: root.graph-interval-ms; color: Theme.text-secondary; vertical-alignment: center; }
                                     }
-                                    Text { text: "Interval (ms):"; color: Theme.text-secondary; vertical-alignment: center; }
-                                    Slider {
-                                        minimum: 250;
-                                        maximum: 5000;
-                                        value: root.graph-interval-ms;
-                                        changed(val) => { root.graph-interval-ms = val; }
-                                        horizontal-stretch: 1;
-                                    }
-                                    Text { text: root.graph-interval-ms; color: Theme.text-secondary; vertical-alignment: center; }
-                                }
 
-                                HorizontalBox {
-                                    spacing: 8px;
-                                    Text { text: "Zoom:"; color: Theme.text-secondary; vertical-alignment: center; }
-                                    Slider {
-                                        minimum: 0.5;
-                                        maximum: 4.0;
-                                        value <=> root.graph-zoom;
-                                        horizontal-stretch: 1;
-                                    }
-                                    Text { text: root.graph-zoom; color: Theme.text-secondary; vertical-alignment: center; }
-                                }
-
-                                // Tiny legend (no extra pages)
-                                HorizontalBox {
-                                    spacing: 10px;
                                     Rectangle {
-                                        width: 10px; height: 10px; background: Theme.accent-green; border-radius: 2px;
-                                    }
-                                    Text { text: "+ edge"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                    Rectangle {
-                                        width: 10px; height: 10px; background: Theme.accent-red; border-radius: 2px;
-                                    }
-                                    Text { text: "- edge"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                    Text { text: "strength → thickness/opacity"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-
-                                    if root.graph-kind == "causal": Rectangle {
-                                        width: 10px; height: 10px; background: Theme.accent-yellow; border-radius: 2px;
-                                    }
-                                    if root.graph-kind == "causal": Text { text: "pos_x"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                    if root.graph-kind == "causal": Rectangle {
-                                        width: 10px; height: 10px; background: Theme.accent-green; border-radius: 2px;
-                                    }
-                                    if root.graph-kind == "causal": Text { text: "pos_y"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
-                                }
-
-                                Rectangle {
-                                    height: 360px;
-                                    horizontal-stretch: 1;
-                                    background: Theme.bg-dark;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-
-                                    // Clipped viewport for edges/nodes. Tooltip is a sibling (not clipped)
-                                    // so it doesn't disappear near edges.
-                                    graph_viewport := Rectangle {
-                                        x: 0px;
-                                        y: 0px;
-                                        width: parent.width;
-                                        height: parent.height;
-                                        background: transparent;
-                                        clip: true;
-
-                                        // Pan state for drag-to-pan.
-                                        property <bool> dragging: false;
-                                        property <float> drag-start-x01: 0.0;
-                                        property <float> drag-start-y01: 0.0;
-                                        property <float> pan-start-x01: 0.0;
-                                        property <float> pan-start-y01: 0.0;
-
-                                        hover_area := TouchArea {
-                                            width: parent.width;
-                                            height: parent.height;
-                                            pointer-event(event) => {
-                                                let mx = self.mouse-x / parent.width;
-                                                let my = self.mouse-y / parent.height;
-                                                graph-hover(mx, my);
-                                            }
-                                            moved => {
-                                                let mx = self.mouse-x / parent.width;
-                                                let my = self.mouse-y / parent.height;
-
-                                                // Hover label (even while dragging).
-                                                graph-hover(mx, my);
-
-                                                // Drag-to-pan.
-                                                if self.pressed {
-                                                    if !parent.dragging {
-                                                        parent.dragging = true;
-                                                        parent.drag-start-x01 = self.pressed-x / parent.width;
-                                                        parent.drag-start-y01 = self.pressed-y / parent.height;
-                                                        parent.pan-start-x01 = root.graph-pan-x01;
-                                                        parent.pan-start-y01 = root.graph-pan-y01;
-                                                    }
-
-                                                    let dx = mx - parent.drag-start-x01;
-                                                    let dy = my - parent.drag-start-y01;
-                                                    root.graph-pan-x01 = max(-1.0, min(1.0, parent.pan-start-x01 + dx));
-                                                    root.graph-pan-y01 = max(-1.0, min(1.0, parent.pan-start-y01 + dy));
-                                                } else {
-                                                    parent.dragging = false;
-                                                }
-                                            }
-                                            scroll-event(event) => {
-                                                let dy = event.delta-y / 600px;
-                                                let factor = 1.0 + (-dy);
-
-                                                let old_zoom = root.graph-zoom;
-                                                let new_zoom = max(0.5, min(4.0, old_zoom * factor));
-
-                                                let mx = self.mouse-x / parent.width;
-                                                let my = self.mouse-y / parent.height;
-
-                                                let r = new_zoom / old_zoom;
-                                                root.graph-pan-x01 = max(-1.0, min(1.0, r * root.graph-pan-x01 + (1.0 - r) * (mx - 0.5)));
-                                                root.graph-pan-y01 = max(-1.0, min(1.0, r * root.graph-pan-y01 + (1.0 - r) * (my - 0.5)));
-                                                root.graph-zoom = new_zoom;
-                                                return accept;
-                                            }
-                                        }
-
-                                        // Edge segments first (behind nodes)
-                                        for e in graph-edge-segs: Path {
-                                            // Use pixel coordinates so edges share the exact same
-                                            // mapping as node centers (including node size offset).
-                                            commands:
-                                                "M "
-                                                + (e.x1 * ((parent.width - 8px) / 1px) + 4)
-                                                + " "
-                                                + (e.y1 * ((parent.height - 8px) / 1px) + 4)
-                                                + " L "
-                                                + (e.x2 * ((parent.width - 8px) / 1px) + 4)
-                                                + " "
-                                                + (e.y2 * ((parent.height - 8px) / 1px) + 4);
-                                            viewbox-x: 0;
-                                            viewbox-y: 0;
-                                            viewbox-width: parent.width / 1px;
-                                            viewbox-height: parent.height / 1px;
-
-                                            fill: transparent;
-                                            stroke: e.positive ? Theme.accent-green : Theme.accent-red;
-                                            stroke-width: (0.0006 + 0.0040 * e.thickness01) * min(parent.width, parent.height);
-                                            stroke-line-cap: round;
-                                            opacity: 0.05 + 0.85 * e.strength01;
-                                        }
-
-                                        for n in graph-nodes: Rectangle {
-                                            width: 8px;
-                                            height: 8px;
-                                            x: n.x01 * (parent.width - self.width);
-                                            y: n.y01 * (parent.height - self.height);
-                                            background: (root.graph-kind == "causal")
-                                                ? (n.domain == "pos_x" ? Theme.accent-yellow :
-                                                   n.domain == "pos_y" ? Theme.accent-green :
-                                                   Theme.accent-blue)
-                                                : Theme.accent-blue;
-                                            border-radius: 4px;
-                                        }
-                                    }
-
-                                    if root.graph-hover-visible: Rectangle {
-                                        background: Theme.bg-panel;
+                                        height: 360px;
+                                        horizontal-stretch: 1;
+                                        background: Theme.bg-dark;
                                         border-width: 1px;
                                         border-color: Theme.border;
-                                        border-radius: 4px;
-                                        width: 260px;
-                                        height: 28px;
-                                        // ensure above the viewport drawings
-                                        z: 2;
 
-                                        x: ((root.graph-hover-x01 * graph_viewport.width + 12px) > (graph_viewport.width - self.width - 8px))
-                                            ? (graph_viewport.width - self.width - 8px)
-                                            : (root.graph-hover-x01 * graph_viewport.width + 12px);
-                                        y: ((root.graph-hover-y01 * graph_viewport.height + 12px) > (graph_viewport.height - self.height - 8px))
-                                            ? (graph_viewport.height - self.height - 8px)
-                                            : (root.graph-hover-y01 * graph_viewport.height + 12px);
+                                        graph_viewport := Rectangle {
+                                            x: 0px;
+                                            y: 0px;
+                                            width: parent.width;
+                                            height: parent.height;
+                                            background: transparent;
+                                            clip: true;
 
-                                        Text {
-                                            x: 6px;
-                                            y: 4px;
-                                            width: parent.width - 12px;
-                                            height: parent.height - 8px;
-                                            text: root.graph-hover-text;
-                                            color: Theme.text-primary;
-                                            font-size: 12px;
-                                            horizontal-alignment: left;
-                                            vertical-alignment: center;
+                                            property <bool> dragging: false;
+                                            property <float> drag-start-x01: 0.0;
+                                            property <float> drag-start-y01: 0.0;
+                                            property <float> pan-start-x01: 0.0;
+                                            property <float> pan-start-y01: 0.0;
+
+                                            hover_area := TouchArea {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                pointer-event(event) => {
+                                                    let mx = self.mouse-x / parent.width;
+                                                    let my = self.mouse-y / parent.height;
+                                                    graph-hover(mx, my);
+                                                }
+                                                moved => {
+                                                    let mx = self.mouse-x / parent.width;
+                                                    let my = self.mouse-y / parent.height;
+                                                    graph-hover(mx, my);
+
+                                                    if self.pressed {
+                                                        if !parent.dragging {
+                                                            parent.dragging = true;
+                                                            parent.drag-start-x01 = self.pressed-x / parent.width;
+                                                            parent.drag-start-y01 = self.pressed-y / parent.height;
+                                                            parent.pan-start-x01 = root.graph-pan-x01;
+                                                            parent.pan-start-y01 = root.graph-pan-y01;
+                                                        }
+                                                        let dx = mx - parent.drag-start-x01;
+                                                        let dy = my - parent.drag-start-y01;
+                                                        root.graph-pan-x01 = max(-1.0, min(1.0, parent.pan-start-x01 + dx));
+                                                        root.graph-pan-y01 = max(-1.0, min(1.0, parent.pan-start-y01 + dy));
+                                                    } else {
+                                                        parent.dragging = false;
+                                                    }
+                                                }
+                                                scroll-event(event) => {
+                                                    let dy = event.delta-y / 600px;
+                                                    let factor = 1.0 + (-dy);
+                                                    let old_zoom = root.graph-zoom;
+                                                    let new_zoom = max(0.5, min(4.0, old_zoom * factor));
+                                                    let mx = self.mouse-x / parent.width;
+                                                    let my = self.mouse-y / parent.height;
+                                                    let r = new_zoom / old_zoom;
+                                                    root.graph-pan-x01 = max(-1.0, min(1.0, r * root.graph-pan-x01 + (1.0 - r) * (mx - 0.5)));
+                                                    root.graph-pan-y01 = max(-1.0, min(1.0, r * root.graph-pan-y01 + (1.0 - r) * (my - 0.5)));
+                                                    root.graph-zoom = new_zoom;
+                                                    return accept;
+                                                }
+                                            }
+
+                                            for e in graph-edge-segs: Path {
+                                                commands:
+                                                    "M "
+                                                    + (e.x1 * ((parent.width - 8px) / 1px) + 4)
+                                                    + " "
+                                                    + (e.y1 * ((parent.height - 8px) / 1px) + 4)
+                                                    + " L "
+                                                    + (e.x2 * ((parent.width - 8px) / 1px) + 4)
+                                                    + " "
+                                                    + (e.y2 * ((parent.height - 8px) / 1px) + 4);
+                                                viewbox-x: 0;
+                                                viewbox-y: 0;
+                                                viewbox-width: parent.width / 1px;
+                                                viewbox-height: parent.height / 1px;
+                                                fill: transparent;
+                                                stroke: e.positive ? Theme.accent-green : Theme.accent-red;
+                                                stroke-width: (0.0006 + 0.0040 * e.thickness01) * min(parent.width, parent.height);
+                                                stroke-line-cap: round;
+                                                opacity: 0.05 + 0.85 * e.strength01;
+                                            }
+
+                                            for n in graph-nodes: Rectangle {
+                                                width: 8px;
+                                                height: 8px;
+                                                x: n.x01 * (parent.width - self.width);
+                                                y: n.y01 * (parent.height - self.height);
+                                                background: (root.graph-kind == "causal")
+                                                    ? (n.domain == "pos_x" ? Theme.accent-yellow :
+                                                       n.domain == "pos_y" ? Theme.accent-green :
+                                                       Theme.accent-blue)
+                                                    : Theme.accent-blue;
+                                                border-radius: 4px;
+                                            }
+                                        }
+
+                                        if root.graph-hover-visible: Rectangle {
+                                            background: Theme.bg-panel;
+                                            border-width: 1px;
+                                            border-color: Theme.border;
+                                            border-radius: 4px;
+                                            width: 260px;
+                                            height: 28px;
+                                            z: 2;
+                                            x: ((root.graph-hover-x01 * graph_viewport.width + 12px) > (graph_viewport.width - self.width - 8px))
+                                                ? (graph_viewport.width - self.width - 8px)
+                                                : (root.graph-hover-x01 * graph_viewport.width + 12px);
+                                            y: ((root.graph-hover-y01 * graph_viewport.height + 12px) > (graph_viewport.height - self.height - 8px))
+                                                ? (graph_viewport.height - self.height - 8px)
+                                                : (root.graph-hover-y01 * graph_viewport.height + 12px);
+
+                                            Text {
+                                                x: 6px;
+                                                y: 4px;
+                                                width: parent.width - 12px;
+                                                height: parent.height - 8px;
+                                                text: root.graph-hover-text;
+                                                color: Theme.text-primary;
+                                                font-size: 12px;
+                                                horizontal-alignment: left;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+
+                    Tab {
+                        title: "About";
+                        AboutPanel { }
+                    }
                 }
             }
         }
     }
-}
-
 }

@@ -194,6 +194,9 @@ slint::include_modules!();
 #[serde(tag = "type")]
 enum Request {
     GetState,
+    GetGameParams {
+        game: String,
+    },
     SetView {
         view: String,
     },
@@ -258,9 +261,28 @@ enum Request {
 #[serde(tag = "type")]
 enum Response {
     State(Box<DaemonStateSnapshot>),
-    Success { message: String },
+    GameParams {
+        game: String,
+        params: Vec<GameParamDef>,
+    },
+    Success {
+        message: String,
+    },
     Graph(Box<DaemonGraphSnapshot>),
-    Error { message: String },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GameParamDef {
+    key: String,
+    label: String,
+    #[serde(default)]
+    description: String,
+    min: f32,
+    max: f32,
+    default: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -695,6 +717,7 @@ struct DaemonClient {
     tx: mpsc::Sender<Request>,
     snapshot: Arc<Mutex<DaemonStateSnapshot>>, // latest state from daemon
     graph: Arc<Mutex<DaemonGraphSnapshot>>,
+    game_params: Arc<Mutex<Vec<GameParamDef>>>,
 }
 
 impl DaemonClient {
@@ -702,8 +725,10 @@ impl DaemonClient {
         let (tx, rx) = mpsc::channel::<Request>();
         let snapshot = Arc::new(Mutex::new(DaemonStateSnapshot::default()));
         let graph = Arc::new(Mutex::new(DaemonGraphSnapshot::default()));
+        let game_params = Arc::new(Mutex::new(Vec::<GameParamDef>::new()));
         let snap_clone = Arc::clone(&snapshot);
         let graph_clone = Arc::clone(&graph);
+        let params_clone = Arc::clone(&game_params);
 
         // Background worker: manages TCP connection and request/response loop
         thread::spawn(move || loop {
@@ -739,6 +764,11 @@ impl DaemonClient {
                                     *s = *state;
                                 }
                             }
+                            Ok(Response::GameParams { game: _, params }) => {
+                                if let Ok(mut p) = params_clone.lock() {
+                                    *p = params;
+                                }
+                            }
                             Ok(Response::Graph(g)) => {
                                 if let Ok(mut gs) = graph_clone.lock() {
                                     *gs = *g;
@@ -765,6 +795,7 @@ impl DaemonClient {
             tx,
             snapshot,
             graph,
+            game_params,
         }
     }
 
@@ -779,6 +810,13 @@ impl DaemonClient {
     fn graph_snapshot(&self) -> DaemonGraphSnapshot {
         self.graph.lock().map(|s| s.clone()).unwrap_or_default()
     }
+
+    fn game_params(&self) -> Vec<GameParamDef> {
+        self.game_params
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -788,6 +826,11 @@ impl DaemonClient {
 fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     let client = Rc::new(DaemonClient::new());
+
+    // Prime knob schema so Game Settings uses daemon-defined ranges.
+    client.send(Request::GetGameParams {
+        game: ui.get_selected_game_kind().to_string(),
+    });
 
     // Track local control changes so the next poll doesn't immediately overwrite
     // the slider position before the daemon applies the request.
@@ -933,6 +976,10 @@ fn main() -> Result<(), slint::PlatformError> {
         let c = client.clone();
         ui.on_game_changed(move |game| {
             c.send(Request::SetGame {
+                game: game.to_string(),
+            });
+
+            c.send(Request::GetGameParams {
                 game: game.to_string(),
             });
         });
@@ -1230,6 +1277,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 c.send(Request::GetState);
                 let snap = c.snapshot();
                 let g = c.graph_snapshot();
+                let params = c.game_params();
 
                 // Update oscillation series (signed waveform uses osc_y).
                 {
@@ -1484,6 +1532,44 @@ fn main() -> Result<(), slint::PlatformError> {
                 };
                 ui.set_experts_status(experts_status.into());
                 ui.set_experts_enabled(snap.experts_enabled);
+
+                // Apply game param schema (Pong + SpotXY).
+                if snap.game.kind() == "pong" {
+                    for p in &params {
+                        match p.key.as_str() {
+                            "paddle_speed" => {
+                                ui.set_pong_paddle_speed_min(p.min);
+                                ui.set_pong_paddle_speed_max(p.max);
+                                ui.set_pong_paddle_speed_default(p.default);
+                            }
+                            "ball_speed" => {
+                                ui.set_pong_ball_speed_min(p.min);
+                                ui.set_pong_ball_speed_max(p.max);
+                                ui.set_pong_ball_speed_default(p.default);
+                            }
+                            "paddle_half_height" => {
+                                ui.set_pong_paddle_half_height_min(p.min);
+                                ui.set_pong_paddle_half_height_max(p.max);
+                                ui.set_pong_paddle_half_height_default(p.default);
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if snap.game.kind() == "spotxy" {
+                    for p in &params {
+                        match p.key.as_str() {
+                            "grid_n" => {
+                                ui.set_spotxy_grid_n_min(p.min as i32);
+                                ui.set_spotxy_grid_n_max(p.max as i32);
+                                ui.set_spotxy_grid_n_default(p.default as i32);
+                            }
+                            "eval" => {
+                                // Boolean represented as 0 or 1.
+                            }
+                            _ => {}
+                        }
+                    }
+                }
 
                 // Graph auto-refresh (independent of the main poll cadence)
                 if ui.get_graph_auto_refresh() {

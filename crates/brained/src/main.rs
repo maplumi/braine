@@ -238,6 +238,10 @@ impl ActiveGame {
 #[serde(tag = "type")]
 enum Request {
     GetState,
+    /// Fetch the tunable parameter schema for a game (UI uses this to render knobs).
+    GetGameParams {
+        game: String,
+    },
     SetView {
         view: String,
     },
@@ -318,9 +322,28 @@ enum Request {
 #[serde(tag = "type")]
 enum Response {
     State(Box<StateSnapshot>),
+    GameParams {
+        game: String,
+        params: Vec<GameParamDef>,
+    },
     Graph(Box<GraphSnapshot>),
-    Success { message: String },
-    Error { message: String },
+    Success {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GameParamDef {
+    key: String,
+    label: String,
+    #[serde(default)]
+    description: String,
+    min: f32,
+    max: f32,
+    default: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2043,6 +2066,90 @@ async fn handle_client(
                     },
                 }
             }
+            Request::GetGameParams { game } => {
+                let game = game.trim();
+
+                // The daemon is the source of truth for knob definitions.
+                match game {
+                    "pong" => {
+                        // Keep these in sync with `PongGame::set_param` clamping.
+                        const PONG_PADDLE_SPEED_MIN: f32 = 0.1;
+                        const PONG_PADDLE_SPEED_MAX: f32 = 5.0;
+
+                        const PONG_BALL_SPEED_MIN: f32 = 0.1;
+                        const PONG_BALL_SPEED_MAX: f32 = 3.0;
+
+                        const PONG_PADDLE_HALF_HEIGHT_MIN: f32 = 0.05;
+                        const PONG_PADDLE_HALF_HEIGHT_MAX: f32 = 0.9;
+
+                        let defaults = braine_games::pong::PongParams::default();
+
+                        Response::GameParams {
+                            game: "pong".to_string(),
+                            params: vec![
+                                GameParamDef {
+                                    key: "paddle_speed".to_string(),
+                                    label: "Paddle speed".to_string(),
+                                    description: "Paddle movement speed (units per second)."
+                                        .to_string(),
+                                    min: PONG_PADDLE_SPEED_MIN,
+                                    max: PONG_PADDLE_SPEED_MAX,
+                                    default: defaults.paddle_speed,
+                                },
+                                GameParamDef {
+                                    key: "ball_speed".to_string(),
+                                    label: "Ball speed".to_string(),
+                                    description: "Ball movement speed multiplier.".to_string(),
+                                    min: PONG_BALL_SPEED_MIN,
+                                    max: PONG_BALL_SPEED_MAX,
+                                    default: defaults.ball_speed,
+                                },
+                                GameParamDef {
+                                    key: "paddle_half_height".to_string(),
+                                    label: "Paddle height".to_string(),
+                                    description:
+                                        "Half-height of paddle as a fraction of playfield height."
+                                            .to_string(),
+                                    min: PONG_PADDLE_HALF_HEIGHT_MIN,
+                                    max: PONG_PADDLE_HALF_HEIGHT_MAX,
+                                    default: defaults.paddle_half_height,
+                                },
+                            ],
+                        }
+                    }
+                    "spotxy" => {
+                        // SpotXY grid range: 0 (binary mode) or 2..=8 grid.
+                        Response::GameParams {
+                            game: "spotxy".to_string(),
+                            params: vec![
+                                GameParamDef {
+                                    key: "grid_n".to_string(),
+                                    label: "Grid size".to_string(),
+                                    description:
+                                        "Grid dimension (0 = binary left/right; 2-8 = NxN grid)."
+                                            .to_string(),
+                                    min: 0.0,
+                                    max: 8.0,
+                                    default: 0.0,
+                                },
+                                GameParamDef {
+                                    key: "eval".to_string(),
+                                    label: "Eval mode".to_string(),
+                                    description: "Holdout/evaluation mode (0=train, 1=eval)."
+                                        .to_string(),
+                                    min: 0.0,
+                                    max: 1.0,
+                                    default: 0.0,
+                                },
+                            ],
+                        }
+                    }
+                    _ => Response::GameParams {
+                        game: game.to_string(),
+                        params: Vec::new(),
+                    },
+                }
+            }
             Request::SetGame { game } => {
                 let mut s = state.write().await;
                 if s.running {
@@ -2079,6 +2186,41 @@ async fn handle_client(
                             },
                             Err(e) => Response::Error { message: e },
                         },
+                        ActiveGame::SpotXY(g) => {
+                            // SpotXY tunable params: grid_n, eval.
+                            match key {
+                                "grid_n" => {
+                                    let n = value.round().clamp(0.0, 8.0) as u32;
+                                    // Adapt existing grid state to target size.
+                                    while g.grid_n() < n {
+                                        g.increase_grid();
+                                    }
+                                    while g.grid_n() > n {
+                                        g.decrease_grid();
+                                    }
+                                    s.ensure_spotxy_io();
+                                    s.pending_neuromod = 0.0;
+                                    s.last_reward = 0.0;
+                                    Response::Success {
+                                        message: format!("Set {game}.{key} = {n}"),
+                                    }
+                                }
+                                "eval" => {
+                                    let eval = value >= 0.5;
+                                    g.set_eval_mode(eval);
+                                    s.pending_neuromod = 0.0;
+                                    s.last_reward = 0.0;
+                                    Response::Success {
+                                        message: format!("Set {game}.{key} = {eval}"),
+                                    }
+                                }
+                                _ => Response::Error {
+                                    message: format!(
+                                        "Unknown SpotXY param '{key}'. Use grid_n | eval"
+                                    ),
+                                },
+                            }
+                        }
                         _ => Response::Error {
                             message: format!("No tunable params implemented for game '{game}'"),
                         },

@@ -21,6 +21,9 @@ use std::time::Duration;
 #[serde(tag = "type")]
 enum Request {
     GetState,
+    GetGameParams {
+        game: String,
+    },
     Start,
     Stop,
     SetGame {
@@ -72,8 +75,27 @@ enum Request {
 #[serde(tag = "type")]
 enum Response {
     State(Box<StateSnapshot>),
-    Success { message: String },
-    Error { message: String },
+    GameParams {
+        game: String,
+        params: Vec<GameParamDef>,
+    },
+    Success {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GameParamDef {
+    key: String,
+    label: String,
+    #[serde(default)]
+    description: String,
+    min: f32,
+    max: f32,
+    default: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -548,6 +570,22 @@ fn main() {
 
     match send_request(&addr, &req) {
         Ok(Response::State(s)) => print_state(*s),
+        Ok(Response::GameParams { game, params }) => {
+            println!("Game params schema for: {game}");
+            for p in params {
+                if p.description.trim().is_empty() {
+                    println!(
+                        "- {} ({}) min={} max={} default={}",
+                        p.key, p.label, p.min, p.max, p.default
+                    );
+                } else {
+                    println!(
+                        "- {} ({}) min={} max={} default={} — {}",
+                        p.key, p.label, p.min, p.max, p.default, p.description
+                    );
+                }
+            }
+        }
         Ok(Response::Success { message }) => println!("{message}"),
         Ok(Response::Error { message }) => {
             eprintln!("Error: {message}");

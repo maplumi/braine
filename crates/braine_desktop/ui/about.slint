@@ -1,0 +1,154 @@
+// Braine Desktop - About Panel
+// Information about the project, how it works, and usage examples
+
+import { VerticalBox, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// About Panel - Project information and documentation
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component AboutPanel inherits Rectangle {
+    background: Theme.bg-panel;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 6px;
+    
+    ScrollView {
+        VerticalBox {
+            padding: 20px;
+            spacing: 16px;
+            
+            // Header
+            Text {
+                text: "Braine — Neuromorphic Learning Substrate";
+                color: Theme.text-primary;
+                font-size: 20px;
+                font-weight: 700;
+            }
+            
+            Text {
+                text: "© 2024-2026 Maplumi Labs. Developer: Elvis Ayiemba";
+                color: Theme.text-secondary;
+                font-size: 12px;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
+            // What is Braine?
+            Text {
+                text: "What is Braine?";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            
+            Text {
+                text: "Braine is a research project exploring neuromorphic computing — a closed-loop learning substrate that learns through sparse recurrent dynamics, local plasticity rules, and scalar reward signals (neuromodulation). Unlike traditional neural networks, Braine uses NO backpropagation or gradient descent.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
+            // Research Gaps
+            Text {
+                text: "Research Gaps Being Addressed";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            
+            Text {
+                text: "• Online, continual learning — Most ML systems require offline batch training; Braine learns in real-time from streaming experience.\n\n• Credit assignment without gradients — Using local Hebbian-like rules + neuromodulation instead of backprop through time.\n\n• Catastrophic forgetting — Exploring mechanisms like dreaming, consolidation, and causal memory to preserve learned behaviors.\n\n• Sample efficiency — Learning useful behaviors from tens/hundreds of trials rather than millions.\n\n• Emergent representations — Symbols and concepts arise from interaction, not pre-engineered features.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
+            // How it Works
+            Text {
+                text: "How It Works Internally";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            
+            Text {
+                text: "1. Sparse Recurrent Dynamics — A population of units with oscillating activations. Only a sparse subset fires at any moment, creating temporal patterns.\n\n2. Local Plasticity — Connections strengthen when pre/post units fire together near reward (Hebbian + neuromodulation). No global error signal.\n\n3. Neuromodulator — A scalar \"reward\" signal that gates learning. Positive = reinforce recent activity; negative = weaken it.\n\n4. Causal Memory — Tracks symbol co-occurrences and directed transitions to build a semantic graph. Enables meaning-based action selection.\n\n5. Observation Cycle — Each trial: stimulus → brain step → action selection → reward → commit observation. The brain learns from the consequence of its choices.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
+            // Similar Systems
+            Text {
+                text: "Related Work & Similar Systems";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            
+            Text {
+                text: "• HTM (Hierarchical Temporal Memory) — Numenta's neocortex-inspired model with sparse distributed representations.\n\n• Spiking Neural Networks (SNNs) — Neuromorphic hardware like Intel Loihi, IBM TrueNorth using spike-timing plasticity.\n\n• Reservoir Computing / Echo State Networks — Recurrent dynamics with a trained readout layer.\n\n• Liquid State Machines — Similar to reservoirs but with spiking neurons.\n\n• Active Inference / Free Energy Principle — Friston's framework for perception and action via prediction error minimization.\n\nBraine differs by combining: (1) oscillatory sparse coding, (2) pure local learning, (3) explicit causal/meaning memory, and (4) interactive games for grounded evaluation.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
+            // LLM Integration
+            Text {
+                text: "Integration with Large Language Models";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            
+            Text {
+                text: "Braine and LLMs are complementary:\n\n• LLM → Braine: An LLM could translate natural language goals into symbolic stimuli/actions that Braine can learn from. The LLM provides high-level reasoning; Braine handles low-level sensorimotor grounding.\n\n• Braine → LLM: Braine's causal memory graph could provide LLMs with grounded world models — learned from actual interaction rather than text. \"What happens when I press left?\" → Braine knows from experience.\n\n• Hybrid Agent: LLM for planning/language, Braine for real-time reactive control and online adaptation. The LLM reasons; Braine acts and learns.\n\n• Embodied LLM Grounding: Braine could serve as the \"body\" for an LLM agent, providing learned sensorimotor primitives the LLM can invoke.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
+            // Novel Use Cases
+            Text {
+                text: "Novel Edge Applications";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            
+            Text {
+                text: "Braine's lightweight, gradient-free design makes it ideal for edge deployment:\n\n• Adaptive IoT Sensors — A temperature sensor that learns normal patterns and adapts its alerting threshold without cloud connectivity.\n\n• Personalized Wearables — A fitness tracker that learns YOUR movement patterns and detects anomalies (falls, fatigue) in real-time on-device.\n\n• Autonomous Micro-Robots — Tiny robots (e.g., agricultural drones, pipe inspectors) that learn navigation without a connection to a training server.\n\n• Industrial Predictive Maintenance — Vibration sensors on machinery that learn baseline behavior and detect drift/anomalies locally.\n\n• Smart Home Devices — Light switches that learn your routine and anticipate your needs without sending data to the cloud.\n\n• Prosthetics & BCIs — Adaptive control systems that learn from user intent signals in real-time, improving over days/weeks of use.\n\n• Offline Game NPCs — Non-player characters that genuinely learn from player behavior, creating unique experiences without server-side ML.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
+            // Footer
+            Text {
+                text: "This is experimental research software. Expect rough edges!";
+                color: Theme.accent-yellow;
+                font-size: 12px;
+            }
+            
+            Text {
+                text: "Version 0.1.0 — https://github.com/maplumi/braine";
+                color: Theme.text-secondary;
+                font-size: 11px;
+            }
+        }
+    }
+}

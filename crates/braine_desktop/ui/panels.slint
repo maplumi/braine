@@ -1,0 +1,343 @@
+// Braine Desktop - UI Panels
+// Reusable panel components for the main window
+
+import { VerticalBox, HorizontalBox, Button, Slider, CheckBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { HudData, LearningState, BrainStats, GameState } from "types.slint";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Game header (title + short instructions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component GameHeader inherits Rectangle {
+    in property <string> kind;
+    in property <GameState> game;
+
+    background: transparent;
+    border-width: 0px;
+
+    property <string> title_text:
+        (kind == "bandit") ? "Bandit" :
+        (kind == "spot_reversal") ? "Spot Reversal" :
+        (kind == "spotxy") ? "SpotXY" :
+        (kind == "pong") ? "Pong" :
+        "Spot";
+
+    property <string> help_text:
+        (kind == "pong") ? "Keys: W/Up = up, S/Down = down, Space = stay" :
+        (kind == "bandit") ? "Two-armed bandit: rewards are stochastic; learn which arm pays." :
+        (kind == "spotxy") ? "Track the dot (TRAIN) or holdout (EVAL)." :
+        (kind == "spot_reversal") ? "Rule flips; context bit helps detect reversals." :
+        "Discriminate left vs right spot.";
+
+    VerticalBox {
+        spacing: 2px;
+        Text {
+            text: title_text;
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        Text {
+            text: help_text;
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HUD Panel
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component HudPanel inherits Rectangle {
+    in property <HudData> hud;
+    in property <int> trial-ms: 250;
+
+    property <float> trial_s: (trial-ms <= 0) ? 0.25 : (trial-ms * 1.0) / 1000.0;
+    
+    background: Theme.bg-panel;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 6px;
+    
+    VerticalBox {
+        padding: 10px;
+        spacing: 4px;
+        
+        Text {
+            text: "Frame: " + hud.frame + "  Trials: " + hud.trials;
+            color: Theme.text-primary;
+            font-size: 13px;
+        }
+        Text {
+            text: "Correct: " + hud.correct + "  Incorrect: " + hud.incorrect + "  Accuracy: " + round(hud.accuracy * 100) + "%";
+            color: Theme.text-primary;
+            font-size: 13px;
+        }
+        Text {
+            text: "Recent: " + round(hud.recent-rate * 100) + "%  Last 100: " + round(hud.last-100-rate * 100) + "%";
+            color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.text-secondary;
+            font-size: 13px;
+        }
+        Text {
+            text: "Neuromodulator: " + round(hud.neuromod * 1000) / 1000;
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+        
+        // Learning milestones
+        Text {
+            text: hud.last-100-rate >= 0.95 ? "MASTERED" : 
+                hud.last-100-rate >= 0.85 ? "LEARNED" :
+                hud.last-100-rate >= 0.70 ? "LEARNING" :
+                  hud.trials < 20 ? "Starting..." : "Not yet learned";
+            color: hud.last-100-rate >= 0.85 ? Theme.accent-green : Theme.accent-yellow;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        Text {
+            text: "Reached @ trials — Learning: " + (hud.learning-at-trial < 0 ? "-" : hud.learning-at-trial) +
+                  "  Learned: " + (hud.learned-at-trial < 0 ? "-" : hud.learned-at-trial) +
+                  "  Mastered: " + (hud.mastered-at-trial < 0 ? "-" : hud.mastered-at-trial);
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        Text {
+            text: "Approx time — Learning: " + (hud.learning-at-trial < 0 ? "-" : (round(hud.learning-at-trial * trial_s * 10) / 10 + "s")) +
+                  "  Learned: " + (hud.learned-at-trial < 0 ? "-" : (round(hud.learned-at-trial * trial_s * 10) / 10 + "s")) +
+                  "  Mastered: " + (hud.mastered-at-trial < 0 ? "-" : (round(hud.mastered-at-trial * trial_s * 10) / 10 + "s"));
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Learning Panel
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component LearningPanel inherits Rectangle {
+    in-out property <LearningState> state;
+    
+    callback trigger-dream();
+    callback trigger-burst();
+    callback trigger-sync();
+    callback trigger-imprint();
+    callback set-framerate(int);
+    callback set-trial-period-ms(int);
+    
+    in-out property <int> framerate: 60;
+    in-out property <int> trial-period-ms: 250;
+    
+    background: Theme.bg-panel;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 6px;
+    
+    VerticalBox {
+        padding: 12px;
+        spacing: 8px;
+        
+        Text {
+            text: "Accelerated Learning";
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        CheckBox {
+            text: "Learning Enabled";
+            checked: state.learning-enabled;
+            toggled => { state.learning-enabled = self.checked; }
+        }
+        
+        HorizontalBox {
+            spacing: 6px;
+            Button {
+                text: "Dream";
+                clicked => { trigger-dream(); }
+            }
+            Button {
+                text: "Burst";
+                clicked => { trigger-burst(); }
+            }
+            Button {
+                text: "Sync";
+                clicked => { trigger-sync(); }
+            }
+            Button {
+                text: "Imprint";
+                clicked => { trigger-imprint(); }
+            }
+        }
+
+        Text {
+            text: "Dream: offline replay to consolidate recent structure (stabilizes what just worked).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Burst: temporary learning-rate boost (helps rapid adaptation; can increase drift if overused).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Sync: aligns sensor phases for cleaner encoding (use after a regime shift / reversal).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Imprint: one-shot linking of the current context (fast association when the brain is missing a concept).";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+        
+        Text {
+            text: "Simulation Speed";
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        HorizontalBox {
+            spacing: 8px;
+            Text {
+                text: "FPS: " + framerate;
+                color: Theme.text-secondary;
+                font-size: 12px;
+                min-width: 60px;
+            }
+            Slider {
+                minimum: 1;
+                maximum: 120;
+                value: framerate;
+                changed(val) => {
+                    framerate = val;
+                    set-framerate(val);
+                }
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Reset";
+                clicked => {
+                    framerate = 60;
+                    set-framerate(60);
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text {
+                text: "Trial: " + trial-period-ms + "ms";
+                color: Theme.text-secondary;
+                font-size: 12px;
+                min-width: 100px;
+            }
+            Slider {
+                minimum: 50;
+                maximum: 2000;
+                value: trial-period-ms;
+                changed(val) => {
+                    trial-period-ms = val;
+                    set-trial-period-ms(val);
+                }
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Reset";
+                clicked => {
+                    trial-period-ms = 250;
+                    set-trial-period-ms(250);
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Brain Stats Panel
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component BrainPanel inherits Rectangle {
+    in property <BrainStats> stats;
+    in property <string> experts-status;
+    in property <bool> experts-enabled;
+    callback set-max-units(int);
+    callback experts-enabled-changed(bool);
+    callback cull-experts();
+    
+    background: Theme.bg-panel;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 6px;
+    
+    VerticalBox {
+        padding: 12px;
+        spacing: 6px;
+        
+        Text {
+            text: "Brain Substrate";
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        if experts-status != "": Text {
+            text: experts-status;
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+            CheckBox {
+                text: "Experts";
+                checked: experts-enabled;
+                toggled => { experts-enabled-changed(self.checked); }
+            }
+            Button {
+                text: "Cull";
+                enabled: experts-enabled;
+                clicked => { cull-experts(); }
+            }
+            Text {
+                text: experts-enabled ? "(plots/graphs can switch to Active Expert)" : "(enable to allow child brains)";
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+            }
+        }
+        Text { text: "Units: " + stats.unit-count; color: Theme.text-secondary; font-size: 12px; }
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Max units: " + stats.max-units-limit; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+            Button { text: "-32"; clicked => { set-max-units(stats.max-units-limit - 32); } }
+            Button { text: "+32"; clicked => { set-max-units(stats.max-units-limit + 32); } }
+        }
+        Text { text: "Connections: " + stats.connection-count; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Pruned (last): " + stats.pruned-last-step; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Births (last): " + stats.births-last-step; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Saturated: " + (stats.saturated ? "yes" : "no"); color: stats.saturated ? Theme.accent-yellow : Theme.text-secondary; font-size: 12px; }
+        Text { text: "Causal symbols: " + stats.causal-base-symbols; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Causal edges: " + stats.causal-edges; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Causal updates (last): " + stats.causal-last-directed-updates + " dir, " + stats.causal-last-cooccur-updates + " co"; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Avg amplitude: " + round(stats.avg-amp * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Avg weight: " + round(stats.avg-weight * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Memory: " + stats.memory-bytes + " bytes"; color: Theme.text-secondary; font-size: 12px; }
+        Text { text: "Age: " + stats.age-steps + " steps"; color: Theme.text-secondary; font-size: 12px; }
+    }
+}
