@@ -5,7 +5,7 @@
 Braine uses a **client-server architecture** for proper application behavior:
 
 - **`brained`**: Background daemon/service that runs continuously
-- **`braine_viz`**: UI client that connects to the daemon
+- **`braine_desktop`**: UI client that connects to the daemon
 
 This allows:
 - Brain to run 24/7 in the background
@@ -31,7 +31,7 @@ This allows:
     │                     │            │
 ┌───▼────────┐    ┌──────▼────┐   ┌───▼────┐
 │  UI Client │    │ UI Client │   │  CLI   │
-│ (braine_viz)│    │ (another) │   │ Client │
+│ (braine_desktop)│    │ (another) │   │ Client │
 └────────────┘    └───────────┘   └────────┘
 ```
 
@@ -58,7 +58,7 @@ brained 2>&1 | tee braine.log &
 ### Start the UI
 
 ```bash
-braine_viz
+braine_desktop
 ```
 
 The UI will connect to the daemon automatically.
@@ -126,11 +126,11 @@ Create `~/Library/LaunchAgents/com.braine.daemon.plist`
 cargo build --release -p brained
 
 # Build UI client  
-cargo build --release -p braine_viz
+cargo build --release -p braine_desktop
 
 # Install both
-cargo install --path brained
-cargo install --path braine_vis
+cargo install --path crates/brained
+cargo install --path crates/braine_desktop
 ```
 
 ## Development
@@ -140,5 +140,5 @@ cargo install --path braine_vis
 cargo run -p brained
 
 # Terminal 2: Run UI
-cargo run -p braine_viz
+cargo run -p braine_desktop
 ```

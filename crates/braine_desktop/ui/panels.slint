@@ -276,8 +276,22 @@ export component BrainPanel inherits Rectangle {
     in property <BrainStats> stats;
     in property <string> experts-status;
     in property <bool> experts-enabled;
+    in-out property <bool> experts-allow-nested;
+    in-out property <int> experts-max-depth;
+
+    in-out property <string> experts-parent-learning;
+    in-out property <int> experts-max-children;
+    in-out property <float> experts-child-reward-scale;
+    in-out property <int> experts-episode-trials;
+    in-out property <int> experts-consolidate-topk;
+    in-out property <string> experts-persistence-mode;
+    in-out property <float> experts-reward-shift-ema-delta-threshold;
+    in-out property <float> experts-performance-collapse-drop-threshold;
+    in-out property <float> experts-performance-collapse-baseline-min;
     callback set-max-units(int);
     callback experts-enabled-changed(bool);
+    callback experts-nesting-changed(bool, int);
+    callback experts-policy-apply(string, int, float, int, int, float, float, float, string, bool, int);
     callback cull-experts();
     
     background: Theme.bg-panel;
@@ -316,6 +330,219 @@ export component BrainPanel inherits Rectangle {
             }
             Text {
                 text: experts-enabled ? "(plots/graphs can switch to Active Expert)" : "(enable to allow child brains)";
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+            }
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+            CheckBox {
+                text: "Allow nesting";
+                enabled: experts-enabled;
+                checked: experts-allow-nested;
+                toggled => { experts-nesting-changed(self.checked, experts-max-depth); }
+            }
+            Text {
+                text: "Max depth:";
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+            }
+            Slider {
+                minimum: 1;
+                maximum: 8;
+                enabled: experts-enabled && experts-allow-nested;
+                value: experts-max-depth;
+                changed(val) => {
+                    experts-max-depth = val;
+                    experts-nesting-changed(experts-allow-nested, experts-max-depth);
+                }
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: experts-max-depth;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+                min-width: 18px;
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            horizontal-stretch: 1;
+            background: Theme.border;
+        }
+
+        Text {
+            text: "Expert policy";
+            color: Theme.text-primary;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+            Text { text: "Parent learning:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Button {
+                enabled: experts-enabled;
+                text: experts-parent-learning;
+                clicked => {
+                    experts-parent-learning = (experts-parent-learning == "holdout") ? "reduced" :
+                                            (experts-parent-learning == "reduced") ? "normal" : "holdout";
+                }
+            }
+            Text { text: "Persist:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Button {
+                enabled: experts-enabled;
+                text: experts-persistence-mode;
+                clicked => {
+                    experts-persistence-mode = (experts-persistence-mode == "drop_active") ? "full" : "drop_active";
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Max children:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Slider {
+                minimum: 0;
+                maximum: 8;
+                enabled: experts-enabled;
+                value: experts-max-children;
+                changed(val) => { experts-max-children = val; }
+                horizontal-stretch: 1;
+            }
+            Text { text: experts-max-children; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; min-width: 18px; }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Reward scale:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Slider {
+                minimum: 0.0;
+                maximum: 4.0;
+                enabled: experts-enabled;
+                value: experts-child-reward-scale;
+                changed => { experts-child-reward-scale = self.value; }
+                horizontal-stretch: 1;
+            }
+            Text { text: "" + (round(experts-child-reward-scale * 100.0) / 100.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; min-width: 36px; }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Episode trials:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Slider {
+                minimum: 1;
+                maximum: 256;
+                enabled: experts-enabled;
+                value: experts-episode-trials;
+                changed(val) => { experts-episode-trials = val; }
+                horizontal-stretch: 1;
+            }
+            Text { text: experts-episode-trials; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; min-width: 32px; }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Consolidate top-k:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Slider {
+                minimum: 0;
+                maximum: 1000;
+                enabled: experts-enabled;
+                value: experts-consolidate-topk;
+                changed(val) => { experts-consolidate-topk = val; }
+                horizontal-stretch: 1;
+            }
+            Text { text: experts-consolidate-topk; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; min-width: 42px; }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Shift ΔEMA:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Slider {
+                minimum: 0.0;
+                maximum: 2.0;
+                enabled: experts-enabled;
+                value: experts-reward-shift-ema-delta-threshold;
+                changed => { experts-reward-shift-ema-delta-threshold = self.value; }
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: "" + (round(experts-reward-shift-ema-delta-threshold * 100.0) / 100.0);
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+                min-width: 36px;
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Collapse drop:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Slider {
+                minimum: 0.0;
+                maximum: 2.0;
+                enabled: experts-enabled;
+                value: experts-performance-collapse-drop-threshold;
+                changed => { experts-performance-collapse-drop-threshold = self.value; }
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: "" + (round(experts-performance-collapse-drop-threshold * 100.0) / 100.0);
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+                min-width: 36px;
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Text { text: "Collapse baseline:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+            Slider {
+                minimum: -1.0;
+                maximum: 1.0;
+                enabled: experts-enabled;
+                value: experts-performance-collapse-baseline-min;
+                changed => { experts-performance-collapse-baseline-min = self.value; }
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: "" + (round(experts-performance-collapse-baseline-min * 100.0) / 100.0);
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                font-size: 12px;
+                min-width: 36px;
+            }
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+            Button {
+                text: "Apply policy";
+                enabled: experts-enabled;
+                clicked => {
+                    experts-policy-apply(
+                        experts-parent-learning,
+                        experts-max-children,
+                        experts-child-reward-scale,
+                        experts-episode-trials,
+                        experts-consolidate-topk,
+                        experts-reward-shift-ema-delta-threshold,
+                        experts-performance-collapse-drop-threshold,
+                        experts-performance-collapse-baseline-min,
+                        experts-persistence-mode,
+                        experts-allow-nested,
+                        experts-max-depth
+                    );
+                }
+            }
+            Text {
+                text: "(applies to existing experts too)";
                 color: Theme.text-secondary;
                 vertical-alignment: center;
                 font-size: 12px;

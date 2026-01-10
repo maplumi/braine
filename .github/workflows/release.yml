@@ -1,0 +1,226 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the release (e.g., v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Build native Linux binaries
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+
+      - name: Build release (Linux)
+        run: cargo build --release
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            target/release/brained
+            target/release/braine_desktop
+            target/release/braine-cli
+          retention-days: 1
+
+  # Build Windows binaries via cross-compilation
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-windows-
+
+      - name: Install cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+
+      - name: Build release (Windows)
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            target/x86_64-pc-windows-gnu/release/brained.exe
+            target/x86_64-pc-windows-gnu/release/braine_desktop.exe
+            target/x86_64-pc-windows-gnu/release/braine.exe
+          retention-days: 1
+
+  # Build WASM web app
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-
+
+      - name: Install trunk
+        run: cargo install trunk --locked
+
+      - name: Build web app
+        run: |
+          cd crates/braine_web
+          trunk build --release --features web
+
+      - name: Upload web artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: crates/braine_web/dist/
+          retention-days: 1
+
+  # Create release with all artifacts
+  release:
+    needs: [build-linux, build-windows, build-web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: artifacts/linux
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: artifacts/windows
+
+      - name: Download web artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: artifacts/web
+
+      - name: Install 7z
+        run: sudo apt-get install -y p7zip-full
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p dist
+
+          # Linux tarball
+          chmod +x artifacts/linux/*
+          tar czvf dist/braine-linux-x86_64.tar.gz -C artifacts/linux .
+
+          # Windows portable zip
+          cp crates/braine_desktop/assets/braine.ico artifacts/windows/ || true
+          cat > artifacts/windows/run_braine.bat <<'EOF'
+          @echo off
+          rem Ensure we run from the folder containing this script.
+          rem This also makes UNC paths (e.g. \\wsl.localhost\...) work by mapping a temp drive.
+          pushd "%~dp0" || (echo Failed to enter script directory & exit /b 1)
+          start "brained" "%~dp0brained.exe"
+          timeout /t 1 >NUL
+          start "braine_desktop" "%~dp0braine_desktop.exe"
+          popd
+          EOF
+          cat > artifacts/windows/README.txt <<'EOF'
+          Braine - Brain-like Learning Substrate
+
+          SETUP:
+          1. Run run_braine.bat (or create a shortcut to it)
+             - Starts brained daemon in background
+             - Launches braine_desktop UI after 1 second
+
+          CONTROLS:
+          - Start/Stop: Toggle learning loop
+          - Dream/Burst/Sync/Imprint: Learning helpers
+          - Save: Persist brain state
+          - Load: Restore from saved brain.bbi
+
+          DATA LOCATION:
+            Brain saves to: %APPDATA%\Braine\brain.bbi
+          EOF
+          (cd artifacts/windows && 7z a -tzip ../../dist/braine-windows-x86_64.zip .)
+
+          # Web dist tarball
+          tar czvf dist/braine-web.tar.gz -C artifacts/web .
+
+      - name: Get tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Braine ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/braine-linux-x86_64.tar.gz
+            dist/braine-windows-x86_64.zip
+            dist/braine-web.tar.gz

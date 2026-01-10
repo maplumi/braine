@@ -98,7 +98,7 @@ These diagrams describe how state is owned and how information moves between the
 ```mermaid
 flowchart TD
    subgraph Clients["Clients"]
-      UI["braine_viz (UI client)"]
+      UI["braine_desktop (UI client)"]
       CLI["braine-cli (CLI client)"]
    end
 
@@ -214,16 +214,18 @@ sequenceDiagram
 We start with the simplest general policy:
 - If there is an **active expert** for the current context, use it.
 - Otherwise, route to parent.
-- Spawn is controlled by a separate novelty/uncertainty trigger (below).
+- Spawn is controlled by explicit novelty/shift/saturation/collapse signals (below).
 
 ### 5.2 Spawn triggers (general)
 
-We need triggers that don’t require bespoke game logic.
+We need triggers that don’t require bespoke game logic and that match the
+project’s constraint: **child brains exist only for novelty or distributional shift**.
 
-Initial version uses any combination of:
-- **Novel symbol pressure**: sudden increase in new symbols/events.
-- **Low confidence / flat action scores**: action readout produces near-ties.
-- **Performance regression**: rolling reward falls below a threshold compared to baseline.
+Spawn only on explicit signals such as:
+- **Novel stimulus symbol / modality**: first time a `context_key` appears.
+- **Reward regime shift**: recent reward statistics diverge from long-term baseline.
+- **Performance collapse**: reward drops sharply relative to historical best baseline.
+- **Saturation / attractor brittleness**: parent reports saturation (e.g., growth-needed proxy).
 
 Spawn must be rate-limited:
 - Max concurrent children (global).
@@ -346,8 +348,8 @@ This section is the checklist of modifications we will make when we start coding
 ### 10.1 Core substrate
 
 Files:
-- src/core/substrate.rs
-- src/core/supervisor.rs (or new module)
+- crates/core/src/core/substrate.rs
+- crates/core/src/core/supervisor.rs
 
 Expected new capabilities:
 - `Brain::fork_for_expert(...) -> Brain` (or `BrainImage`-backed fork)
@@ -358,8 +360,8 @@ Expected new capabilities:
 ### 10.2 Daemon runtime
 
 Files:
-- brained/src/main.rs
-- possibly brained/src/game.rs (only for context keys / trait surface)
+ - crates/brained/src/main.rs
+ - crates/brained/src/game.rs
 
 Expected additions:
 - An `ExpertManager` owned by the daemon alongside the authoritative parent brain.
@@ -373,8 +375,8 @@ Expected additions:
 ### 10.3 Games
 
 Files:
-- brained/src/game.rs
-- braine_vis/src/games/* (only if needed for display)
+ - crates/brained/src/game.rs
+ - crates/braine_desktop/ui/*
 
 Expected change:
 - Each game provides a context key (can start coarse).
@@ -383,8 +385,8 @@ Expected change:
 ### 10.4 Protocol clients
 
 Files:
-- braine_vis/src/main.rs
-- src/bin/braine_cli.rs
+ - crates/braine_desktop/src/main.rs
+ - crates/core/src/bin/braine_cli.rs
 
 Expected change:
 - Parse new snapshot fields safely via serde defaults.

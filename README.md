@@ -40,6 +40,8 @@ cargo build --release --target x86_64-pc-windows-gnu
 ./scripts/dev.sh
 ```
 
+Web deployment details: [doc/deployment-web.md](doc/deployment-web.md).
+
 ### Daemon + UI (Spot game)
 The daemon-based architecture runs the brain as a persistent service:
 ```bash
@@ -47,7 +49,7 @@ The daemon-based architecture runs the brain as a persistent service:
 cargo run --release -p brained
 
 # Launch UI (connects to daemon)
-cargo run --release -p braine_viz
+cargo run --release -p braine_desktop
 
 # CLI control (start/stop/status/save/load)
 cargo run --release --bin braine-cli -- status
@@ -99,30 +101,34 @@ brain.set_execution_tier(ExecutionTier::Simd);      // Use SIMD
 brain.set_execution_tier(ExecutionTier::Gpu);       // Use GPU compute
 ```
 
-## 2D visualizer (macroquad)
-- Run the interactive 2D demo: `cargo run -p braine_viz`
+## Desktop UI (Slint)
+- Run the desktop UI: `cargo run -p braine_desktop`
 
 ### Meta-modulation (temporal learning progress)
-In `braine_viz` Pong, the demo uses a **meta-modulation** signal derived from **temporal learning progress**:
+In the desktop UI Pong, the demo can use a **meta-modulation** signal derived from **temporal learning progress**:
 - It tracks the time/steps between successful hits and maintains a moving baseline (EMA).
 - When performance gets *slower than its own baseline*, it temporarily increases exploration (it does **not** change the environment reward).
 - When performance improves, the extra exploration decays back down.
 
 This is a deliberate design choice: keep the environment reward as the substrate’s neuromodulator, and use “progress” only to modulate how aggressively the system explores/learns.
 
-**Security note:** the visualizer depends on `macroquad`, which currently has a RustSec
-informational advisory for unsoundness (no patched version is available as of 2026-01).
-The core `braine` crate stays std-only; treat `braine_viz` as a demo tool rather than a
-security-hardened component.
+Note: the desktop UI uses `slint` and is intended for interactive exploration.
 
 ## Docs
 - **New to braine?** Start with [How It Works](doc/overview/how-it-works.md) for a comprehensive guide with detailed neurogenesis explanation
 - See [doc/README.md](doc/README.md) for complete documentation index
 - Interaction + I/O: [doc/architecture/interaction.md](doc/architecture/interaction.md)
+- Graph scaling + limits: [doc/architecture/graph-visualization.md](doc/architecture/graph-visualization.md)
 - Persistence + storage adapters: [doc/architecture/brain-image.md](doc/architecture/brain-image.md)
 - Visualizer games (what each measures): [doc/games/visualizer-games.md](doc/games/visualizer-games.md)
+- Problem sets → trials: [doc/overview/problem-sets.md](doc/overview/problem-sets.md)
+- Web vs Desktop parity: [doc/development/web-desktop-parity.md](doc/development/web-desktop-parity.md)
+- Pong performance notes: [doc/games/pong-performance.md](doc/games/pong-performance.md)
 - What this does that LLMs don’t (yet): [doc/overview/what-llms-dont-do-yet.md](doc/overview/what-llms-dont-do-yet.md)
 - **Accelerated Learning**: [doc/learning/accelerated-learning.md](doc/learning/accelerated-learning.md)
+
+### Web
+- Deployment + build notes: [doc/deployment-web.md](doc/deployment-web.md)
 
 ### Learning actions (UI)
 The visualizer exposes a few manual “accelerators”:

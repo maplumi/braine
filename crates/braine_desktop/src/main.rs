@@ -232,6 +232,23 @@ enum Request {
     SetExpertsEnabled {
         enabled: bool,
     },
+    SetExpertNesting {
+        allow_nested: bool,
+        max_depth: u32,
+    },
+    SetExpertPolicy {
+        parent_learning: String,
+        max_children: u32,
+        child_reward_scale: f32,
+        episode_trials: u32,
+        consolidate_topk: u32,
+        reward_shift_ema_delta_threshold: f32,
+        performance_collapse_drop_threshold: f32,
+        performance_collapse_baseline_min: f32,
+        allow_nested: bool,
+        max_depth: u32,
+        persistence_mode: String,
+    },
     CullExperts,
     HumanAction {
         action: String,
@@ -391,6 +408,13 @@ struct DaemonExpertsSummary {
     allow_nested: bool,
     #[serde(default)]
     max_depth: u32,
+
+    #[serde(default)]
+    reward_shift_ema_delta_threshold: f32,
+    #[serde(default)]
+    performance_collapse_drop_threshold: f32,
+    #[serde(default)]
+    performance_collapse_baseline_min: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1046,10 +1070,47 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Experts (child brains)
     {
-        let c = client.clone();
+        let c_enabled = client.clone();
         ui.on_experts_enabled_changed(move |enabled| {
-            c.send(Request::SetExpertsEnabled { enabled });
+            c_enabled.send(Request::SetExpertsEnabled { enabled });
         });
+
+        let c_nesting = client.clone();
+        ui.on_experts_nesting_changed(move |allow_nested, max_depth| {
+            c_nesting.send(Request::SetExpertNesting {
+                allow_nested,
+                max_depth: (max_depth.max(1) as u32),
+            });
+        });
+
+        let c_policy = client.clone();
+        ui.on_experts_policy_apply(
+            move |parent_learning,
+                  max_children,
+                  child_reward_scale,
+                  episode_trials,
+                  consolidate_topk,
+                  reward_shift_ema_delta_threshold,
+                  performance_collapse_drop_threshold,
+                  performance_collapse_baseline_min,
+                  persistence_mode,
+                  allow_nested,
+                  max_depth| {
+                c_policy.send(Request::SetExpertPolicy {
+                    parent_learning: parent_learning.to_string(),
+                    max_children: (max_children.max(0) as u32),
+                    child_reward_scale,
+                    episode_trials: (episode_trials.max(1) as u32),
+                    consolidate_topk: (consolidate_topk.max(0) as u32),
+                    reward_shift_ema_delta_threshold,
+                    performance_collapse_drop_threshold,
+                    performance_collapse_baseline_min,
+                    allow_nested,
+                    max_depth: (max_depth.max(1) as u32),
+                    persistence_mode: persistence_mode.to_string(),
+                });
+            },
+        );
     }
     {
         let c = client.clone();
@@ -1181,8 +1242,8 @@ fn main() -> Result<(), slint::PlatformError> {
         *last_graph_req.borrow_mut() = Instant::now();
         client.send(Request::GetGraph {
             kind: "substrate".to_string(),
-            max_nodes: 32,
-            max_edges: 64,
+            max_nodes: 1000,
+            max_edges: 50_000,
             include_isolated: false,
         });
     }
@@ -1532,6 +1593,21 @@ fn main() -> Result<(), slint::PlatformError> {
                 };
                 ui.set_experts_status(experts_status.into());
                 ui.set_experts_enabled(snap.experts_enabled);
+                ui.set_experts_allow_nested(snap.experts.allow_nested);
+                ui.set_experts_max_depth(snap.experts.max_depth as i32);
+                ui.set_experts_max_children(snap.experts.max_children as i32);
+                if !snap.experts.persistence_mode.trim().is_empty() {
+                    ui.set_experts_persistence_mode(snap.experts.persistence_mode.clone().into());
+                }
+                ui.set_experts_reward_shift_ema_delta_threshold(
+                    snap.experts.reward_shift_ema_delta_threshold,
+                );
+                ui.set_experts_performance_collapse_drop_threshold(
+                    snap.experts.performance_collapse_drop_threshold,
+                );
+                ui.set_experts_performance_collapse_baseline_min(
+                    snap.experts.performance_collapse_baseline_min,
+                );
 
                 // Apply game param schema (Pong + SpotXY).
                 if snap.game.kind() == "pong" {

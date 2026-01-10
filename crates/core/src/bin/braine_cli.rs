@@ -62,6 +62,13 @@ enum Request {
         consolidate_topk: u32,
 
         #[serde(default)]
+        reward_shift_ema_delta_threshold: f32,
+        #[serde(default)]
+        performance_collapse_drop_threshold: f32,
+        #[serde(default)]
+        performance_collapse_baseline_min: f32,
+
+        #[serde(default)]
         allow_nested: bool,
         #[serde(default)]
         max_depth: u32,
@@ -495,7 +502,7 @@ fn main() {
                 "policy" => {
                     if args.len() < 7 {
                         make_error(
-                            "usage: experts policy <parent_learning> <max_children> <child_reward_scale> <episode_trials> <consolidate_topk>",
+                            "usage: experts policy <parent_learning> <max_children> <child_reward_scale> <episode_trials> <consolidate_topk> [allow_nested] [max_depth] [persistence_mode] [shift_delta] [collapse_drop] [collapse_baseline_min]",
                         );
                     }
                     let parent_learning = args[2].clone();
@@ -531,12 +538,40 @@ fn main() {
                     } else {
                         "full".to_string()
                     };
+
+                    // Optional signal thresholds (floats):
+                    //   <shift_delta> <collapse_drop> <collapse_baseline_min>
+                    // Defaults match daemon policy defaults.
+                    let reward_shift_ema_delta_threshold: f32 = if args.len() >= 11 {
+                        args[10]
+                            .parse()
+                            .unwrap_or_else(|_| make_error("shift_delta must be a float"))
+                    } else {
+                        0.55
+                    };
+                    let performance_collapse_drop_threshold: f32 = if args.len() >= 12 {
+                        args[11]
+                            .parse()
+                            .unwrap_or_else(|_| make_error("collapse_drop must be a float"))
+                    } else {
+                        0.65
+                    };
+                    let performance_collapse_baseline_min: f32 = if args.len() >= 13 {
+                        args[12]
+                            .parse()
+                            .unwrap_or_else(|_| make_error("collapse_baseline_min must be a float"))
+                    } else {
+                        0.25
+                    };
                     Request::SetExpertPolicy {
                         parent_learning,
                         max_children,
                         child_reward_scale,
                         episode_trials,
                         consolidate_topk,
+                        reward_shift_ema_delta_threshold,
+                        performance_collapse_drop_threshold,
+                        performance_collapse_baseline_min,
                         allow_nested,
                         max_depth,
                         persistence_mode,

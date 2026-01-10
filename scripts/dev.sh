@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unified dev helper: fmt, clippy, build release (Linux + Windows), portable zip.
+# Unified dev helper: fmt, clippy, build release (Linux + Windows), portable zip, (optional) web build + sync.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -7,19 +7,19 @@ cd "$ROOT"
 command -v cargo >/dev/null || { echo "cargo not found"; exit 1; }
 command -v 7z >/dev/null || { echo "7z not found; install p7zip-full (Linux) or 7-Zip (Windows)"; exit 1; }
 
-echo "[1/5] cargo fmt"
+echo "[1/7] cargo fmt"
 cargo fmt
 
-echo "[2/5] cargo clippy --all-targets"
+echo "[2/7] cargo clippy --all-targets"
 cargo clippy --workspace --all-targets -- -D warnings
 
-echo "[3/5] cargo build --release (native)"
+echo "[3/7] cargo build --release (native)"
 cargo build --release
 
-echo "[4/5] cargo build --release --all --target x86_64-pc-windows-gnu"
+echo "[4/7] cargo build --release --all --target x86_64-pc-windows-gnu"
 cargo build --release --all --target x86_64-pc-windows-gnu
 
-echo "[5/5] Create portable zip"
+echo "[5/7] Create portable zip"
 mkdir -p dist/windows
 cp target/x86_64-pc-windows-gnu/release/braine_desktop.exe dist/windows/
 cp target/x86_64-pc-windows-gnu/release/brained.exe dist/windows/
@@ -43,7 +43,7 @@ Braine - Brain-like Learning Substrate
 SETUP:
 1. Run run_braine.bat (or create a shortcut to it)
    - Starts brained daemon in background
-   - Launches braine_viz UI after 1 second
+  - Launches braine_desktop UI after 1 second
 
 NOTE (WSL / UNC PATHS):
   If you run this from a path like \\wsl.localhost\..., cmd.exe may not treat it as a normal working directory.
@@ -78,3 +78,40 @@ EOF
   7z a -tzip ../braine-portable.zip braine_desktop.exe brained.exe braine.exe braine.ico run_braine.bat README.txt >/dev/null
 )
 echo "Portable bundle: dist/braine-portable.zip"
+
+echo "[6/7] trunk build --release (braine_web)"
+WEB_DIST_DIR="$ROOT/crates/braine_web/dist"
+if command -v trunk >/dev/null; then
+  (
+    cd "$ROOT/crates/braine_web"
+    trunk build --release --features web
+  )
+  echo "braine_web dist: $WEB_DIST_DIR"
+else
+  echo "trunk not found; skipping braine_web build (install with: cargo install trunk)"
+fi
+
+echo "[7/7] Sync braine_web dist to ~/projects/research/braine-web"
+WEB_DEPLOY_DIR="$HOME/projects/research/braine-web"
+if [[ -d "$WEB_DIST_DIR" ]]; then
+  mkdir -p "$WEB_DEPLOY_DIR"
+  if command -v rsync >/dev/null; then
+    rsync -a --delete "$WEB_DIST_DIR"/ "$WEB_DEPLOY_DIR"/
+  else
+    rm -rf "$WEB_DEPLOY_DIR"/*
+    cp -r "$WEB_DIST_DIR"/* "$WEB_DEPLOY_DIR"/
+  fi
+  echo "Synced web assets to: $WEB_DEPLOY_DIR"
+
+  # Also copy native release assets for convenience.
+  # Keep them in a subfolder so they don't conflict with the web dist.
+  mkdir -p "$WEB_DEPLOY_DIR/release"
+  if [[ -f "$ROOT/dist/braine-portable.zip" ]]; then
+    cp -f "$ROOT/dist/braine-portable.zip" "$WEB_DEPLOY_DIR/release/"
+    echo "Copied release bundle to: $WEB_DEPLOY_DIR/release/braine-portable.zip"
+  fi
+else
+  echo "Skipping sync (missing dist or target dir)."
+  echo "  dist:   $WEB_DIST_DIR"
+  echo "  target: $WEB_DEPLOY_DIR"
+fi

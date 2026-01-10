@@ -11,6 +11,8 @@ pub mod pong;
 #[cfg(feature = "std")]
 pub mod bandit;
 #[cfg(feature = "std")]
+pub mod sequence;
+#[cfg(feature = "std")]
 pub mod spot;
 #[cfg(feature = "std")]
 pub mod spot_reversal;

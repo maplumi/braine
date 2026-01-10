@@ -81,12 +81,12 @@ A practical edge-deployable agent needs a thin infrastructure layer we’ll call
 - Power management: duty cycling, sleep modes, wake on stimulus.
 - Persistence: snapshot/restore of couplings + a small amount of state.
 
-### Daemon + clients (brained, braine_viz, braine-cli)
+### Daemon + clients (brained, braine_desktop, braine-cli)
 This repo also includes a small “frame” implementation as a background daemon:
 
 - **Daemon**: `brained` owns the single authoritative in-memory brain and runs the online learning loop.
 - **Clients**:
-	- `braine_viz` (Slint UI) polls state and sends control requests.
+	- `braine_desktop` (Slint UI) polls state and sends control requests.
 	- `braine-cli` sends one-shot requests (start/stop/status, etc).
 
 They communicate over a simple line-delimited JSON protocol over TCP on `127.0.0.1:9876`.

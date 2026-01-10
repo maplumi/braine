@@ -20,6 +20,7 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 ### Overview
 - [How It Works](overview/how-it-works.md): comprehensive guide with detailed neurogenesis explanation
 - [What LLMs don't do (yet)](overview/what-llms-dont-do-yet.md): closed-loop online learning, persistent adaptation, embodiment framing
+- [Problem sets → Trials](overview/problem-sets.md): how to transform datasets/problems into closed-loop trial streams
 
 ### Architecture
 - [Architecture](architecture/architecture.md): core substrate + "body/frame" interface + execution tiers
@@ -43,6 +44,10 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 - [Game Testing Guide](games/game-testing-guide.md): measuring brain capabilities with each game
 - [Capabilities Checklist](games/capabilities-checklist.md): testable criteria for what braine should do
 - [Experiments](games/experiments.md): experiment log template + current backlog
+- [Pong performance notes](games/pong-performance.md): why hit-rate can look capped and what to try
+
+### Web
+- [Web vs Desktop parity](development/web-desktop-parity.md): what exists where (and why)
 
 ### Development
 - [Packaging](development/packaging.md): how to build and package for distribution

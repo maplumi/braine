@@ -146,43 +146,102 @@ impl PongSim {
     }
 
     fn step_physics(&mut self, dt: f32) -> PongEvent {
-        // Advance ball.
-        self.state.ball_x += self.state.ball_vx * self.params.ball_speed * dt;
-        self.state.ball_y += self.state.ball_vy * self.params.ball_speed * dt;
+        // Use continuous collision detection (CCD) against axis-aligned boundaries.
+        // This prevents the ball from "tunneling" through the paddle at larger dt.
 
-        // Bounce on top/bottom.
-        if self.state.ball_y > 1.0 {
-            self.state.ball_y = 2.0 - self.state.ball_y;
-            self.state.ball_vy = -self.state.ball_vy;
-        } else if self.state.ball_y < -1.0 {
-            self.state.ball_y = -2.0 - self.state.ball_y;
-            self.state.ball_vy = -self.state.ball_vy;
-        }
+        let speed = self.params.ball_speed;
+        let mut remaining = dt;
+        let mut event = PongEvent::None;
 
-        // Right wall bounce so the ball keeps returning.
-        if self.state.ball_x >= 1.0 {
-            self.state.ball_x = 2.0 - self.state.ball_x;
-            self.state.ball_vx = -self.state.ball_vx.abs();
-        }
-
-        // Left paddle collision / miss.
-        if self.state.ball_x <= 0.0 {
-            let hit =
-                (self.state.ball_y - self.state.paddle_y).abs() <= self.params.paddle_half_height;
-            if hit {
-                self.pending_event_reward += 1.0;
-                self.state.ball_x = 0.0;
-                self.state.ball_vx = self.state.ball_vx.abs();
-                PongEvent::Hit
-            } else {
-                self.pending_event_reward -= 1.0;
-                self.respawn_remaining_s = self.params.respawn_delay_s.max(0.0);
-                self.reset_point_for_serve();
-                PongEvent::Miss
+        // With dt <= 0.05 and bounded speeds, a small iteration cap is plenty.
+        for _ in 0..8 {
+            if remaining <= 0.0 {
+                break;
             }
-        } else {
-            PongEvent::None
+
+            let vx = self.state.ball_vx * speed;
+            let vy = self.state.ball_vy * speed;
+
+            // Find earliest boundary impact within `remaining`.
+            let mut t_min = remaining;
+            enum Boundary {
+                Top,
+                Bottom,
+                Right,
+                Left,
+            }
+            let mut hit: Option<Boundary> = None;
+
+            if vy > 0.0 {
+                let t = (1.0 - self.state.ball_y) / vy;
+                if t >= 0.0 && t < t_min {
+                    t_min = t;
+                    hit = Some(Boundary::Top);
+                }
+            } else if vy < 0.0 {
+                let t = (-1.0 - self.state.ball_y) / vy;
+                if t >= 0.0 && t < t_min {
+                    t_min = t;
+                    hit = Some(Boundary::Bottom);
+                }
+            }
+
+            if vx > 0.0 {
+                let t = (1.0 - self.state.ball_x) / vx;
+                if t >= 0.0 && t < t_min {
+                    t_min = t;
+                    hit = Some(Boundary::Right);
+                }
+            } else if vx < 0.0 {
+                let t = (0.0 - self.state.ball_x) / vx;
+                if t >= 0.0 && t < t_min {
+                    t_min = t;
+                    hit = Some(Boundary::Left);
+                }
+            }
+
+            // Advance to impact (or to end of remaining time).
+            self.state.ball_x += vx * t_min;
+            self.state.ball_y += vy * t_min;
+            remaining -= t_min;
+
+            let Some(boundary) = hit else {
+                break;
+            };
+
+            match boundary {
+                Boundary::Top => {
+                    self.state.ball_y = 1.0;
+                    self.state.ball_vy = -self.state.ball_vy;
+                }
+                Boundary::Bottom => {
+                    self.state.ball_y = -1.0;
+                    self.state.ball_vy = -self.state.ball_vy;
+                }
+                Boundary::Right => {
+                    self.state.ball_x = 1.0;
+                    self.state.ball_vx = -self.state.ball_vx.abs();
+                }
+                Boundary::Left => {
+                    self.state.ball_x = 0.0;
+                    // Decide hit/miss at the moment of impact.
+                    let hit = (self.state.ball_y - self.state.paddle_y).abs()
+                        <= self.params.paddle_half_height;
+                    if hit {
+                        self.pending_event_reward += 1.0;
+                        self.state.ball_vx = self.state.ball_vx.abs();
+                        event = PongEvent::Hit;
+                    } else {
+                        self.pending_event_reward -= 1.0;
+                        self.respawn_remaining_s = self.params.respawn_delay_s.max(0.0);
+                        self.reset_point_for_serve();
+                        return PongEvent::Miss;
+                    }
+                }
+            }
         }
+
+        event
     }
 
     fn reset_point_for_serve(&mut self) {

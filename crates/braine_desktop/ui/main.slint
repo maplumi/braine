@@ -74,6 +74,19 @@ export component MainWindow inherits Window {
 
     // Experts (child brains)
     in-out property <bool> experts-enabled: false;
+    in-out property <bool> experts-allow-nested: false;
+    in-out property <int> experts-max-depth: 1;
+
+    // Expert policy controls (applied explicitly)
+    in-out property <string> experts-parent-learning: "holdout";
+    in-out property <int> experts-max-children: 2;
+    in-out property <float> experts-child-reward-scale: 1.5;
+    in-out property <int> experts-episode-trials: 32;
+    in-out property <int> experts-consolidate-topk: 64;
+    in-out property <string> experts-persistence-mode: "full";
+    in-out property <float> experts-reward-shift-ema-delta-threshold: 0.55;
+    in-out property <float> experts-performance-collapse-drop-threshold: 0.65;
+    in-out property <float> experts-performance-collapse-baseline-min: 0.25;
 
     // Storage safety
     in-out property <bool> reset-confirmed: false;
@@ -102,6 +115,8 @@ export component MainWindow inherits Window {
     callback set-game-param(string, string, float);
     callback auto-snapshot-settings-changed(bool, int);
     callback experts-enabled-changed(bool);
+    callback experts-nesting-changed(bool, int);
+    callback experts-policy-apply(string, int, float, int, int, float, float, float, string, bool, int);
     callback cull-experts();
     callback graph-request(string, int, int, bool);
     callback graph-hover(float, float);
@@ -114,8 +129,8 @@ export component MainWindow inherits Window {
     // Graph controls
     in-out property <string> graph-kind: "substrate";
     in-out property <string> graph-layout: "force";
-    in-out property <int> graph-max-nodes: 32;
-    in-out property <int> graph-max-edges: 64;
+    in-out property <int> graph-max-nodes: 1000;
+    in-out property <int> graph-max-edges: 50000;
     in-out property <bool> graph-include-isolated: false;
     in-out property <bool> graph-auto-refresh: false;
     in-out property <int> graph-interval-ms: 1000;
@@ -234,6 +249,14 @@ export component MainWindow inherits Window {
                                                   (root.selected-game-kind == "spot_reversal") ? "spotxy" :
                                                   (root.selected-game-kind == "spotxy") ? "pong" :
                                                   "spot";
+
+                        // Pong is sensitive to control cadence. If the user hasn't already chosen
+                        // a relatively fast trial period, switch to a more controllable default.
+                        if (root.selected-game-kind == "pong" && root.trial-period-ms > 200) {
+                            root.trial-period-ms = 100;
+                            root.set-trial-period-ms(100);
+                        }
+
                         game-changed(root.selected-game-kind);
                     }
                 }
@@ -464,6 +487,26 @@ export component MainWindow inherits Window {
                                 set-max-units(n) => { root.set-max-units(n); }
                                 experts-enabled: root.experts-enabled;
                                 experts-enabled-changed(v) => { root.experts-enabled = v; root.experts-enabled-changed(v); }
+                                experts-allow-nested: root.experts-allow-nested;
+                                experts-max-depth: root.experts-max-depth;
+                                experts-nesting-changed(allow_nested, max_depth) => {
+                                    root.experts-allow-nested = allow_nested;
+                                    root.experts-max-depth = max_depth;
+                                    root.experts-nesting-changed(allow_nested, max_depth);
+                                }
+
+                                experts-parent-learning <=> root.experts-parent-learning;
+                                experts-max-children <=> root.experts-max-children;
+                                experts-child-reward-scale <=> root.experts-child-reward-scale;
+                                experts-episode-trials <=> root.experts-episode-trials;
+                                experts-consolidate-topk <=> root.experts-consolidate-topk;
+                                experts-persistence-mode <=> root.experts-persistence-mode;
+                                experts-reward-shift-ema-delta-threshold <=> root.experts-reward-shift-ema-delta-threshold;
+                                experts-performance-collapse-drop-threshold <=> root.experts-performance-collapse-drop-threshold;
+                                experts-performance-collapse-baseline-min <=> root.experts-performance-collapse-baseline-min;
+                                experts-policy-apply(parent_learning, max_children, child_reward_scale, episode_trials, consolidate_topk, reward_shift_ema_delta_threshold, performance_collapse_drop_threshold, performance_collapse_baseline_min, persistence_mode, allow_nested, max_depth) => {
+                                    root.experts-policy-apply(parent_learning, max_children, child_reward_scale, episode_trials, consolidate_topk, reward_shift_ema_delta_threshold, performance_collapse_drop_threshold, performance_collapse_baseline_min, persistence_mode, allow_nested, max_depth);
+                                }
                                 cull-experts => { root.cull-experts(); }
                             }
                         }
@@ -821,7 +864,7 @@ export component MainWindow inherits Window {
                                         Text { text: "Nodes:"; color: Theme.text-secondary; vertical-alignment: center; }
                                         Slider {
                                             minimum: 8;
-                                            maximum: 128;
+                                            maximum: 1000;
                                             value: root.graph-max-nodes;
                                             changed(val) => { root.graph-max-nodes = val; }
                                             horizontal-stretch: 1;
@@ -830,7 +873,7 @@ export component MainWindow inherits Window {
                                         Text { text: "Edges:"; color: Theme.text-secondary; vertical-alignment: center; }
                                         Slider {
                                             minimum: 0;
-                                            maximum: 320;
+                                            maximum: 50000;
                                             value: root.graph-max-edges;
                                             changed(val) => { root.graph-max-edges = val; }
                                             horizontal-stretch: 1;
@@ -995,6 +1038,94 @@ export component MainWindow inherits Window {
                     Tab {
                         title: "About";
                         AboutPanel { }
+                    }
+                    
+                    Tab {
+                        title: "Inferencing";
+                        TabWidget {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+
+                            Tab {
+                                title: "Prediction";
+                                ScrollView {
+                                    Rectangle {
+                                        background: Theme.bg-panel;
+                                        horizontal-stretch: 1;
+                                        VerticalBox {
+                                            padding: 12px;
+                                            spacing: 8px;
+                                            Text { text: "Prediction"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                            Text { text: "UI scaffold: expose sequence/next-step prediction tasks here."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Tab {
+                                title: "Classification";
+                                ScrollView {
+                                    Rectangle {
+                                        background: Theme.bg-panel;
+                                        horizontal-stretch: 1;
+                                        VerticalBox {
+                                            padding: 12px;
+                                            spacing: 8px;
+                                            Text { text: "Classification"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                            Text { text: "UI scaffold: map observations to labels; track accuracy and confusion."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Tab {
+                                title: "Scoring / Ranking";
+                                ScrollView {
+                                    Rectangle {
+                                        background: Theme.bg-panel;
+                                        horizontal-stretch: 1;
+                                        VerticalBox {
+                                            padding: 12px;
+                                            spacing: 8px;
+                                            Text { text: "Scoring / Ranking"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                            Text { text: "UI scaffold: display action scores, candidate rankings, and calibration."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Tab {
+                                title: "Control";
+                                ScrollView {
+                                    Rectangle {
+                                        background: Theme.bg-panel;
+                                        horizontal-stretch: 1;
+                                        VerticalBox {
+                                            padding: 12px;
+                                            spacing: 8px;
+                                            Text { text: "Control & Action Selection"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                            Text { text: "UI scaffold: configure exploration, policies, and closed-loop control."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Tab {
+                                title: "Decision Making";
+                                ScrollView {
+                                    Rectangle {
+                                        background: Theme.bg-panel;
+                                        horizontal-stretch: 1;
+                                        VerticalBox {
+                                            padding: 12px;
+                                            spacing: 8px;
+                                            Text { text: "Decision Making / Problem Solving"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                            Text { text: "UI scaffold: integrate experts + nesting for recursive problem solving."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

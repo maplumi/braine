@@ -6,6 +6,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 mod pong_web;
 use pong_web::PongWebGame;
+mod sequence_web;
+use sequence_web::SequenceWebGame;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -49,6 +51,8 @@ fn App() -> impl IntoView {
     let (pong_paddle_speed, set_pong_paddle_speed) = signal(0.0f32);
     let (pong_paddle_half_height, set_pong_paddle_half_height) = signal(0.0f32);
     let (pong_ball_speed, set_pong_ball_speed) = signal(0.0f32);
+
+    let (sequence_state, set_sequence_state) = signal::<Option<SequenceUiState>>(None);
 
     let (reversal_active, set_reversal_active) = signal(false);
     let (reversal_flip_after, set_reversal_flip_after) = signal(0u32);
@@ -94,6 +98,7 @@ fn App() -> impl IntoView {
             set_pong_paddle_speed.set(snap.pong_paddle_speed);
             set_pong_paddle_half_height.set(snap.pong_paddle_half_height);
             set_pong_ball_speed.set(snap.pong_ball_speed);
+            set_sequence_state.set(snap.sequence_state);
         }
     };
 
@@ -102,6 +107,16 @@ fn App() -> impl IntoView {
         move |kind: GameKind| {
             runtime.update_value(|r| r.set_game(kind));
             set_game_kind.set(kind);
+
+            // Pong is sensitive to control cadence. If the user hasn't already chosen a
+            // relatively fast trial period, switch to a more controllable default.
+            if kind == GameKind::Pong {
+                let cur = trial_period_ms.get_untracked();
+                if cur > 200 {
+                    set_trial_period_ms.set(100);
+                }
+            }
+
             set_steps.set(0);
             set_last_action.set(String::new());
             set_last_reward.set(0.0);
@@ -488,6 +503,8 @@ fn App() -> impl IntoView {
                                 set_game(GameKind::SpotXY);
                             } else if v == GameKind::Pong.label() {
                                 set_game(GameKind::Pong);
+                            } else if v == GameKind::Sequence.label() {
+                                set_game(GameKind::Sequence);
                             }
                         }
                     >
@@ -496,6 +513,7 @@ fn App() -> impl IntoView {
                         <option value=GameKind::SpotReversal.label()>"spot_reversal"</option>
                         <option value=GameKind::SpotXY.label()>"spotxy"</option>
                         <option value=GameKind::Pong.label()>"pong"</option>
+                        <option value=GameKind::Sequence.label()>"sequence"</option>
                     </select>
                 </label>
 
@@ -691,6 +709,24 @@ fn App() -> impl IntoView {
                 </section>
             </Show>
 
+            <Show when=move || game_kind.get() == GameKind::Sequence>
+                <section style="margin: 10px 0 14px 0; display: grid; gap: 8px;">
+                    <div style="color: #444;">
+                        {move || {
+                            sequence_state
+                                .get()
+                                .map(|s| {
+                                    format!(
+                                        "regime={} token={} target_next={} outcomes={} shift_every={}",
+                                        s.regime, s.token, s.target_next, s.outcomes, s.shift_every
+                                    )
+                                })
+                                .unwrap_or_default()
+                        }}
+                    </div>
+                </section>
+            </Show>
+
             <section style="display: grid; grid-template-columns: 1fr; gap: 8px;">
                 <Stat label="Steps" value=move || steps.get().to_string() />
                 <Stat label="Trials" value=move || trials.get().to_string() />
@@ -795,6 +831,7 @@ enum GameKind {
     SpotReversal,
     SpotXY,
     Pong,
+    Sequence,
 }
 
 impl GameKind {
@@ -805,6 +842,7 @@ impl GameKind {
             GameKind::SpotReversal => "spot_reversal",
             GameKind::SpotXY => "spotxy",
             GameKind::Pong => "pong",
+            GameKind::Sequence => "sequence",
         }
     }
 }
@@ -852,6 +890,10 @@ impl AppRuntime {
                 self.ensure_pong_io();
                 WebGame::Pong(PongWebGame::new(0xB0A7_F00Du64))
             }
+            GameKind::Sequence => {
+                self.ensure_sequence_io();
+                WebGame::Sequence(SequenceWebGame::new())
+            }
         };
         self.pending_neuromod = 0.0;
     }
@@ -889,6 +931,19 @@ impl AppRuntime {
         self.brain.ensure_action_min_width("up", 6);
         self.brain.ensure_action_min_width("down", 6);
         self.brain.ensure_action_min_width("stay", 6);
+    }
+
+    fn ensure_sequence_io(&mut self) {
+        self.brain.ensure_sensor_min_width("seq_token_A", 4);
+        self.brain.ensure_sensor_min_width("seq_token_B", 4);
+        self.brain.ensure_sensor_min_width("seq_token_C", 4);
+
+        self.brain.ensure_sensor_min_width("seq_regime_0", 3);
+        self.brain.ensure_sensor_min_width("seq_regime_1", 3);
+
+        self.brain.ensure_action_min_width("A", 6);
+        self.brain.ensure_action_min_width("B", 6);
+        self.brain.ensure_action_min_width("C", 6);
     }
 
     fn ensure_spotxy_actions(&mut self, g: &SpotXYGame) {
@@ -982,6 +1037,9 @@ impl AppRuntime {
             WebGame::Pong(g) => {
                 g.apply_stimuli(&mut self.brain);
             }
+            WebGame::Sequence(g) => {
+                g.apply_stimuli(&mut self.brain);
+            }
         }
 
         self.brain.note_compound_symbol(&[context_key]);
@@ -1038,6 +1096,26 @@ impl AppRuntime {
                         .map(|(name, _score)| name)
                         .or_else(|| allowed.first().cloned())
                         .unwrap_or_else(|| "stay".to_string())
+                }
+            }
+            WebGame::Sequence(g) => {
+                let allowed = g.allowed_actions();
+                if allowed.is_empty() {
+                    return None;
+                }
+
+                if explore {
+                    allowed[rand_idx % allowed.len()].to_string()
+                } else {
+                    let ranked = self
+                        .brain
+                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
+                    ranked
+                        .into_iter()
+                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
+                        .map(|(name, _score)| name)
+                        .or_else(|| allowed.first().cloned())
+                        .unwrap_or_else(|| "A".to_string())
                 }
             }
             _ => {
@@ -1104,6 +1182,7 @@ enum WebGame {
     SpotReversal(SpotReversalGame),
     SpotXY(SpotXYGame),
     Pong(PongWebGame),
+    Sequence(SequenceWebGame),
 }
 
 impl WebGame {
@@ -1114,6 +1193,7 @@ impl WebGame {
             WebGame::SpotReversal(g) => g.stimulus_name(),
             WebGame::SpotXY(g) => g.stimulus_name(),
             WebGame::Pong(g) => g.stimulus_name(),
+            WebGame::Sequence(g) => g.stimulus_name(),
         }
     }
 
@@ -1121,6 +1201,7 @@ impl WebGame {
         match self {
             WebGame::SpotXY(g) => Some(g.stimulus_key()),
             WebGame::Pong(g) => Some(g.stimulus_key()),
+            WebGame::Sequence(g) => Some(g.stimulus_key()),
             _ => None,
         }
     }
@@ -1146,6 +1227,7 @@ impl WebGame {
             WebGame::SpotReversal(g) => g.response_made,
             WebGame::SpotXY(g) => g.response_made,
             WebGame::Pong(g) => g.response_made,
+            WebGame::Sequence(g) => g.response_made(),
         }
     }
 
@@ -1156,6 +1238,7 @@ impl WebGame {
             WebGame::SpotReversal(g) => g.update_timing(trial_period_ms),
             WebGame::SpotXY(g) => g.update_timing(trial_period_ms),
             WebGame::Pong(g) => g.update_timing(trial_period_ms),
+            WebGame::Sequence(g) => g.update_timing(trial_period_ms),
         }
     }
 
@@ -1169,6 +1252,10 @@ impl WebGame {
                 let _ = trial_period_ms;
                 g.score_action(action)
             }
+            WebGame::Sequence(g) => {
+                let _ = trial_period_ms;
+                g.score_action(action)
+            }
         }
     }
 
@@ -1179,6 +1266,7 @@ impl WebGame {
             WebGame::SpotReversal(g) => &g.stats,
             WebGame::SpotXY(g) => &g.stats,
             WebGame::Pong(g) => &g.stats,
+            WebGame::Sequence(g) => &g.game.stats,
         }
     }
 
@@ -1212,6 +1300,16 @@ impl WebGame {
                 pong_ball_speed: g.sim.params.ball_speed,
                 ..GameUiSnapshot::default()
             },
+            WebGame::Sequence(g) => GameUiSnapshot {
+                sequence_state: Some(SequenceUiState {
+                    regime: g.game.regime(),
+                    token: g.game.current_token().label().to_string(),
+                    target_next: g.game.correct_action().to_string(),
+                    outcomes: g.game.outcomes(),
+                    shift_every: g.game.shift_every_outcomes(),
+                }),
+                ..GameUiSnapshot::default()
+            },
         }
     }
 }
@@ -1232,6 +1330,17 @@ struct GameUiSnapshot {
     pong_paddle_speed: f32,
     pong_paddle_half_height: f32,
     pong_ball_speed: f32,
+
+    sequence_state: Option<SequenceUiState>,
+}
+
+#[derive(Clone)]
+struct SequenceUiState {
+    regime: u32,
+    token: String,
+    target_next: String,
+    outcomes: u32,
+    shift_every: u32,
 }
 
 #[derive(Clone, Copy)]

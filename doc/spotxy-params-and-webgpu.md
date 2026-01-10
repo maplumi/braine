@@ -52,10 +52,10 @@ To enable WebGPU in `braine_web`:
 2. Use WASM32 backend features for `wgpu` (no `pollster::block_on`)
 3. Optionally integrate WebGPU for canvas rendering (e.g., for visualizations)
 
-See `crates/braine_web/DEPLOYMENT.md` "Future Work" section for details.
+See [doc/deployment-web.md](deployment-web.md) "Future Work" section for details.
 
 ## Deployment
-Comprehensive deployment documentation created in [`crates/braine_web/DEPLOYMENT.md`](../crates/braine_web/DEPLOYMENT.md), covering:
+Comprehensive deployment documentation created in [doc/deployment-web.md](deployment-web.md), covering:
 - GitHub Pages hosting
 - Build/optimization steps
 - Alternative hosting options (Netlify, Vercel, self-hosted)
@@ -64,4 +64,4 @@ Comprehensive deployment documentation created in [`crates/braine_web/DEPLOYMENT
 ## Related Documentation
 - [Interaction Patterns](interaction.md) - Context-conditioned symbols and observation semantics
 - [Architecture](architecture.md) - Core substrate design
-- [Web Deployment Guide](../crates/braine_web/DEPLOYMENT.md) - Detailed deployment instructions
+- [Web Deployment Guide](deployment-web.md) - Detailed deployment instructions

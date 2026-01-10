@@ -6,6 +6,40 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ContextStats {
+    first_seen_trial: u32,
+    trials_seen: u32,
+    reward_fast_ema: f32,
+    reward_slow_ema: f32,
+    best_slow_ema: f32,
+}
+
+impl ContextStats {
+    fn note_reward(&mut self, parent_trials: u32, reward: f32) {
+        if self.trials_seen == 0 {
+            self.first_seen_trial = parent_trials;
+            self.trials_seen = 1;
+            self.reward_fast_ema = reward;
+            self.reward_slow_ema = reward;
+            self.best_slow_ema = reward;
+            return;
+        }
+
+        self.trials_seen = self.trials_seen.saturating_add(1);
+
+        // Two-timescale EMAs for shift/collapse detection.
+        // Fast responds within ~5 trials; slow responds within ~20 trials.
+        let a_fast = 0.20;
+        let a_slow = 0.05;
+        self.reward_fast_ema = (1.0 - a_fast) * self.reward_fast_ema + a_fast * reward;
+        self.reward_slow_ema = (1.0 - a_slow) * self.reward_slow_ema + a_slow * reward;
+        if self.reward_slow_ema > self.best_slow_ema {
+            self.best_slow_ema = self.reward_slow_ema;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParentLearningPolicy {
     Normal,
@@ -49,8 +83,14 @@ pub struct ExpertPolicy {
     /// Per-edge delta clamp applied during consolidation.
     pub consolidate_delta_max: f32,
 
-    /// Spawn trigger: if parent is uncertain (top score gap below this), consider spawning.
-    pub spawn_confidence_gap: f32,
+    /// Spawn trigger: reward regime shift threshold on |EMA_fast - EMA_slow|.
+    pub reward_shift_ema_delta_threshold: f32,
+
+    /// Spawn trigger: performance collapse threshold on (best_slow_ema - fast_ema).
+    pub performance_collapse_drop_threshold: f32,
+
+    /// Minimum baseline performance required to consider a drop a collapse.
+    pub performance_collapse_baseline_min: f32,
 
     /// Don't spawn experts until we have at least this many trials.
     pub spawn_min_trials: u32,
@@ -77,7 +117,9 @@ impl Default for ExpertPolicy {
             episode_trials: 32,
             consolidate_topk: 64,
             consolidate_delta_max: 0.02,
-            spawn_confidence_gap: 0.03,
+            reward_shift_ema_delta_threshold: 0.55,
+            performance_collapse_drop_threshold: 0.65,
+            performance_collapse_baseline_min: 0.25,
             spawn_min_trials: 20,
             cooldown_trials: 50,
             promote_reward_ema: 0.2,
@@ -127,6 +169,13 @@ pub struct ExpertsSummary {
     pub allow_nested: bool,
     #[serde(default)]
     pub max_depth: u32,
+
+    #[serde(default)]
+    pub reward_shift_ema_delta_threshold: f32,
+    #[serde(default)]
+    pub performance_collapse_drop_threshold: f32,
+    #[serde(default)]
+    pub performance_collapse_baseline_min: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +247,8 @@ pub struct ExpertManager {
     experts: Vec<Expert>,
     cooldown_by_context: HashMap<String, u32>,
 
+    context_stats: HashMap<String, ContextStats>,
+
     last_spawn_reason: String,
     last_consolidation: String,
 }
@@ -211,6 +262,7 @@ impl ExpertManager {
             next_id: 1,
             experts: Vec::new(),
             cooldown_by_context: HashMap::new(),
+            context_stats: HashMap::new(),
             last_spawn_reason: String::new(),
             last_consolidation: String::new(),
         }
@@ -233,6 +285,7 @@ impl ExpertManager {
         if !enabled {
             self.experts.clear();
             self.cooldown_by_context.clear();
+            self.context_stats.clear();
         }
     }
 
@@ -251,6 +304,187 @@ impl ExpertManager {
             e.children.cull_all_recursive();
         }
         self.experts.clear();
+        self.context_stats.clear();
+    }
+
+    /// Record the most recent completed trial for the manager that would own a spawn
+    /// under `controller_path`.
+    ///
+    /// - If `controller_path` is empty: update this manager's per-context stats.
+    /// - Otherwise: traverse to the deepest controlling expert and update its child manager.
+    pub fn note_trial_for_spawn_target_under_path(
+        &mut self,
+        context_key: &str,
+        controller_path: &[u32],
+        parent_trials: u32,
+        reward: f32,
+    ) {
+        if controller_path.is_empty() {
+            self.context_stats
+                .entry(context_key.to_string())
+                .or_default()
+                .note_reward(parent_trials, reward);
+            return;
+        }
+
+        let mut cur: &mut ExpertManager = self;
+        for (i, id) in controller_path.iter().enumerate() {
+            let Some(idx) = cur.experts.iter().position(|e| e.id == *id) else {
+                return;
+            };
+            let e: &mut Expert = &mut cur.experts[idx];
+            let last = i + 1 == controller_path.len();
+            if last {
+                // Only record stats for nested spawn if nesting is enabled at this level.
+                if !cur.policy.allow_nested || cur.policy.max_depth <= (i as u32 + 1) {
+                    return;
+                }
+                e.children
+                    .context_stats
+                    .entry(context_key.to_string())
+                    .or_default()
+                    .note_reward(parent_trials, reward);
+                return;
+            }
+            cur = &mut e.children;
+        }
+    }
+
+    fn should_spawn_for_signals(
+        &self,
+        context_key: &str,
+        parent_trials: u32,
+        parent: &Brain,
+    ) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        if self.experts.len() >= self.policy.max_children {
+            return None;
+        }
+        if self.active_expert_index(context_key).is_some() {
+            return None;
+        }
+        if self.cooldown_by_context.contains_key(context_key) {
+            return None;
+        }
+
+        // Saturation detection: treat "should grow" as a proxy for saturation / attractor brittleness.
+        let saturated = parent.should_grow(0.35);
+
+        let stats = self
+            .context_stats
+            .get(context_key)
+            .copied()
+            .unwrap_or_default();
+        let novel = stats.trials_seen == 1;
+
+        // Require some burn-in for shift/collapse triggers.
+        let min_for_shift = 12;
+        let min_for_collapse = 20;
+
+        // Reward regime shift: two-timescale EMA divergence.
+        let ema_delta = (stats.reward_fast_ema - stats.reward_slow_ema).abs();
+        let sign_flip = stats.reward_fast_ema.abs() > 0.2
+            && stats.reward_slow_ema.abs() > 0.2
+            && stats.reward_fast_ema.signum() != stats.reward_slow_ema.signum();
+        let reward_shift = stats.trials_seen >= min_for_shift
+            && (ema_delta >= self.policy.reward_shift_ema_delta_threshold || sign_flip);
+
+        // Performance collapse: fast EMA drops far below prior best slow EMA.
+        let perf_collapse = stats.trials_seen >= min_for_collapse
+            && stats.best_slow_ema >= self.policy.performance_collapse_baseline_min
+            && stats.reward_fast_ema
+                <= stats.best_slow_ema - self.policy.performance_collapse_drop_threshold;
+
+        let any_signal = novel || reward_shift || perf_collapse || saturated;
+        if !any_signal {
+            return None;
+        }
+
+        // Respect global warmup unless it's explicit novelty.
+        if !novel && parent_trials < self.policy.spawn_min_trials {
+            return None;
+        }
+
+        let mut reasons: Vec<&'static str> = Vec::new();
+        if novel {
+            reasons.push("novel_context");
+        }
+        if reward_shift {
+            reasons.push("reward_shift");
+        }
+        if perf_collapse {
+            reasons.push("performance_collapse");
+        }
+        if saturated {
+            reasons.push("saturation");
+        }
+
+        Some(reasons.join("+"))
+    }
+
+    pub fn maybe_spawn_for_signals(
+        &mut self,
+        context_key: &str,
+        parent_trials: u32,
+        parent: &Brain,
+    ) {
+        let Some(signal_reason) = self.should_spawn_for_signals(context_key, parent_trials, parent)
+        else {
+            return;
+        };
+
+        let id = self.next_id;
+        self.next_id += 1;
+
+        self.last_spawn_reason = format!(
+            "spawned expert id={} ctx='{}' (signals={}, trials={})",
+            id, context_key, signal_reason, parent_trials
+        );
+        self.experts.push(Expert::new(
+            id,
+            context_key.to_string(),
+            parent,
+            &self.policy,
+        ));
+    }
+
+    /// Spawn under the currently controlling expert chain (nested spawn), using
+    /// explicit novelty/shift/collapse/saturation signals.
+    ///
+    /// If `controller_path` is empty, this behaves like `maybe_spawn_for_signals`.
+    pub fn maybe_spawn_for_signals_under_path(
+        &mut self,
+        context_key: &str,
+        controller_path: &[u32],
+        parent_trials: u32,
+        root_parent: &Brain,
+    ) {
+        if controller_path.is_empty() {
+            self.maybe_spawn_for_signals(context_key, parent_trials, root_parent);
+            return;
+        }
+
+        let mut cur: &mut ExpertManager = self;
+        for (i, id) in controller_path.iter().enumerate() {
+            let Some(idx) = cur.experts.iter().position(|e| e.id == *id) else {
+                return;
+            };
+
+            let e: &mut Expert = &mut cur.experts[idx];
+            let last = i + 1 == controller_path.len();
+            if last {
+                if !cur.policy.allow_nested || cur.policy.max_depth <= (i as u32 + 1) {
+                    return;
+                }
+                e.children
+                    .maybe_spawn_for_signals(context_key, parent_trials, &e.brain);
+                return;
+            }
+
+            cur = &mut e.children;
+        }
     }
 
     pub fn tick_cooldowns(&mut self, completed_trial: bool) {
@@ -306,6 +540,10 @@ impl ExpertManager {
             persistence_mode: self.persistence_mode.as_str().to_string(),
             allow_nested: self.policy.allow_nested,
             max_depth: self.policy.max_depth,
+
+            reward_shift_ema_delta_threshold: self.policy.reward_shift_ema_delta_threshold,
+            performance_collapse_drop_threshold: self.policy.performance_collapse_drop_threshold,
+            performance_collapse_baseline_min: self.policy.performance_collapse_baseline_min,
         }
     }
 
@@ -402,99 +640,6 @@ impl ExpertManager {
 
         e.children
             .controller_inner_ref(context_key, &e.brain, depth + 1, route)
-    }
-
-    pub fn maybe_spawn_for_uncertainty(
-        &mut self,
-        context_key: &str,
-        parent_trials: u32,
-        confidence_gap: Option<f32>,
-        parent: &Brain,
-    ) {
-        if !self.enabled {
-            return;
-        }
-        if self.experts.len() >= self.policy.max_children {
-            return;
-        }
-        if parent_trials < self.policy.spawn_min_trials {
-            return;
-        }
-        if self.active_expert_index(context_key).is_some() {
-            return;
-        }
-        if self.cooldown_by_context.contains_key(context_key) {
-            return;
-        }
-
-        let Some(gap) = confidence_gap else {
-            return;
-        };
-        if gap > self.policy.spawn_confidence_gap {
-            return;
-        }
-
-        let id = self.next_id;
-        self.next_id += 1;
-
-        self.last_spawn_reason = format!(
-            "spawned expert id={} ctx='{}' (confidence_gap={:.4})",
-            id, context_key, gap
-        );
-        self.experts.push(Expert::new(
-            id,
-            context_key.to_string(),
-            parent,
-            &self.policy,
-        ));
-    }
-
-    /// Spawn under the currently controlling expert chain (nested spawn).
-    ///
-    /// If `controller_path` is empty, this behaves like `maybe_spawn_for_uncertainty`.
-    pub fn maybe_spawn_for_uncertainty_under_path(
-        &mut self,
-        context_key: &str,
-        controller_path: &[u32],
-        parent_trials: u32,
-        confidence_gap: Option<f32>,
-        root_parent: &Brain,
-    ) {
-        if controller_path.is_empty() {
-            self.maybe_spawn_for_uncertainty(
-                context_key,
-                parent_trials,
-                confidence_gap,
-                root_parent,
-            );
-            return;
-        }
-
-        // Traverse to the deepest controlling expert and attempt to spawn into its child manager.
-        let mut cur: &mut ExpertManager = self;
-        for (i, id) in controller_path.iter().enumerate() {
-            let Some(idx) = cur.experts.iter().position(|e| e.id == *id) else {
-                return;
-            };
-
-            let e: &mut Expert = &mut cur.experts[idx];
-            let last = i + 1 == controller_path.len();
-            if last {
-                // Only attempt nested spawn if nesting is enabled at this level.
-                if !cur.policy.allow_nested || cur.policy.max_depth <= (i as u32 + 1) {
-                    return;
-                }
-                e.children.maybe_spawn_for_uncertainty(
-                    context_key,
-                    parent_trials,
-                    confidence_gap,
-                    &e.brain,
-                );
-                return;
-            }
-
-            cur = &mut e.children;
-        }
     }
 
     pub fn on_trial_completed_path(&mut self, path: &[u32], reward: f32, root_parent: &mut Brain) {
@@ -599,7 +744,7 @@ impl ExpertManager {
 
     fn write_state_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         // Version
-        storage::write_u32_le(w, 1)?;
+        storage::write_u32_le(w, 3)?;
 
         w.write_all(&[self.enabled as u8])?;
         w.write_all(&[match self.persistence_mode {
@@ -621,7 +766,9 @@ impl ExpertManager {
         storage::write_u32_le(w, self.policy.episode_trials)?;
         storage::write_u32_le(w, self.policy.consolidate_topk as u32)?;
         storage::write_f32_le(w, self.policy.consolidate_delta_max)?;
-        storage::write_f32_le(w, self.policy.spawn_confidence_gap)?;
+        storage::write_f32_le(w, self.policy.reward_shift_ema_delta_threshold)?;
+        storage::write_f32_le(w, self.policy.performance_collapse_drop_threshold)?;
+        storage::write_f32_le(w, self.policy.performance_collapse_baseline_min)?;
         storage::write_u32_le(w, self.policy.spawn_min_trials)?;
         storage::write_u32_le(w, self.policy.cooldown_trials)?;
         storage::write_f32_le(w, self.policy.promote_reward_ema)?;
@@ -638,6 +785,19 @@ impl ExpertManager {
         for (k, v) in cooldown_items {
             storage::write_string(w, k)?;
             storage::write_u32_le(w, *v)?;
+        }
+
+        // Context stats (deterministic by sorting keys).
+        let mut stat_items: Vec<(&String, &ContextStats)> = self.context_stats.iter().collect();
+        stat_items.sort_by(|a, b| a.0.cmp(b.0));
+        storage::write_u32_le(w, stat_items.len() as u32)?;
+        for (k, s) in stat_items {
+            storage::write_string(w, k)?;
+            storage::write_u32_le(w, s.first_seen_trial)?;
+            storage::write_u32_le(w, s.trials_seen)?;
+            storage::write_f32_le(w, s.reward_fast_ema)?;
+            storage::write_f32_le(w, s.reward_slow_ema)?;
+            storage::write_f32_le(w, s.best_slow_ema)?;
         }
 
         // Experts
@@ -669,7 +829,7 @@ impl ExpertManager {
 
     fn read_state_from<R: Read>(r: &mut R) -> io::Result<Self> {
         let version = storage::read_u32_le(r)?;
-        if version != 1 {
+        if version != 1 && version != 2 && version != 3 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "bad experts state version",
@@ -697,7 +857,23 @@ impl ExpertManager {
         let episode_trials = storage::read_u32_le(r)?;
         let consolidate_topk = storage::read_u32_le(r)? as usize;
         let consolidate_delta_max = storage::read_f32_le(r)?;
-        let spawn_confidence_gap = storage::read_f32_le(r)?;
+        // v1/v2 stored a legacy uncertainty-gap threshold here.
+        if version <= 2 {
+            let _legacy_spawn_confidence_gap = storage::read_f32_le(r)?;
+        }
+        let (
+            reward_shift_ema_delta_threshold,
+            performance_collapse_drop_threshold,
+            performance_collapse_baseline_min,
+        ) = if version >= 3 {
+            (
+                storage::read_f32_le(r)?,
+                storage::read_f32_le(r)?,
+                storage::read_f32_le(r)?,
+            )
+        } else {
+            (0.55, 0.65, 0.25)
+        };
         let spawn_min_trials = storage::read_u32_le(r)?;
         let cooldown_trials = storage::read_u32_le(r)?;
         let promote_reward_ema = storage::read_f32_le(r)?;
@@ -711,7 +887,9 @@ impl ExpertManager {
             episode_trials,
             consolidate_topk,
             consolidate_delta_max,
-            spawn_confidence_gap,
+            reward_shift_ema_delta_threshold,
+            performance_collapse_drop_threshold,
+            performance_collapse_baseline_min,
             spawn_min_trials,
             cooldown_trials,
             promote_reward_ema,
@@ -728,6 +906,29 @@ impl ExpertManager {
             let k = storage::read_string(r)?;
             let v = storage::read_u32_le(r)?;
             cooldown_by_context.insert(k, v);
+        }
+
+        let mut context_stats: HashMap<String, ContextStats> = HashMap::new();
+        if version >= 2 {
+            let stat_n = storage::read_u32_le(r)? as usize;
+            for _ in 0..stat_n {
+                let k = storage::read_string(r)?;
+                let first_seen_trial = storage::read_u32_le(r)?;
+                let trials_seen = storage::read_u32_le(r)?;
+                let reward_fast_ema = storage::read_f32_le(r)?;
+                let reward_slow_ema = storage::read_f32_le(r)?;
+                let best_slow_ema = storage::read_f32_le(r)?;
+                context_stats.insert(
+                    k,
+                    ContextStats {
+                        first_seen_trial,
+                        trials_seen,
+                        reward_fast_ema,
+                        reward_slow_ema,
+                        best_slow_ema,
+                    },
+                );
+            }
         }
 
         let expert_n = storage::read_u32_le(r)? as usize;
@@ -773,8 +974,82 @@ impl ExpertManager {
             next_id,
             experts,
             cooldown_by_context,
+            context_stats,
             last_spawn_reason,
             last_consolidation,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use braine::substrate::BrainConfig;
+
+    fn small_brain() -> Brain {
+        let cfg = BrainConfig {
+            unit_count: 32,
+            connectivity_per_unit: 4,
+            seed: Some(1),
+            ..BrainConfig::default()
+        };
+        Brain::new(cfg)
+    }
+
+    #[test]
+    fn spawns_on_novel_context_after_first_trial() {
+        let mut em = ExpertManager::new();
+        em.set_enabled(true);
+        let brain = small_brain();
+
+        em.note_trial_for_spawn_target_under_path("ctx_a", &[], 1, 0.0);
+        em.maybe_spawn_for_signals_under_path("ctx_a", &[], 1, &brain);
+
+        assert_eq!(em.experts.len(), 1);
+        assert!(em.last_spawn_reason.contains("novel_context"));
+    }
+
+    #[test]
+    fn does_not_spawn_without_any_signal() {
+        let mut em = ExpertManager::new();
+        em.set_enabled(true);
+        let brain = small_brain();
+
+        // First trial spawns (novel).
+        em.note_trial_for_spawn_target_under_path("ctx_a", &[], 1, 0.2);
+        em.maybe_spawn_for_signals_under_path("ctx_a", &[], 1, &brain);
+        assert_eq!(em.experts.len(), 1);
+
+        // While active expert exists, should not spawn another.
+        em.note_trial_for_spawn_target_under_path("ctx_a", &[], 2, 0.2);
+        em.maybe_spawn_for_signals_under_path("ctx_a", &[], 2, &brain);
+        assert_eq!(em.experts.len(), 1);
+    }
+
+    #[test]
+    fn spawns_on_performance_collapse_signal() {
+        let mut em = ExpertManager::new();
+        em.set_enabled(true);
+        let brain = small_brain();
+
+        // Build baseline performance for ctx_b.
+        for t in 1..=25 {
+            em.note_trial_for_spawn_target_under_path("ctx_b", &[], t, 0.9);
+        }
+
+        // No spawn yet (novelty would have applied at t=1, but we didn't call maybe_spawn).
+        assert_eq!(em.experts.len(), 0);
+
+        // Sudden collapse.
+        for t in 26..=35 {
+            em.note_trial_for_spawn_target_under_path("ctx_b", &[], t, -0.9);
+        }
+
+        em.maybe_spawn_for_signals_under_path("ctx_b", &[], 35, &brain);
+        assert_eq!(em.experts.len(), 1);
+        assert!(
+            em.last_spawn_reason.contains("performance_collapse")
+                || em.last_spawn_reason.contains("reward_shift")
+        );
     }
 }

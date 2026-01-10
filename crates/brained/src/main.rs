@@ -38,6 +38,18 @@ fn default_experts_max_depth() -> u32 {
     1
 }
 
+fn default_reward_shift_ema_delta_threshold() -> f32 {
+    0.55
+}
+
+fn default_performance_collapse_drop_threshold() -> f32 {
+    0.65
+}
+
+fn default_performance_collapse_baseline_min() -> f32 {
+    0.25
+}
+
 fn default_experts_persistence_mode() -> String {
     "full".to_string()
 }
@@ -301,12 +313,23 @@ enum Request {
     SetExpertsEnabled {
         enabled: bool,
     },
+    SetExpertNesting {
+        allow_nested: bool,
+        max_depth: u32,
+    },
     SetExpertPolicy {
         parent_learning: String,
         max_children: u32,
         child_reward_scale: f32,
         episode_trials: u32,
         consolidate_topk: u32,
+
+        #[serde(default = "default_reward_shift_ema_delta_threshold")]
+        reward_shift_ema_delta_threshold: f32,
+        #[serde(default = "default_performance_collapse_drop_threshold")]
+        performance_collapse_drop_threshold: f32,
+        #[serde(default = "default_performance_collapse_baseline_min")]
+        performance_collapse_baseline_min: f32,
 
         #[serde(default)]
         allow_nested: bool,
@@ -940,7 +963,6 @@ impl DaemonState {
 
         // Run the stimulus → step → action-select → reward/commit loop on the controller brain.
         let mut completed = false;
-        let mut confidence_gap: Option<f32> = None;
         let mut scored_reward: Option<f32> = None;
         let mut controller_path: Vec<u32> = Vec::new();
         let mut controller_scale: f32 = 1.0;
@@ -993,20 +1015,18 @@ impl DaemonState {
             // Decide and (optionally) score once per trial.
             if !self.game.response_made() {
                 // Epsilon-greedy: explore randomly sometimes; otherwise exploit meaning+habit.
-                let (action_name, gap_opt) = if explore {
+                let action_name = if explore {
                     let allowed = self.game.allowed_actions();
-                    let a = if allowed.is_empty() {
+                    if allowed.is_empty() {
                         "idle".to_string()
                     } else {
                         allowed[rand_idx % allowed.len()].clone()
-                    };
-                    (a, None)
+                    }
                 } else {
                     let ranked = brain.ranked_actions_with_meaning(context_key, self.meaning_alpha);
                     let allowed = self.game.allowed_actions();
 
                     let mut top1: Option<(String, f32)> = None;
-                    let mut top2_score: Option<f32> = None;
                     for (name, score) in ranked {
                         if !allowed.iter().any(|a| a == &name) {
                             continue;
@@ -1014,7 +1034,6 @@ impl DaemonState {
                         if top1.is_none() {
                             top1 = Some((name, score));
                         } else {
-                            top2_score = Some(score);
                             break;
                         }
                     }
@@ -1025,15 +1044,8 @@ impl DaemonState {
                         .or_else(|| allowed.first().cloned())
                         .unwrap_or_else(|| "idle".to_string());
 
-                    let gap = match (&top1, top2_score) {
-                        (Some((_n, s1)), Some(s2)) => Some(*s1 - s2),
-                        _ => None,
-                    };
-
-                    (picked, gap)
+                    picked
                 };
-
-                confidence_gap = gap_opt;
 
                 // Score once per trial.
                 if let Some((reward, done)) = self
@@ -1080,16 +1092,24 @@ impl DaemonState {
             }
         }
 
-        // If the current controller seems uncertain, consider spawning an expert under it.
-        if self.experts.enabled() {
-            let trials = self.game.stats().trials;
-            self.experts.maybe_spawn_for_uncertainty_under_path(
-                context_key,
-                &controller_path,
-                trials,
-                confidence_gap,
-                &self.brain,
-            );
+        // Experts may only spawn on explicit novelty/shift/collapse/saturation signals.
+        // Evaluate only on trial completion and only when learning is enabled.
+        if self.experts.enabled() && completed && allow_learning {
+            if let Some(r) = scored_reward {
+                let trials = self.game.stats().trials;
+                self.experts.note_trial_for_spawn_target_under_path(
+                    context_key,
+                    &controller_path,
+                    trials,
+                    r,
+                );
+                self.experts.maybe_spawn_for_signals_under_path(
+                    context_key,
+                    &controller_path,
+                    trials,
+                    &self.brain,
+                );
+            }
         }
 
         // Tick expert cooldowns on completed trials.
@@ -2409,12 +2429,34 @@ async fn handle_client(
                     message: format!("Experts enabled = {}", enabled),
                 }
             }
+            Request::SetExpertNesting {
+                allow_nested,
+                max_depth,
+            } => {
+                let mut s = state.write().await;
+
+                let mut p = s.experts.policy().clone();
+                p.allow_nested = allow_nested;
+                p.max_depth = max_depth.max(1);
+                s.experts.set_policy(p);
+
+                Response::Success {
+                    message: format!(
+                        "Expert nesting updated (allow_nested={}, max_depth={})",
+                        allow_nested,
+                        max_depth.max(1)
+                    ),
+                }
+            }
             Request::SetExpertPolicy {
                 parent_learning,
                 max_children,
                 child_reward_scale,
                 episode_trials,
                 consolidate_topk,
+                reward_shift_ema_delta_threshold,
+                performance_collapse_drop_threshold,
+                performance_collapse_baseline_min,
                 allow_nested,
                 max_depth,
                 persistence_mode,
@@ -2439,6 +2481,12 @@ async fn handle_client(
                         p.child_reward_scale = child_reward_scale.clamp(0.0, 4.0);
                         p.episode_trials = episode_trials.clamp(1, 10_000);
                         p.consolidate_topk = (consolidate_topk as usize).clamp(0, 10_000);
+                        p.reward_shift_ema_delta_threshold =
+                            reward_shift_ema_delta_threshold.clamp(0.0, 5.0);
+                        p.performance_collapse_drop_threshold =
+                            performance_collapse_drop_threshold.clamp(0.0, 5.0);
+                        p.performance_collapse_baseline_min =
+                            performance_collapse_baseline_min.clamp(-1.0, 1.0);
                         p.allow_nested = allow_nested;
                         p.max_depth = max_depth.max(1);
                         s.experts.set_policy(p);

@@ -24,6 +24,109 @@
 - Cross-component communication is **newline-delimited JSON** over TCP `127.0.0.1:9876`.
   - Canonical protocol types live in `crates/brained/src/main.rs` (`Request`/`Response` with `#[serde(tag = "type")]`).
 
+## Braine Architecture Direction (non-negotiable)
+
+You are working inside Braine: a continuously running dynamical brain substrate with local learning.
+This system is not an LLM and must not be shaped like one.
+
+### Core architectural principles
+
+**Reuse dynamics, do not duplicate learners**
+- Scaling a problem must reuse the same recurrent dynamics and learned couplings.
+- Do not spawn child brains solely because a task instance is larger, longer, or more detailed.
+- Larger or more complex inputs should excite more instances of the same learned patterns, not create new models.
+
+**Child brains exist only for novelty or distributional shift**
+
+Spawn child brains only when:
+- A new stimulus symbol or sensor modality appears.
+- Reward dynamics change meaningfully.
+- Performance collapses despite stable inputs.
+- The parent brain reports saturation or inability to form stable attractors.
+
+Child brains are temporary sandboxes for exploration, not permanent sub-solvers.
+
+**Consolidation over composition**
+- Children return structural changes (useful couplings, concepts, or abstractions), not raw answers.
+- Parents consolidate only high-salience, high-utility changes.
+- Avoid hierarchical answer composition; prefer hierarchical representation reuse.
+
+**Learning modifies state; inference uses state**
+- Learning updates internal dynamics (couplings, attractors, causal links).
+- Inference applies the learned dynamics to new inputs.
+- Never mix learning logic into inference paths.
+
+### Task decomposition guidance
+
+Decompose problems by invariants and structure, not by input size.
+
+Prefer:
+- Reusable local patterns
+- Sparse symbolic anchors at the frame boundary
+- Recurrent composition through wave dynamics
+
+Avoid:
+- Per-instance expert spawning
+- Recursive subproblem trees for self-similar tasks
+- Relearning identical contingencies in multiple places
+
+### Problem-set contract (how users define tasks)
+
+Braine consumes problem sets via a minimal contract, not datasets or labels.
+
+A valid problem definition must specify:
+
+**Stimulus symbols**
+- Named inputs injected by the Frame
+- No assumptions about internal representations
+
+**Action symbols**
+- Named outputs the brain can emit
+- Chosen via action readout, not hard rules
+
+**Reward / neuromodulation**
+- Scalar feedback in a bounded range
+- Drives learning rate, not direct supervision
+
+**Temporal structure**
+- Trial timing, stimulus duration, and transitions
+- Decoupled from simulation framerate
+
+The brain must learn:
+- Which stimuli matter
+- Which actions tend to help
+- Which patterns persist across time
+
+### Scaling expectations
+
+- If a task is a scaled version of a known task, reuse learned dynamics.
+- If a task introduces new structure, allow child brain exploration.
+- If performance degrades, first adjust representation or encoding, not agent count.
+
+### Anti-patterns (do not implement)
+
+- Explicit backpropagation
+- Global loss functions
+- Tokenization or sequence prediction (as an LLM objective)
+- Expert-per-subproblem architectures
+- Fixed-depth recursive solvers
+
+### Design intent reminder
+
+Braine is designed to:
+- Learn online
+- Forget safely
+- Operate indefinitely
+- Remain interpretable via structure and dynamics
+- Scale through reuse, not duplication
+
+When in doubt, favor dynamic reuse and consolidation over spawning and orchestration.
+
+**One-sentence invariant:** Experts are for novelty; dynamics are for scale.
+
+Optional note (for contributors):
+If a design requires many child brains to solve a task, assume the decomposition is wrong and revisit the representation.
+
 ## Key code locations
 - Core substrate + learning rules: `crates/core/src/core/substrate.rs` (`Brain`, `apply_stimulus`, `step`, `commit_observation`, meaning/causal memory).
 - Daemon runtime + protocol handling: `crates/brained/src/main.rs`.
