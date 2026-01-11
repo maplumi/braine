@@ -39,9 +39,9 @@ This allows:
 
 Brain state is automatically persisted to:
 
-- **Linux**: `~/.local/share/braine/brain.bbi`
-- **Windows**: `%APPDATA%\Braine\brain.bbi`
-- **MacOS**: `~/Library/Application Support/Braine/brain.bbi`
+- **Linux**: `~/.local/share/braine/braine.bbi`
+- **Windows**: `%APPDATA%\Braine\braine.bbi`
+- **MacOS**: `~/Library/Application Support/Braine/braine.bbi`
 
 ## Usage
 

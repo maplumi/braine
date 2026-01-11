@@ -1819,7 +1819,7 @@ impl DaemonState {
 
     fn save_brain(&self) -> Result<(), String> {
         let path = self.paths.brain_file();
-        info!("Saving brain (brain.bbi)...");
+        info!("Saving brain (braine.bbi)...");
 
         // Ensure directory exists
         if let Some(parent) = path.parent() {
@@ -1886,7 +1886,7 @@ impl DaemonState {
         rt.write_all(&json)
             .map_err(|e| format!("Failed to write runtime state file {:?}: {e}", rt_path))?;
 
-        info!("✓ Brain saved successfully (brain.bbi)");
+        info!("✓ Brain saved successfully (braine.bbi)");
         Ok(())
     }
 
@@ -1894,7 +1894,7 @@ impl DaemonState {
         self.loaded_snapshot_stem = None;
         let path = self.paths.brain_file();
         if !path.exists() {
-            return Err("Brain file not found (brain.bbi)".to_string());
+            return Err("Brain file not found (braine.bbi)".to_string());
         }
 
         let mut file = File::open(&path).map_err(|e| format!("Failed to open file: {}", e))?;
@@ -2016,7 +2016,7 @@ impl DaemonState {
 
         // Align autosave baseline with loaded trial count to avoid underflow.
         self.last_autosave_trial = self.game.stats().trials;
-        info!("Brain loaded (brain.bbi)");
+        info!("Brain loaded (braine.bbi)");
         Ok(())
     }
 
@@ -2593,7 +2593,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup application paths
     let paths = AppPaths::new()?;
-    info!("Persistence initialized (OS data dir; brain.bbi)");
+    info!("Persistence initialized (OS data dir; braine.bbi)");
 
     // Initialize daemon state
     let state = Arc::new(RwLock::new(DaemonState::new(paths)));

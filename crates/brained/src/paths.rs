@@ -30,7 +30,7 @@ impl AppPaths {
     }
 
     pub fn brain_file(&self) -> PathBuf {
-        self.data_dir.join("brain.bbi")
+        self.data_dir.join("braine.bbi")
     }
 
     pub fn runtime_state_file(&self) -> PathBuf {

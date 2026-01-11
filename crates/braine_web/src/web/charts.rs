@@ -163,6 +163,10 @@ pub struct BrainVizRenderOptions {
     pub learning_mode: bool,
     /// Animation time (e.g., step count) for pulsing effects.
     pub anim_time: f32,
+    /// Y-axis rotation angle (radians) - horizontal drag.
+    pub rotation_y: f32,
+    /// X-axis rotation angle (radians) - vertical drag.
+    pub rotation_x: f32,
 }
 
 impl Default for BrainVizRenderOptions {
@@ -175,6 +179,8 @@ impl Default for BrainVizRenderOptions {
             node_size_scale: 1.0,
             learning_mode: true,
             anim_time: 0.0,
+            rotation_y: 0.0,
+            rotation_x: 0.0,
         }
     }
 }
@@ -183,7 +189,7 @@ pub fn draw_brain_connectivity_sphere(
     canvas: &HtmlCanvasElement,
     nodes: &[braine::substrate::UnitPlotPoint],
     edges: &[(u32, u32, f32)],
-    rotation: f32,
+    _rotation: f32, // DEPRECATED: use opts.rotation_y instead
     bg_color: &str,
     opts: BrainVizRenderOptions,
 ) -> Result<Vec<BrainVizHitNode>, String> {
@@ -221,7 +227,10 @@ pub fn draw_brain_connectivity_sphere(
     // Golden spiral distribution on sphere
     let n = nodes.len() as f64;
     let golden = 2.39996322972865332_f64; // ~pi*(3-sqrt(5))
-    let rot = rotation as f64;
+    
+    // Use rotation from opts (supports both X and Y axes)
+    let rot_y = opts.rotation_y as f64;
+    let rot_x = opts.rotation_x as f64;
 
     let mut pos: std::collections::HashMap<u32, (f64, f64, f64)> =
         std::collections::HashMap::with_capacity(nodes.len());
@@ -233,11 +242,15 @@ pub fn draw_brain_connectivity_sphere(
         let x = r * theta.cos();
         let z = r * theta.sin();
 
-        // Rotate around Y axis
-        let xr = x * rot.cos() + z * rot.sin();
-        let zr = -x * rot.sin() + z * rot.cos();
+        // Rotate around Y axis (horizontal drag)
+        let xr = x * rot_y.cos() + z * rot_y.sin();
+        let zr = -x * rot_y.sin() + z * rot_y.cos();
+        
+        // Rotate around X axis (vertical drag)
+        let yr = y * rot_x.cos() - zr * rot_x.sin();
+        let zr2 = y * rot_x.sin() + zr * rot_x.cos();
 
-        pos.insert(node.id, (xr, y, zr));
+        pos.insert(node.id, (xr, yr, zr2));
     }
 
     // Draw edges (projected). Limit visual density by weight.
@@ -424,7 +437,8 @@ pub struct CausalVizRenderOptions {
     pub zoom: f32,
     pub pan_x: f32,
     pub pan_y: f32,
-    pub rotation: f32,
+    pub rotation: f32,    // Y-axis rotation (horizontal drag)
+    pub rotation_x: f32,  // X-axis rotation (vertical drag)
     pub draw_outline: bool,
     pub anim_time: f32,
 }
@@ -436,6 +450,7 @@ impl Default for CausalVizRenderOptions {
             pan_x: 0.0,
             pan_y: 0.0,
             rotation: 0.0,
+            rotation_x: 0.0,
             draw_outline: true,
             anim_time: 0.0,
         }
@@ -493,7 +508,8 @@ pub fn draw_causal_graph(
     // Golden spiral distribution on sphere (same algorithm as substrate view)
     let n = nodes.len() as f64;
     let golden = 2.39996322972865332_f64; // ~pi*(3-sqrt(5))
-    let rot = opts.rotation as f64;
+    let rot_y = opts.rotation as f64;
+    let rot_x = opts.rotation_x as f64;
 
     // 3D positions for perspective projection
     let mut pos3d: std::collections::HashMap<u32, (f64, f64, f64)> =
@@ -515,11 +531,15 @@ pub fn draw_causal_graph(
         let x = r * theta.cos();
         let z = r * theta.sin();
 
-        // Rotate around Y axis
-        let xr = x * rot.cos() + z * rot.sin();
-        let zr = -x * rot.sin() + z * rot.cos();
+        // Rotate around Y axis (horizontal drag)
+        let xr = x * rot_y.cos() + z * rot_y.sin();
+        let zr = -x * rot_y.sin() + z * rot_y.cos();
 
-        pos3d.insert(node.id, (xr, y, zr));
+        // Rotate around X axis (vertical drag)
+        let yr = y * rot_x.cos() - zr * rot_x.sin();
+        let zr2 = y * rot_x.sin() + zr * rot_x.cos();
+
+        pos3d.insert(node.id, (xr, yr, zr2));
 
         // Size based on base count (normalized) - same scale as substrate
         let norm_count = (node.base_count / max_count) as f64;

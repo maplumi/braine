@@ -181,7 +181,7 @@ CONTROLS:
 - Start/Stop: Toggle learning loop
 - Dream/Burst/Sync/Imprint: Learning helpers
 - Save: Persist brain state
-- Load: Restore from saved brain.bbi
+- Load: Restore from saved braine.bbi
 - Reset: Clear brain to fresh state
 
 CLI (Command Line):
@@ -192,7 +192,7 @@ CLI (Command Line):
   braine-cli paths           Show data directory
 
 DATA LOCATION:
-  Brain saves to: %APPDATA%\Braine\brain.bbi
+  Brain saves to: %APPDATA%\Braine\braine.bbi
 
 AUTO-SAVE:
   Brain auto-saves every 10 trials.

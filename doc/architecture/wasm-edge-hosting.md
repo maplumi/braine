@@ -50,7 +50,7 @@ Cons:
 
 ### 2) File system is not available
 - Use browser storage:
-  - IndexedDB for large binary blobs (`brain.bbi` bytes)
+  - IndexedDB for large binary blobs (`braine.bbi` bytes)
   - localStorage only for small settings
 
 ### 3) Time sources

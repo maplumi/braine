@@ -550,10 +550,10 @@ if step % 5000 == 0 {
 
 ```rust
 // Save current state
-brain.save("brain.bbi")?;
+brain.save("braine.bbi")?;
 
 // Later, restore
-let brain = Brain::load("brain.bbi")?;
+let brain = Brain::load("braine.bbi")?;
 ```
 
 The entire brain state (units, connections, symbols, causal memory) is serialized to disk. On reload, the system picks up exactly where it left off.

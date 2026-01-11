@@ -137,10 +137,27 @@ export component AboutPanel inherits Rectangle {
             
             Rectangle { height: 1px; background: Theme.border; }
             
+            // Research Disclaimer
+            Text {
+                text: "⚠️ Research Disclaimer";
+                color: Theme.accent-yellow;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            
+            Text {
+                text: "This system was developed with the assistance of Large Language Models (LLMs) under human guidance. It is provided as a RESEARCH DEMONSTRATION to explore biologically-inspired learning substrates. Braine is NOT PRODUCTION-READY and should not be used for real-world deployment, safety-critical applications, or any scenario requiring reliability guarantees. Use at your own discretion for educational and experimental purposes only.";
+                color: Theme.accent-yellow;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            
+            Rectangle { height: 1px; background: Theme.border; }
+            
             // Footer
             Text {
                 text: "This is experimental research software. Expect rough edges!";
-                color: Theme.accent-yellow;
+                color: Theme.text-secondary;
                 font-size: 12px;
             }
             

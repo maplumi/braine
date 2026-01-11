@@ -193,10 +193,10 @@ jobs:
           - Start/Stop: Toggle learning loop
           - Dream/Burst/Sync/Imprint: Learning helpers
           - Save: Persist brain state
-          - Load: Restore from saved brain.bbi
+          - Load: Restore from saved braine.bbi
 
           DATA LOCATION:
-            Brain saves to: %APPDATA%\Braine\brain.bbi
+            Brain saves to: %APPDATA%\Braine\braine.bbi
           EOF
           (cd artifacts/windows && 7z a -tzip ../../dist/braine-windows-x86_64.zip .)
 

@@ -247,7 +247,8 @@ fn App() -> impl IntoView {
     let (brainviz_pan_x, set_brainviz_pan_x) = signal(0.0f32);
     let (brainviz_pan_y, set_brainviz_pan_y) = signal(0.0f32);
     let (_brainviz_auto_rotate, _set_brainviz_auto_rotate) = signal(false); // Disabled by default
-    let (brainviz_manual_rotation, set_brainviz_manual_rotation) = signal(0.0f32); // Manual rotation angle
+    let (brainviz_manual_rotation, set_brainviz_manual_rotation) = signal(0.0f32); // Y-axis rotation (horizontal drag)
+    let (brainviz_rotation_x, set_brainviz_rotation_x) = signal(0.0f32); // X-axis rotation (vertical drag)
     let (brainviz_vibration, set_brainviz_vibration) = signal(0.0f32); // Activity-based vibration
     let (brainviz_hover, set_brainviz_hover) = signal::<Option<(u32, f64, f64)>>(None);
     let (brainviz_view_mode, set_brainviz_view_mode) = signal::<&'static str>("substrate"); // "substrate" or "causal"
@@ -261,7 +262,11 @@ fn App() -> impl IntoView {
     let (game_accuracies, set_game_accuracies) =
         signal::<std::collections::HashMap<String, f32>>(std::collections::HashMap::new());
 
-    // WebGPU availability check (currently: Brain uses CPU Scalar tier always; future: could detect and use WebGPU).
+    // WebGPU availability check for future GPU-accelerated learning/inference.
+    // Currently: Brain runs on CPU (Scalar tier) in WASM. The wgpu crate supports WebGPU,
+    // but integration requires adapting the compute shaders for browser context.
+    // Future: When WebGPU is detected and enabled, both learning and inference can run
+    // in parallel on GPU for substrates with 10k+ units.
     let webgpu_available = {
         web_sys::window()
             .and_then(|w| {
@@ -273,9 +278,9 @@ fn App() -> impl IntoView {
             .unwrap_or(false)
     };
     let (gpu_status, _set_gpu_status) = signal(if webgpu_available {
-        "WebGPU: available (not yet used by braine)"
+        "WebGPU: detected (future: GPU-accelerated learning)"
     } else {
-        "WebGPU: not available (CPU only)"
+        "WebGPU: not available (CPU mode)"
     });
 
     let refresh_ui_from_runtime = {
@@ -877,7 +882,7 @@ fn App() -> impl IntoView {
                     return;
                 }
             };
-            match download_bytes("brain.bbi", &bytes) {
+            match download_bytes("braine.bbi", &bytes) {
                 Ok(()) => set_status.set(format!("exported {} bytes (.bbi)", bytes.len())),
                 Err(e) => set_status.set(format!("export failed: {e}")),
             }
@@ -1216,8 +1221,9 @@ fn App() -> impl IntoView {
             let pan_x = brainviz_pan_x.get();
             let pan_y = brainviz_pan_y.get();
             let manual_rot = brainviz_manual_rotation.get();
+            let rot_x = brainviz_rotation_x.get();
             let vibration = brainviz_vibration.get();
-            let rot = manual_rot + vibration;
+            let rot_y = manual_rot + vibration;
 
             if view_mode == "causal" {
                 // Render causal graph with same 3D sphere layout as substrate view
@@ -1226,7 +1232,8 @@ fn App() -> impl IntoView {
                     zoom,
                     pan_x,
                     pan_y,
-                    rotation: rot,
+                    rotation: rot_y,
+                    rotation_x: rot_x,
                     draw_outline: true,
                     anim_time: steps.get() as f32,
                 };
@@ -1275,9 +1282,11 @@ fn App() -> impl IntoView {
                     node_size_scale: 0.5,
                     learning_mode: is_learning,
                     anim_time: step as f32,
+                    rotation_y: rot_y,
+                    rotation_x: rot_x,
                 };
                 if let Ok(hits) = charts::draw_brain_connectivity_sphere(
-                    &canvas, &points, &edges, rot, "#0a0f1a", opts,
+                    &canvas, &points, &edges, rot_y, "#0a0f1a", opts,
                 ) {
                     brainviz_hit_nodes.set_value(hits);
                 }
@@ -1527,6 +1536,17 @@ fn App() -> impl IntoView {
                                                 </defs>
                                             </svg>
                                         </div>
+                                    </div>
+
+                                    // Research Disclaimer
+                                    <div style="padding: 14px; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 12px;">
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: #fbbf24;">"⚠️ Research Disclaimer"</h3>
+                                        <p style="margin: 0; color: var(--text); font-size: 0.85rem; line-height: 1.7;">
+                                            "This system was developed with the assistance of Large Language Models (LLMs) under human guidance. "
+                                            "It is provided as a "<strong>"research demonstration"</strong>" to explore biologically-inspired learning substrates. "
+                                            "Braine is "<strong>"not production-ready"</strong>" and should not be used for real-world deployment, safety-critical applications, "
+                                            "or any scenario requiring reliability guarantees. Use at your own discretion for educational and experimental purposes only."
+                                        </p>
                                     </div>
                                 </Show>
 
@@ -1853,50 +1873,111 @@ fn App() -> impl IntoView {
                                         </div>
                                     </div>
 
-                                    // Component diagram
+                                    // Component diagram - CURRENT ARCHITECTURE
                                     <div style=STYLE_CARD>
-                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Component Architecture"</h3>
+                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Current Architecture"</h3>
+                                        <p style="margin: 0 0 12px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                            "The web version hosts the Brain entirely in-memory within the browser (WASM). Desktop and CLI connect to a local daemon."
+                                        </p>
                                         <div style="display: flex; justify-content: center; padding: 12px 0;">
-                                            <svg viewBox="0 0 550 160" style="width: 100%; max-width: 550px; height: auto;">
+                                            <svg viewBox="0 0 600 200" style="width: 100%; max-width: 600px; height: auto;">
+                                                // DAEMON SIDE (left)
+                                                <text x="130" y="18" fill="var(--muted)" font-size="10" text-anchor="middle" font-weight="bold">"DAEMON-BASED"</text>
+                                                
                                                 // Daemon
-                                                <rect x="200" y="10" width="150" height="50" rx="8" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="2"/>
-                                                <text x="275" y="30" fill="var(--accent)" font-size="11" text-anchor="middle" font-weight="bold">"brained (daemon)"</text>
-                                                <text x="275" y="48" fill="var(--muted)" font-size="9" text-anchor="middle">"Brain state + learning loop"</text>
+                                                <rect x="80" y="30" width="100" height="45" rx="6" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="2"/>
+                                                <text x="130" y="48" fill="var(--accent)" font-size="9" text-anchor="middle" font-weight="bold">"brained"</text>
+                                                <text x="130" y="62" fill="var(--muted)" font-size="8" text-anchor="middle">"Brain + TCP server"</text>
 
                                                 // Desktop client
-                                                <rect x="10" y="90" width="120" height="50" rx="6" fill="rgba(74, 222, 128, 0.15)" stroke="#4ade80" stroke-width="1.5"/>
-                                                <text x="70" y="112" fill="var(--text)" font-size="10" text-anchor="middle">"braine_desktop"</text>
-                                                <text x="70" y="126" fill="var(--muted)" font-size="8" text-anchor="middle">"(Slint UI)"</text>
+                                                <rect x="10" y="100" width="90" height="40" rx="5" fill="rgba(74, 222, 128, 0.15)" stroke="#4ade80" stroke-width="1.5"/>
+                                                <text x="55" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"braine_desktop"</text>
+                                                <text x="55" y="130" fill="var(--muted)" font-size="7" text-anchor="middle">"(Slint UI)"</text>
 
                                                 // CLI client
-                                                <rect x="140" y="90" width="100" height="50" rx="6" fill="rgba(251, 191, 36, 0.15)" stroke="#fbbf24" stroke-width="1.5"/>
-                                                <text x="190" y="112" fill="var(--text)" font-size="10" text-anchor="middle">"braine-cli"</text>
-                                                <text x="190" y="126" fill="var(--muted)" font-size="8" text-anchor="middle">"(commands)"</text>
+                                                <rect x="110" y="100" width="80" height="40" rx="5" fill="rgba(251, 191, 36, 0.15)" stroke="#fbbf24" stroke-width="1.5"/>
+                                                <text x="150" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"braine-cli"</text>
+                                                <text x="150" y="130" fill="var(--muted)" font-size="7" text-anchor="middle">"(commands)"</text>
 
-                                                // Web client
-                                                <rect x="250" y="90" width="100" height="50" rx="6" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="1.5"/>
-                                                <text x="300" y="112" fill="var(--text)" font-size="10" text-anchor="middle">"braine_web"</text>
-                                                <text x="300" y="126" fill="var(--muted)" font-size="8" text-anchor="middle">"(WASM/Leptos)"</text>
-
-                                                // Storage
-                                                <rect x="420" y="10" width="120" height="50" rx="6" fill="rgba(100, 116, 139, 0.15)" stroke="var(--muted)" stroke-width="1.5"/>
-                                                <text x="480" y="30" fill="var(--text)" font-size="10" text-anchor="middle">"brain.bbi"</text>
-                                                <text x="480" y="48" fill="var(--muted)" font-size="9" text-anchor="middle">"(persistence)"</text>
+                                                // Storage (daemon side)
+                                                <rect x="200" y="30" width="70" height="45" rx="5" fill="rgba(100, 116, 139, 0.15)" stroke="var(--muted)" stroke-width="1.5"/>
+                                                <text x="235" y="48" fill="var(--text)" font-size="8" text-anchor="middle">"braine.bbi"</text>
+                                                <text x="235" y="62" fill="var(--muted)" font-size="7" text-anchor="middle">"(file system)"</text>
 
                                                 // Protocol label
-                                                <text x="130" y="78" fill="var(--muted)" font-size="9">"TCP 9876 (JSON)"</text>
+                                                <text x="100" y="88" fill="var(--muted)" font-size="7">"TCP 9876"</text>
 
                                                 // Arrows to daemon
-                                                <line x1="70" y1="90" x2="220" y2="60" stroke="var(--border)" stroke-width="1"/>
-                                                <line x1="190" y1="90" x2="260" y2="60" stroke="var(--border)" stroke-width="1"/>
-                                                <line x1="300" y1="90" x2="290" y2="60" stroke="var(--border)" stroke-width="1"/>
-                                                <line x1="350" y1="35" x2="420" y2="35" stroke="var(--border)" stroke-width="1" marker-end="url(#arrowhead2)"/>
+                                                <line x1="55" y1="100" x2="100" y2="75" stroke="var(--border)" stroke-width="1"/>
+                                                <line x1="150" y1="100" x2="160" y2="75" stroke="var(--border)" stroke-width="1"/>
+                                                <line x1="180" y1="52" x2="200" y2="52" stroke="var(--border)" stroke-width="1"/>
 
-                                                <defs>
-                                                    <marker id="arrowhead2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-                                                        <polygon points="0 0, 8 3, 0 6" fill="var(--border)"/>
-                                                    </marker>
-                                                </defs>
+                                                // SEPARATOR
+                                                <line x1="295" y1="20" x2="295" y2="180" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,4"/>
+                                                
+                                                // WEB SIDE (right) - STANDALONE
+                                                <text x="450" y="18" fill="var(--muted)" font-size="10" text-anchor="middle" font-weight="bold">"STANDALONE (THIS APP)"</text>
+                                                
+                                                // Web app with embedded brain
+                                                <rect x="370" y="30" width="160" height="70" rx="8" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="2"/>
+                                                <text x="450" y="50" fill="#f472b6" font-size="10" text-anchor="middle" font-weight="bold">"braine_web (WASM)"</text>
+                                                <text x="450" y="68" fill="var(--text)" font-size="8" text-anchor="middle">"Brain runs IN-MEMORY"</text>
+                                                <text x="450" y="82" fill="var(--muted)" font-size="7" text-anchor="middle">"No daemon connection"</text>
+
+                                                // Browser storage
+                                                <rect x="400" y="120" width="100" height="40" rx="5" fill="rgba(100, 116, 139, 0.15)" stroke="var(--muted)" stroke-width="1.5"/>
+                                                <text x="450" y="138" fill="var(--text)" font-size="8" text-anchor="middle">"IndexedDB"</text>
+                                                <text x="450" y="150" fill="var(--muted)" font-size="7" text-anchor="middle">"(browser storage)"</text>
+
+                                                // Arrow from web to storage
+                                                <line x1="450" y1="100" x2="450" y2="120" stroke="var(--border)" stroke-width="1"/>
+                                            </svg>
+                                        </div>
+                                    </div>
+
+                                    // Future Architecture Vision
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Future Vision: Centralized Brain"</h3>
+                                        <p style="margin: 0 0 12px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                            "Planned architecture: a central daemon hosts the authoritative Brain, while edge clients maintain local copies that sync in real-time."
+                                        </p>
+                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
+                                            <svg viewBox="0 0 550 180" style="width: 100%; max-width: 550px; height: auto;">
+                                                // Central daemon (larger, emphasized)
+                                                <rect x="200" y="10" width="150" height="55" rx="8" fill="rgba(122, 162, 255, 0.25)" stroke="var(--accent)" stroke-width="2"/>
+                                                <text x="275" y="30" fill="var(--accent)" font-size="11" text-anchor="middle" font-weight="bold">"Central Daemon"</text>
+                                                <text x="275" y="46" fill="var(--text)" font-size="8" text-anchor="middle">"Authoritative Brain State"</text>
+                                                <text x="275" y="58" fill="var(--muted)" font-size="7" text-anchor="middle">"Learning + Persistence"</text>
+
+                                                // Edge clients with local copies
+                                                <rect x="10" y="100" width="110" height="55" rx="6" fill="rgba(74, 222, 128, 0.15)" stroke="#4ade80" stroke-width="1.5"/>
+                                                <text x="65" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"Desktop"</text>
+                                                <text x="65" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"Local Brain copy"</text>
+                                                <text x="65" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(sync: real-time)"</text>
+
+                                                <rect x="140" y="100" width="110" height="55" rx="6" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="1.5"/>
+                                                <text x="195" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"Web (WASM)"</text>
+                                                <text x="195" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"Local Brain copy"</text>
+                                                <text x="195" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(sync: WebSocket)"</text>
+
+                                                <rect x="270" y="100" width="110" height="55" rx="6" fill="rgba(34, 211, 238, 0.15)" stroke="#22d3ee" stroke-width="1.5"/>
+                                                <text x="325" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"Mobile/IoT"</text>
+                                                <text x="325" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"Local Brain copy"</text>
+                                                <text x="325" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(sync: MQTT/WS)"</text>
+
+                                                <rect x="400" y="100" width="110" height="55" rx="6" fill="rgba(251, 191, 36, 0.15)" stroke="#fbbf24" stroke-width="1.5"/>
+                                                <text x="455" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"CLI / Scripts"</text>
+                                                <text x="455" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"No local copy"</text>
+                                                <text x="455" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(direct commands)"</text>
+
+                                                // Sync arrows (bidirectional)
+                                                <line x1="65" y1="100" x2="220" y2="65" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3,2"/>
+                                                <line x1="195" y1="100" x2="250" y2="65" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3,2"/>
+                                                <line x1="325" y1="100" x2="300" y2="65" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3,2"/>
+                                                <line x1="455" y1="100" x2="330" y2="65" stroke="var(--accent)" stroke-width="1"/>
+
+                                                // Label
+                                                <text x="275" y="85" fill="var(--muted)" font-size="8" text-anchor="middle">"↕ Real-time sync"</text>
                                             </svg>
                                         </div>
                                     </div>
@@ -3150,6 +3231,7 @@ fn App() -> impl IntoView {
                                                     set_brainviz_pan_x.set(0.0);
                                                     set_brainviz_pan_y.set(0.0);
                                                     set_brainviz_manual_rotation.set(0.0);
+                                                    set_brainviz_rotation_x.set(0.0);
                                                 }
                                             >
                                                 "Reset view"
@@ -3209,13 +3291,15 @@ fn App() -> impl IntoView {
                                                         let dx = (css_x - lx) * sx;
                                                         let dy = (css_y - ly) * sy;
 
-                                                        // Shift+drag = pan, regular drag = rotate
+                                                        // Shift+drag = pan, regular drag = rotate (both axes)
                                                         if ev.shift_key() {
                                                             set_brainviz_pan_x.update(|v| *v += dx as f32);
                                                             set_brainviz_pan_y.update(|v| *v += dy as f32);
                                                         } else {
                                                             // Horizontal drag = Y-axis rotation
                                                             set_brainviz_manual_rotation.update(|v| *v += (dx as f32) * 0.01);
+                                                            // Vertical drag = X-axis rotation
+                                                            set_brainviz_rotation_x.update(|v| *v += (dy as f32) * 0.01);
                                                         }
                                                         brainviz_last_drag_xy.set_value((css_x, css_y));
                                                         return;

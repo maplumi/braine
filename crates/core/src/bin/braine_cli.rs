@@ -336,6 +336,10 @@ fn usage() -> ! {
     eprintln!("                               max_depth: >=1 (default 1)");
     eprintln!("                               persist_mode: full|drop_active (default full)");
     eprintln!("  paths                       Show data directory and brain file path");
+    eprintln!();
+    eprintln!("⚠️  RESEARCH DISCLAIMER: This system was developed with LLM assistance under");
+    eprintln!("   human guidance. It is a RESEARCH DEMONSTRATION, NOT PRODUCTION-READY.");
+    eprintln!("   Do not use for safety-critical or real-world deployment scenarios.");
     process::exit(1);
 }
 
@@ -636,7 +640,7 @@ fn main() {
                 if let Ok(home) = std::env::var("HOME") {
                     let data_dir = format!("{}/.local/share/braine", home);
                     println!("Data directory: {}", data_dir);
-                    println!("Brain file: {}/brain.bbi", data_dir);
+                    println!("Brain file: {}/braine.bbi", data_dir);
                 }
             }
             #[cfg(windows)]
@@ -644,7 +648,7 @@ fn main() {
                 if let Ok(appdata) = std::env::var("APPDATA") {
                     let data_dir = format!("{}\\Braine", appdata);
                     println!("Data directory: {}", data_dir);
-                    println!("Brain file: {}\\brain.bbi", data_dir);
+                    println!("Brain file: {}\\braine.bbi", data_dir);
                 }
             }
             process::exit(0);

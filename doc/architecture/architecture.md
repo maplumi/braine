@@ -1,6 +1,10 @@
 # Architecture
 
+> **⚠️ Research Disclaimer**: This system was developed with the assistance of Large Language Models (LLMs) under human guidance. It is provided as a **research demonstration** to explore biologically-inspired learning substrates. Braine is **not production-ready** and should not be used for real-world deployment or safety-critical applications.
+
 This project is intentionally **not** an LLM. It is a continuously-running dynamical substrate with local learning.
+
+**Terminology note**: "Braine" refers to the overall system/project. "Brain" refers to the cognitive substrate (the `Brain` struct) — the actual neural-like computational core.
 
 ```mermaid
 flowchart LR
@@ -84,12 +88,22 @@ A practical edge-deployable agent needs a thin infrastructure layer we’ll call
 ### Daemon + clients (brained, braine_desktop, braine-cli)
 This repo also includes a small “frame” implementation as a background daemon:
 
-- **Daemon**: `brained` owns the single authoritative in-memory brain and runs the online learning loop.
+- **Daemon**: `brained` owns the single authoritative in-memory Brain and runs the online learning loop.
 - **Clients**:
 	- `braine_desktop` (Slint UI) polls state and sends control requests.
 	- `braine-cli` sends one-shot requests (start/stop/status, etc).
 
 They communicate over a simple line-delimited JSON protocol over TCP on `127.0.0.1:9876`.
+
+### Web client (braine_web) — standalone mode
+The web client (`braine_web`) is **different**: it runs the Brain entirely **in-memory within the browser** (WASM). It does NOT connect to the daemon. This is true edge computing — the entire substrate runs locally in the browser tab with persistence to IndexedDB.
+
+#### Architecture modes summary
+| Mode | Brain Location | Persistence | Communication |
+|------|----------------|-------------|---------------|
+| Desktop/CLI | Daemon process | `braine.bbi` (filesystem) | TCP 9876 (JSON) |
+| Web (current) | Browser WASM | IndexedDB | None (standalone) |
+| Web (future) | Daemon + local copy | Both | WebSocket (sync) |
 
 #### Two separate speed knobs (important)
 The daemon intentionally separates:

@@ -2,6 +2,10 @@
 
 A research prototype for a **brain-like** cognitive substrate based on **sparse local dynamics** (no matrices, no backprop, no transformers).
 
+> **⚠️ Research Disclaimer**: This system was developed with the assistance of Large Language Models (LLMs) under human guidance. It is provided as a **research demonstration** to explore biologically-inspired learning substrates. Braine is **not production-ready** and should not be used for real-world deployment, safety-critical applications, or any scenario requiring reliability guarantees.
+
+**Terminology**: "Braine" = the system/project. "Brain" = the cognitive substrate (`Brain` struct).
+
 ## Framing (vs familiar baselines)
 
 This project behaves like a **continuous-time recurrent substrate** with **local plasticity** (Hebbian-ish) and a scalar **neuromodulator** used as reward/salience. That puts it closest to these reference frames:
@@ -58,9 +62,9 @@ cargo run --release --bin braine-cli -- save
 ```
 
 **Persistence**: Brain state auto-saves on `Stop` and persists to:
-- Linux: `~/.local/share/braine/brain.bbi`
-- Windows: `%APPDATA%\Braine\brain.bbi`
-- MacOS: `~/Library/Application Support/Braine/brain.bbi`
+- Linux: `~/.local/share/braine/braine.bbi`
+- Windows: `%APPDATA%\Braine\braine.bbi`
+- MacOS: `~/Library/Application Support/Braine/braine.bbi`
 
 The UI also supports **timestamped snapshots** (saved alongside the main brain image) so you can
 save a point-in-time copy and load older/newer snapshots.

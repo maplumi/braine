@@ -11,7 +11,7 @@ Pick a game in the UI, then choose **Human** or **Braine** control mode.
 
 ## Persistence and stats
 
-- Brain image: `brain.bbi` in the daemon data dir
+- Brain image: `braine.bbi` in the daemon data dir
 - Runtime stats: `runtime.json` in the same directory
 - Print paths: `cargo run --bin braine-cli -- paths`
 

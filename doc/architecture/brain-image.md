@@ -1,6 +1,8 @@
-# Brain image format (WIP)
+# Braine Brain Image Format (BBI)
 
-This project uses a **custom, versioned “brain image”** format for persistence.
+This project uses a **custom, versioned "brain image"** format for persistence. The Brain (cognitive substrate) state is serialized to a `.bbi` file.
+
+**Terminology**: "Brain image" = serialized snapshot of the `Brain` struct. Saved to `braine.bbi`.
 
 The goal is not generic serialization — it’s a format that matches the project’s core idea:
 **memory is structure** (sparse couplings + causal edges + symbol boundaries), with explicit
@@ -86,6 +88,6 @@ The format is intended to evolve. Typical next levers (beyond v2 LZ4) include:
 
 ## Notes
 - This format is intended for **research snapshots**, not as a security boundary.
-- The daemon persists the active image as `brain.bbi` alongside `runtime.json`.
+- The daemon persists the active image as `braine.bbi` alongside `runtime.json`.
 - The UI/daemon can also create **timestamped snapshots** under `snapshots/` in the same data
   directory (copies of both the brain image and runtime stats).

@@ -29,7 +29,7 @@ Single stimulus → single response mappings.
 | 1.1 | Learn one association | sensor A → action X after repeated reward | ☑️ | Spot: converges to high hit-rate in short runs |
 | 1.2 | Learn two associations | A→X, B→Y simultaneously | ☑️ | Spot: left/right stimulus-action mappings learned together |
 | 1.3 | Discriminate stimuli | Different sensors → different actions | ☑️ | Spot: distinct stimuli drive distinct actions (not a single reflex) |
-| 1.4 | Retain over time | Association persists across 100+ steps | ☑️ | Observed stable performance over 100+ trials; state persists via brain.bbi + runtime.json |
+| 1.4 | Retain over time | Association persists across 100+ steps | ☑️ | Observed stable performance over 100+ trials; state persists via braine.bbi + runtime.json |
 | 1.5 | Imprint one-shot | Single strong exposure creates association | 🔄 | Mechanism exists (imprint_if_novel + imprint_rate), needs a dedicated one-shot experiment |
 
 ---
