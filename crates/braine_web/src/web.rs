@@ -1220,13 +1220,15 @@ fn App() -> impl IntoView {
             let rot = manual_rot + vibration;
 
             if view_mode == "causal" {
-                // Render causal graph
+                // Render causal graph with same 3D sphere layout as substrate view
                 let causal = brainviz_causal_graph.get();
                 let opts = charts::CausalVizRenderOptions {
                     zoom,
                     pan_x,
                     pan_y,
                     rotation: rot,
+                    draw_outline: true,
+                    anim_time: steps.get() as f32,
                 };
                 if let Ok(hits) = charts::draw_causal_graph(
                     &canvas,
@@ -3076,38 +3078,68 @@ fn App() -> impl IntoView {
                                                     <option value="causal" selected=move || brainviz_view_mode.get() == "causal">"Causal"</option>
                                                 </select>
                                             </label>
-                                            <label class="label">
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
                                                 <span>"Nodes"</span>
-                                                <input
-                                                    class="input"
-                                                    type="number"
-                                                    min="16"
-                                                    max="1024"
-                                                    step="16"
-                                                    prop:value=move || brainviz_node_sample.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_brainviz_node_sample.set(v.clamp(16, 1024));
+                                                <div style="display: flex; gap: 2px; align-items: center;">
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(50).max(16));
+                                                    }>"-50"</button>
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(10).max(16));
+                                                    }>"-10"</button>
+                                                    <input
+                                                        class="input"
+                                                        type="number"
+                                                        min="16"
+                                                        max="1024"
+                                                        step="16"
+                                                        style="width: 60px;"
+                                                        prop:value=move || brainviz_node_sample.get().to_string()
+                                                        on:input=move |ev| {
+                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                set_brainviz_node_sample.set(v.clamp(16, 1024));
+                                                            }
                                                         }
-                                                    }
-                                                />
-                                            </label>
-                                            <label class="label">
+                                                    />
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_node_sample.update(|v| *v = (*v + 10).min(1024));
+                                                    }>"+10"</button>
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_node_sample.update(|v| *v = (*v + 50).min(1024));
+                                                    }>"+50"</button>
+                                                </div>
+                                            </div>
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
                                                 <span>"Edges/node"</span>
-                                                <input
-                                                    class="input"
-                                                    type="number"
-                                                    min="1"
-                                                    max="32"
-                                                    step="1"
-                                                    prop:value=move || brainviz_edges_per_node.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_brainviz_edges_per_node.set(v.clamp(1, 32));
+                                                <div style="display: flex; gap: 2px; align-items: center;">
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(5).max(1));
+                                                    }>"-5"</button>
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(1).max(1));
+                                                    }>"-1"</button>
+                                                    <input
+                                                        class="input"
+                                                        type="number"
+                                                        min="1"
+                                                        max="32"
+                                                        step="1"
+                                                        style="width: 50px;"
+                                                        prop:value=move || brainviz_edges_per_node.get().to_string()
+                                                        on:input=move |ev| {
+                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                set_brainviz_edges_per_node.set(v.clamp(1, 32));
+                                                            }
                                                         }
-                                                    }
-                                                />
-                                            </label>
+                                                    />
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_edges_per_node.update(|v| *v = (*v + 1).min(32));
+                                                    }>"+1"</button>
+                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                        set_brainviz_edges_per_node.update(|v| *v = (*v + 5).min(32));
+                                                    }>"+5"</button>
+                                                </div>
+                                            </div>
                                             <span style="color: rgba(178,186,210,0.6); font-size: 12px; margin-left: 8px;">
                                                 "Drag to rotate | Shift+drag to pan | Scroll to zoom"
                                             </span>

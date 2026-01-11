@@ -419,17 +419,34 @@ pub fn draw_brain_connectivity_sphere(
     Ok(hit_nodes)
 }
 
-/// Options for causal graph visualization
+/// Options for causal graph visualization (unified with substrate view)
 pub struct CausalVizRenderOptions {
     pub zoom: f32,
     pub pan_x: f32,
     pub pan_y: f32,
     pub rotation: f32,
+    pub draw_outline: bool,
+    pub anim_time: f32,
 }
 
-/// Draw causal graph: symbol nodes with directed edges showing temporal causality.
+impl Default for CausalVizRenderOptions {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            rotation: 0.0,
+            draw_outline: true,
+            anim_time: 0.0,
+        }
+    }
+}
+
+/// Draw causal graph using the same 3D sphere layout as substrate view.
 ///
-/// Nodes are sized by base count (frequency), edges are colored by causal strength.
+/// Nodes are positioned on a golden-spiral sphere, sized by base count (frequency).
+/// Edges show temporal causality with directional arrows.
+/// The main difference from substrate view is that this shows symbol-level causal relationships.
 pub fn draw_causal_graph(
     canvas: &HtmlCanvasElement,
     nodes: &[braine::substrate::CausalNodeViz],
@@ -449,10 +466,20 @@ pub fn draw_causal_graph(
     let zoom = (opts.zoom as f64).clamp(0.25, 8.0);
     let cx = (w / 2.0) + (opts.pan_x as f64);
     let cy = (h / 2.0) + (opts.pan_y as f64);
-    let radius = ((w.min(h) / 2.0) - 40.0) * zoom;
+    let radius = ((w.min(h) / 2.0) - 22.0) * zoom;
 
     ctx.set_fill_style_str(bg_color);
     ctx.fill_rect(0.0, 0.0, w, h);
+
+    // Sphere outline (same as substrate view)
+    if opts.draw_outline {
+        ctx.set_stroke_style_str("rgba(34, 211, 238, 0.20)"); // Cyan tint for causal
+        ctx.set_line_width(1.0);
+        ctx.begin_path();
+        ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0)
+            .ok();
+        ctx.stroke();
+    }
 
     if nodes.is_empty() {
         // Draw placeholder text
@@ -463,10 +490,14 @@ pub fn draw_causal_graph(
         return Ok(Vec::new());
     }
 
-    // Position nodes in a circle (later can use force-directed layout)
-    let rot = opts.rotation as f64;
+    // Golden spiral distribution on sphere (same algorithm as substrate view)
     let n = nodes.len() as f64;
-    let mut pos: std::collections::HashMap<u32, (f64, f64)> = std::collections::HashMap::new();
+    let golden = 2.39996322972865332_f64; // ~pi*(3-sqrt(5))
+    let rot = opts.rotation as f64;
+
+    // 3D positions for perspective projection
+    let mut pos3d: std::collections::HashMap<u32, (f64, f64, f64)> =
+        std::collections::HashMap::with_capacity(nodes.len());
     let mut node_sizes: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
 
     // Find max base count for normalization
@@ -477,18 +508,26 @@ pub fn draw_causal_graph(
         .max(0.001);
 
     for (i, node) in nodes.iter().enumerate() {
-        let angle = (i as f64 / n) * std::f64::consts::PI * 2.0 + rot;
-        let x = cx + radius * 0.8 * angle.cos();
-        let y = cy + radius * 0.8 * angle.sin();
-        pos.insert(node.id, (x, y));
+        let i_f = i as f64;
+        let y = 1.0 - 2.0 * ((i_f + 0.5) / n);
+        let r = (1.0 - y * y).sqrt();
+        let theta = golden * i_f;
+        let x = r * theta.cos();
+        let z = r * theta.sin();
 
-        // Size based on base count (normalized)
+        // Rotate around Y axis
+        let xr = x * rot.cos() + z * rot.sin();
+        let zr = -x * rot.sin() + z * rot.cos();
+
+        pos3d.insert(node.id, (xr, y, zr));
+
+        // Size based on base count (normalized) - same scale as substrate
         let norm_count = (node.base_count / max_count) as f64;
-        let size = 6.0 + 14.0 * norm_count.sqrt();
+        let size = 4.0 + 8.0 * norm_count.sqrt();
         node_sizes.insert(node.id, size);
     }
 
-    // Draw edges first (under nodes)
+    // Draw edges first (under nodes) with perspective projection
     let max_strength = edges
         .iter()
         .map(|e| e.strength.abs())
@@ -496,92 +535,111 @@ pub fn draw_causal_graph(
         .max(0.001);
 
     for edge in edges {
-        let Some(&(x1, y1)) = pos.get(&edge.from) else {
+        let Some(&(sx, sy, sz)) = pos3d.get(&edge.from) else {
             continue;
         };
-        let Some(&(x2, y2)) = pos.get(&edge.to) else {
+        let Some(&(tx, ty, tz)) = pos3d.get(&edge.to) else {
             continue;
         };
 
-        let norm_strength = (edge.strength.abs() / max_strength) as f64;
-        let alpha = 0.15 + 0.65 * norm_strength;
-        let width = 0.5 + 2.5 * norm_strength;
+        let depth = ((sz + tz) * 0.5 + 1.0) * 0.5; // 0..1 approx
+        let norm_strength = (edge.strength.abs() / max_strength).clamp(0.0, 1.0) as f64;
+        if norm_strength < 0.08 {
+            continue;
+        }
 
-        // Color: green for positive causal, red for negative
-        let color = if edge.strength >= 0.0 {
-            format!("rgba(74, 222, 128, {:.3})", alpha) // Green: A predicts B
+        // Perspective projection (same as substrate view)
+        let dist = 2.8;
+        let sp = radius / (sz + dist);
+        let tp = radius / (tz + dist);
+        let x1 = cx + sx * sp;
+        let y1 = cy + sy * sp;
+        let x2 = cx + tx * tp;
+        let y2 = cy + ty * tp;
+
+        let alpha = (0.10 + 0.50 * norm_strength) * (0.35 + 0.65 * depth);
+        let width = 0.5 + 2.0 * norm_strength;
+
+        // Color: green for positive causal, red for negative (same as substrate)
+        if edge.strength >= 0.0 {
+            ctx.set_stroke_style_str(&format!("rgba(74, 222, 128, {:.3})", alpha));
         } else {
-            format!("rgba(251, 113, 133, {:.3})", alpha) // Red: A anti-predicts B
-        };
-
-        ctx.set_stroke_style_str(&color);
+            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
+        }
         ctx.set_line_width(width);
 
-        // Draw line with arrow
         ctx.begin_path();
         ctx.move_to(x1, y1);
         ctx.line_to(x2, y2);
         ctx.stroke();
 
-        // Draw arrowhead
-        let angle = (y2 - y1).atan2(x2 - x1);
-        let arrow_size = 6.0 + 4.0 * norm_strength;
-        let target_size = node_sizes.get(&edge.to).copied().unwrap_or(10.0);
-        let ax = x2 - (target_size + 2.0) * angle.cos();
-        let ay = y2 - (target_size + 2.0) * angle.sin();
+        // Draw arrowhead for directionality
+        if norm_strength > 0.2 {
+            let angle = (y2 - y1).atan2(x2 - x1);
+            let arrow_size = 4.0 + 3.0 * norm_strength;
+            let target_size = node_sizes.get(&edge.to).copied().unwrap_or(6.0);
+            let ax = x2 - (target_size + 2.0) * angle.cos();
+            let ay = y2 - (target_size + 2.0) * angle.sin();
 
-        ctx.begin_path();
-        ctx.move_to(ax, ay);
-        ctx.line_to(
-            ax - arrow_size * (angle - 0.4).cos(),
-            ay - arrow_size * (angle - 0.4).sin(),
-        );
-        ctx.move_to(ax, ay);
-        ctx.line_to(
-            ax - arrow_size * (angle + 0.4).cos(),
-            ay - arrow_size * (angle + 0.4).sin(),
-        );
-        ctx.stroke();
+            ctx.begin_path();
+            ctx.move_to(ax, ay);
+            ctx.line_to(
+                ax - arrow_size * (angle - 0.35).cos(),
+                ay - arrow_size * (angle - 0.35).sin(),
+            );
+            ctx.move_to(ax, ay);
+            ctx.line_to(
+                ax - arrow_size * (angle + 0.35).cos(),
+                ay - arrow_size * (angle + 0.35).sin(),
+            );
+            ctx.stroke();
+        }
     }
 
-    // Draw nodes on top
+    // Draw nodes on top with perspective projection
+    let anim_time = opts.anim_time as f64;
     let mut hit_nodes: Vec<CausalHitNode> = Vec::with_capacity(nodes.len());
 
     for node in nodes {
-        let Some(&(x, y)) = pos.get(&node.id) else {
+        let Some(&(x3d, y3d, z3d)) = pos3d.get(&node.id) else {
             continue;
         };
-        let size = node_sizes.get(&node.id).copied().unwrap_or(10.0);
 
-        // Node color: cyan for symbols
+        // Perspective projection
+        let dist = 2.8;
+        let p = radius / (z3d + dist);
+        let px = cx + x3d * p;
+        let py = cy + y3d * p;
+
         let norm_count = (node.base_count / max_count) as f64;
-        let alpha = 0.5 + 0.5 * norm_count;
+        let size = node_sizes.get(&node.id).copied().unwrap_or(6.0);
+
+        // Subtle pulsing based on frequency (more frequent = more visible pulse)
+        let pulse_freq = 0.12;
+        let pulse = ((anim_time * pulse_freq + (node.id as f64) * 0.5).sin() * 0.5 + 0.5)
+            * norm_count.sqrt();
+        let pulse_size = 1.0 + pulse * 0.15;
+        let final_size = size * pulse_size * zoom.sqrt();
+
+        // Alpha based on depth and frequency
+        let depth = (z3d + 1.0) * 0.5;
+        let alpha = (0.4 + 0.4 * norm_count) * (0.5 + 0.5 * depth) * (0.9 + 0.1 * pulse);
+
+        // Cyan color for causal symbols (distinguishes from substrate blue)
         let color = format!("rgba(34, 211, 238, {:.3})", alpha);
 
         ctx.set_fill_style_str(&color);
         ctx.begin_path();
-        ctx.arc(x, y, size, 0.0, std::f64::consts::PI * 2.0).ok();
+        ctx.arc(px, py, final_size, 0.0, std::f64::consts::PI * 2.0)
+            .ok();
         ctx.fill();
-
-        // Draw symbol name
-        ctx.set_fill_style_str("rgba(232, 236, 255, 0.9)");
-        ctx.set_font("11px sans-serif");
-        ctx.set_text_align("center");
-
-        // Truncate long names
-        let label = if node.name.len() > 12 {
-            format!("{}…", &node.name[..11])
-        } else {
-            node.name.clone()
-        };
-        let _ = ctx.fill_text(&label, x, y + size + 14.0);
 
         hit_nodes.push(CausalHitNode {
             id: node.id,
             name: node.name.clone(),
-            x,
-            y,
-            r: size,
+            x: px,
+            y: py,
+            r: final_size.max(3.0),
             base_count: node.base_count,
         });
     }
