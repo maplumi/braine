@@ -5,12 +5,18 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::collections::HashMap;
 #[cfg(feature = "std")]
+use std::collections::BinaryHeap;
+#[cfg(feature = "std")]
 use std::io::{self, Read, Write};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
+use alloc::collections::BinaryHeap;
+#[cfg(not(feature = "std"))]
 use hashbrown::HashMap;
+
+use core::cmp::{Ordering, Reverse};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -49,6 +55,11 @@ pub struct CausalMemory {
     // Unconditional (base) counts of symbols appearing.
     base: HashMap<SymbolId, f32>,
 
+    // Cached sum of `base` values, maintained incrementally.
+    // This avoids O(|base|) work inside `causal_strength`, which is called frequently
+    // when ranking edges for visualization.
+    base_total: f32,
+
     prev_symbols: Vec<SymbolId>,
 
     // Counts how many observe() calls have occurred. Used to amortize pruning.
@@ -64,6 +75,7 @@ impl CausalMemory {
             decay: decay.clamp(0.0, 1.0),
             edges: HashMap::new(),
             base: HashMap::new(),
+            base_total: 0.0,
             prev_symbols: Vec::new(),
 
             observe_count: 0,
@@ -80,6 +92,7 @@ impl CausalMemory {
         self.observe_count = self.observe_count.wrapping_add(1);
 
         // Apply decay.
+        self.base_total *= 1.0 - self.decay;
         for v in self.base.values_mut() {
             *v *= 1.0 - self.decay;
         }
@@ -93,11 +106,13 @@ impl CausalMemory {
             let thr = 0.001;
             self.base.retain(|_, v| *v > thr);
             self.edges.retain(|_, e| e.count > thr);
+            self.base_total = self.base.values().sum::<f32>();
         }
 
         // Update base counts.
         for &s in current_symbols {
             *self.base.entry(s).or_default() += 1.0;
+            self.base_total += 1.0;
         }
 
         // Update directed edges from previous->current.
@@ -153,7 +168,7 @@ impl CausalMemory {
 
         // Approximate conditional probability and base probability.
         let p_b_given_a = (edge / base_a).clamp(0.0, 1.0);
-        let total: f32 = self.base.values().sum::<f32>().max(1.0);
+        let total: f32 = self.base_total.max(1.0);
         let p_b = (base_b / total).clamp(0.0, 1.0);
 
         (p_b_given_a - p_b).clamp(-1.0, 1.0)
@@ -168,6 +183,8 @@ impl CausalMemory {
             let entry = self.base.entry(sym).or_insert(0.0);
             *entry = (1.0 - rate) * (*entry) + rate * count;
         }
+
+        self.base_total = self.base.values().sum::<f32>();
 
         for (&key, stats) in other.edges.iter() {
             let entry = self.edges.entry(key).or_default();
@@ -228,17 +245,76 @@ impl CausalMemory {
     ///
     /// Returns (from_symbol, to_symbol, causal_strength).
     pub fn top_edges(&self, top_n: usize) -> Vec<(SymbolId, SymbolId, f32)> {
-        let mut out: Vec<(SymbolId, SymbolId, f32)> = Vec::new();
+        if top_n == 0 {
+            return Vec::new();
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        struct EdgeCandidate {
+            abs: f32,
+            from: SymbolId,
+            to: SymbolId,
+            s: f32,
+        }
+
+        impl PartialEq for EdgeCandidate {
+            fn eq(&self, other: &Self) -> bool {
+                self.abs.to_bits() == other.abs.to_bits()
+                    && self.from == other.from
+                    && self.to == other.to
+                    && self.s.to_bits() == other.s.to_bits()
+            }
+        }
+
+        impl Eq for EdgeCandidate {}
+
+        impl PartialOrd for EdgeCandidate {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl Ord for EdgeCandidate {
+            fn cmp(&self, other: &Self) -> Ordering {
+                // Total ordering on floats; ties broken by ids for stability.
+                self.abs
+                    .total_cmp(&other.abs)
+                    .then_with(|| self.from.cmp(&other.from))
+                    .then_with(|| self.to.cmp(&other.to))
+            }
+        }
+
+        // Keep only the top N edges by |strength| using a bounded min-heap.
+        let mut heap: BinaryHeap<Reverse<EdgeCandidate>> = BinaryHeap::with_capacity(top_n + 1);
+
         for &key in self.edges.keys() {
             let from = (key >> 32) as SymbolId;
             let to = (key & 0xFFFF_FFFF) as SymbolId;
             let s = self.causal_strength(from, to);
-            if s.abs() > 0.001 {
-                out.push((from, to, s));
+            let abs = s.abs();
+            if abs <= 0.001 {
+                continue;
+            }
+
+            let cand = EdgeCandidate { abs, from, to, s };
+            if heap.len() < top_n {
+                heap.push(Reverse(cand));
+                continue;
+            }
+
+            if let Some(smallest) = heap.peek() {
+                if cand.abs > smallest.0.abs {
+                    heap.pop();
+                    heap.push(Reverse(cand));
+                }
             }
         }
+
+        let mut out: Vec<(SymbolId, SymbolId, f32)> = heap
+            .into_iter()
+            .map(|r| (r.0.from, r.0.to, r.0.s))
+            .collect();
         out.sort_by(|x, y| y.2.abs().total_cmp(&x.2.abs()));
-        out.truncate(top_n);
         out
     }
 
@@ -296,6 +372,8 @@ impl CausalMemory {
             base.insert(sym, count);
         }
 
+        let base_total = base.values().sum::<f32>();
+
         let edge_n = storage::read_u32_le(r)? as usize;
         let mut edges: HashMap<u64, EdgeStats> = HashMap::with_capacity(edge_n);
         for _ in 0..edge_n {
@@ -314,6 +392,7 @@ impl CausalMemory {
             decay: decay.clamp(0.0, 1.0),
             edges,
             base,
+            base_total,
             prev_symbols,
             observe_count: 0,
             last_directed_edge_updates: 0,
