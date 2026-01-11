@@ -197,7 +197,7 @@ pub fn run_pong_demo(brain: &mut Brain, cfg: PongConfig) {
             }
         }
 
-        if cfg.render_every > 0 && s.steps % cfg.render_every == 0 {
+        if cfg.render_every > 0 && s.steps.is_multiple_of(cfg.render_every) {
             let hit_rate = if s.hits + s.misses == 0 {
                 0.0
             } else {

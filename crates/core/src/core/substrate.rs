@@ -329,6 +329,32 @@ pub struct RewardEdges {
     pub meaning: f32,
 }
 
+/// A single node in causal graph visualization.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CausalNodeViz {
+    pub id: SymbolId,
+    pub name: String,
+    pub base_count: f32,
+}
+
+/// A single edge in causal graph visualization.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CausalEdgeViz {
+    pub from: SymbolId,
+    pub to: SymbolId,
+    pub strength: f32,
+}
+
+/// Causal graph data for visualization.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CausalGraphViz {
+    pub nodes: Vec<CausalNodeViz>,
+    pub edges: Vec<CausalEdgeViz>,
+}
+
 impl OwnedStimulus {
     /// Convert to a borrowed Stimulus.
     pub fn as_stimulus(&self) -> Stimulus<'_> {
@@ -830,6 +856,32 @@ impl Brain {
     #[must_use]
     pub fn causal_stats(&self) -> crate::causality::CausalStats {
         self.causal.stats()
+    }
+
+    /// Returns causal graph data for visualization.
+    ///
+    /// Returns:
+    /// - `nodes`: Top N symbols with their names and base counts
+    /// - `edges`: Top M causal edges with from/to symbol IDs and strength
+    #[must_use]
+    pub fn causal_graph_viz(&self, max_nodes: usize, max_edges: usize) -> CausalGraphViz {
+        let symbols = self.causal.all_symbols_sorted(max_nodes);
+        let nodes: Vec<CausalNodeViz> = symbols
+            .into_iter()
+            .map(|(id, count)| CausalNodeViz {
+                id,
+                name: self.symbol_name(id).unwrap_or("?").to_string(),
+                base_count: count,
+            })
+            .collect();
+
+        let top_edges = self.causal.top_edges(max_edges);
+        let edges: Vec<CausalEdgeViz> = top_edges
+            .into_iter()
+            .map(|(from, to, strength)| CausalEdgeViz { from, to, strength })
+            .collect();
+
+        CausalGraphViz { nodes, edges }
     }
 
     /// Looks up a symbol name by its ID.
@@ -4021,7 +4073,7 @@ impl Brain {
         }
 
         // Compact periodically to reclaim tombstones.
-        if self.age_steps % 1000 == 0 {
+        if self.age_steps.is_multiple_of(1000) {
             self.compact_connections();
         }
     }

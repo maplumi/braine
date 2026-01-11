@@ -1,5 +1,3 @@
-#![cfg(feature = "std")]
-
 pub use core::time::Duration;
 
 // `std::time::Instant::now()` can panic on `wasm32-unknown-unknown` depending on

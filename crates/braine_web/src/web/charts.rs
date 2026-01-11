@@ -105,7 +105,8 @@ pub fn draw_brain_activity(
     ctx.set_stroke_style_str("rgba(122, 162, 255, 0.2)");
     ctx.set_line_width(1.0);
     ctx.begin_path();
-    ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0).ok();
+    ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0)
+        .ok();
     ctx.stroke();
 
     if units.is_empty() {
@@ -158,6 +159,8 @@ pub struct BrainVizRenderOptions {
     pub pan_y: f32,
     pub draw_outline: bool,
     pub node_size_scale: f64,
+    /// If true, nodes are tinted to indicate learning mode; if false, inference mode.
+    pub learning_mode: bool,
 }
 
 impl Default for BrainVizRenderOptions {
@@ -168,6 +171,7 @@ impl Default for BrainVizRenderOptions {
             pan_y: 0.0,
             draw_outline: true,
             node_size_scale: 1.0,
+            learning_mode: true,
         }
     }
 }
@@ -202,7 +206,8 @@ pub fn draw_brain_connectivity_sphere(
         ctx.set_stroke_style_str("rgba(122, 162, 255, 0.20)");
         ctx.set_line_width(1.0);
         ctx.begin_path();
-        ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0).ok();
+        ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0)
+            .ok();
         ctx.stroke();
     }
 
@@ -239,8 +244,12 @@ pub fn draw_brain_connectivity_sphere(
     }
 
     for &(s, t, w) in edges {
-        let Some(&(sx, sy, sz)) = pos.get(&s) else { continue; };
-        let Some(&(tx, ty, tz)) = pos.get(&t) else { continue; };
+        let Some(&(sx, sy, sz)) = pos.get(&s) else {
+            continue;
+        };
+        let Some(&(tx, ty, tz)) = pos.get(&t) else {
+            continue;
+        };
 
         let depth = ((sz + tz) * 0.5 + 1.0) * 0.5; // 0..1 approx
         let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
@@ -273,7 +282,9 @@ pub fn draw_brain_connectivity_sphere(
     // Draw nodes on top.
     let mut hit_nodes: Vec<BrainVizHitNode> = Vec::with_capacity(nodes.len());
     for node in nodes {
-        let Some(&(x, y, z)) = pos.get(&node.id) else { continue; };
+        let Some(&(x, y, z)) = pos.get(&node.id) else {
+            continue;
+        };
         let dist = 2.8;
         let p = radius / (z + dist);
         let px = cx + x * p;
@@ -292,14 +303,31 @@ pub fn draw_brain_connectivity_sphere(
         size *= zoom.sqrt();
         let alpha = 0.35 + 0.65 * amp;
 
-        let color = if node.is_sensor_member {
-            format!("rgba(122, 162, 255, {:.3})", alpha)
-        } else if node.is_group_member {
-            format!("rgba(74, 222, 128, {:.3})", alpha)
-        } else if node.is_reserved {
-            format!("rgba(148, 163, 184, {:.3})", alpha)
+        // Color nodes based on type AND learning/inference mode
+        // Learning mode: warmer tones (orange/amber accents)
+        // Inference mode: cooler tones (cyan/blue accents)
+        let color = if opts.learning_mode {
+            // Learning mode colors - warmer palette
+            if node.is_sensor_member {
+                format!("rgba(255, 153, 102, {:.3})", alpha) // Warm orange for sensors
+            } else if node.is_group_member {
+                format!("rgba(74, 222, 128, {:.3})", alpha) // Green for groups
+            } else if node.is_reserved {
+                format!("rgba(148, 163, 184, {:.3})", alpha) // Gray for reserved
+            } else {
+                format!("rgba(251, 191, 36, {:.3})", alpha) // Amber for regular units
+            }
         } else {
-            format!("rgba(251, 191, 36, {:.3})", alpha)
+            // Inference mode colors - cooler palette
+            if node.is_sensor_member {
+                format!("rgba(122, 162, 255, {:.3})", alpha) // Blue for sensors
+            } else if node.is_group_member {
+                format!("rgba(34, 211, 238, {:.3})", alpha) // Cyan for groups
+            } else if node.is_reserved {
+                format!("rgba(148, 163, 184, {:.3})", alpha) // Gray for reserved
+            } else {
+                format!("rgba(167, 139, 250, {:.3})", alpha) // Purple for regular units
+            }
         };
 
         ctx.set_fill_style_str(&color);
@@ -316,6 +344,187 @@ pub fn draw_brain_connectivity_sphere(
     }
 
     Ok(hit_nodes)
+}
+
+/// Options for causal graph visualization
+pub struct CausalVizRenderOptions {
+    pub zoom: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub rotation: f32,
+}
+
+/// Draw causal graph: symbol nodes with directed edges showing temporal causality.
+///
+/// Nodes are sized by base count (frequency), edges are colored by causal strength.
+pub fn draw_causal_graph(
+    canvas: &HtmlCanvasElement,
+    nodes: &[braine::substrate::CausalNodeViz],
+    edges: &[braine::substrate::CausalEdgeViz],
+    bg_color: &str,
+    opts: CausalVizRenderOptions,
+) -> Result<Vec<CausalHitNode>, String> {
+    let ctx = canvas
+        .get_context("2d")
+        .map_err(|_| "get_context failed")?
+        .ok_or("no 2d context")?
+        .dyn_into::<CanvasRenderingContext2d>()
+        .map_err(|_| "cast failed")?;
+
+    let w = canvas.width() as f64;
+    let h = canvas.height() as f64;
+    let zoom = (opts.zoom as f64).clamp(0.25, 8.0);
+    let cx = (w / 2.0) + (opts.pan_x as f64);
+    let cy = (h / 2.0) + (opts.pan_y as f64);
+    let radius = ((w.min(h) / 2.0) - 40.0) * zoom;
+
+    ctx.set_fill_style_str(bg_color);
+    ctx.fill_rect(0.0, 0.0, w, h);
+
+    if nodes.is_empty() {
+        // Draw placeholder text
+        ctx.set_fill_style_str("rgba(178, 186, 210, 0.5)");
+        ctx.set_font("14px sans-serif");
+        ctx.set_text_align("center");
+        let _ = ctx.fill_text("No causal symbols yet. Run some trials.", cx, cy);
+        return Ok(Vec::new());
+    }
+
+    // Position nodes in a circle (later can use force-directed layout)
+    let rot = opts.rotation as f64;
+    let n = nodes.len() as f64;
+    let mut pos: std::collections::HashMap<u32, (f64, f64)> = std::collections::HashMap::new();
+    let mut node_sizes: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+
+    // Find max base count for normalization
+    let max_count = nodes
+        .iter()
+        .map(|n| n.base_count)
+        .fold(0.0f32, f32::max)
+        .max(0.001);
+
+    for (i, node) in nodes.iter().enumerate() {
+        let angle = (i as f64 / n) * std::f64::consts::PI * 2.0 + rot;
+        let x = cx + radius * 0.8 * angle.cos();
+        let y = cy + radius * 0.8 * angle.sin();
+        pos.insert(node.id, (x, y));
+
+        // Size based on base count (normalized)
+        let norm_count = (node.base_count / max_count) as f64;
+        let size = 6.0 + 14.0 * norm_count.sqrt();
+        node_sizes.insert(node.id, size);
+    }
+
+    // Draw edges first (under nodes)
+    let max_strength = edges
+        .iter()
+        .map(|e| e.strength.abs())
+        .fold(0.0f32, f32::max)
+        .max(0.001);
+
+    for edge in edges {
+        let Some(&(x1, y1)) = pos.get(&edge.from) else {
+            continue;
+        };
+        let Some(&(x2, y2)) = pos.get(&edge.to) else {
+            continue;
+        };
+
+        let norm_strength = (edge.strength.abs() / max_strength) as f64;
+        let alpha = 0.15 + 0.65 * norm_strength;
+        let width = 0.5 + 2.5 * norm_strength;
+
+        // Color: green for positive causal, red for negative
+        let color = if edge.strength >= 0.0 {
+            format!("rgba(74, 222, 128, {:.3})", alpha) // Green: A predicts B
+        } else {
+            format!("rgba(251, 113, 133, {:.3})", alpha) // Red: A anti-predicts B
+        };
+
+        ctx.set_stroke_style_str(&color);
+        ctx.set_line_width(width);
+
+        // Draw line with arrow
+        ctx.begin_path();
+        ctx.move_to(x1, y1);
+        ctx.line_to(x2, y2);
+        ctx.stroke();
+
+        // Draw arrowhead
+        let angle = (y2 - y1).atan2(x2 - x1);
+        let arrow_size = 6.0 + 4.0 * norm_strength;
+        let target_size = node_sizes.get(&edge.to).copied().unwrap_or(10.0);
+        let ax = x2 - (target_size + 2.0) * angle.cos();
+        let ay = y2 - (target_size + 2.0) * angle.sin();
+
+        ctx.begin_path();
+        ctx.move_to(ax, ay);
+        ctx.line_to(
+            ax - arrow_size * (angle - 0.4).cos(),
+            ay - arrow_size * (angle - 0.4).sin(),
+        );
+        ctx.move_to(ax, ay);
+        ctx.line_to(
+            ax - arrow_size * (angle + 0.4).cos(),
+            ay - arrow_size * (angle + 0.4).sin(),
+        );
+        ctx.stroke();
+    }
+
+    // Draw nodes on top
+    let mut hit_nodes: Vec<CausalHitNode> = Vec::with_capacity(nodes.len());
+
+    for node in nodes {
+        let Some(&(x, y)) = pos.get(&node.id) else {
+            continue;
+        };
+        let size = node_sizes.get(&node.id).copied().unwrap_or(10.0);
+
+        // Node color: cyan for symbols
+        let norm_count = (node.base_count / max_count) as f64;
+        let alpha = 0.5 + 0.5 * norm_count;
+        let color = format!("rgba(34, 211, 238, {:.3})", alpha);
+
+        ctx.set_fill_style_str(&color);
+        ctx.begin_path();
+        ctx.arc(x, y, size, 0.0, std::f64::consts::PI * 2.0).ok();
+        ctx.fill();
+
+        // Draw symbol name
+        ctx.set_fill_style_str("rgba(232, 236, 255, 0.9)");
+        ctx.set_font("11px sans-serif");
+        ctx.set_text_align("center");
+
+        // Truncate long names
+        let label = if node.name.len() > 12 {
+            format!("{}…", &node.name[..11])
+        } else {
+            node.name.clone()
+        };
+        let _ = ctx.fill_text(&label, x, y + size + 14.0);
+
+        hit_nodes.push(CausalHitNode {
+            id: node.id,
+            name: node.name.clone(),
+            x,
+            y,
+            r: size,
+            base_count: node.base_count,
+        });
+    }
+
+    Ok(hit_nodes)
+}
+
+/// Hit test node for causal graph visualization
+#[derive(Debug, Clone)]
+pub struct CausalHitNode {
+    pub id: u32,
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub r: f64,
+    pub base_count: f32,
 }
 
 /// Draw a gauge/meter visualization
@@ -360,7 +569,8 @@ pub fn draw_gauge(
     ctx.set_stroke_style_str(color);
     ctx.set_line_width(12.0);
     ctx.begin_path();
-    ctx.arc(cx, cy, radius, std::f64::consts::PI, end_angle).ok();
+    ctx.arc(cx, cy, radius, std::f64::consts::PI, end_angle)
+        .ok();
     ctx.stroke();
 
     // Draw label and value
@@ -368,7 +578,7 @@ pub fn draw_gauge(
     ctx.set_font("bold 14px system-ui, sans-serif");
     ctx.set_text_align("center");
     let _ = ctx.fill_text(&format!("{:.1}%", value * 100.0), cx, cy - 20.0);
-    
+
     ctx.set_font("11px system-ui, sans-serif");
     ctx.set_fill_style_str("rgba(170, 180, 230, 0.8)");
     let _ = ctx.fill_text(label, cx, cy - 5.0);
@@ -413,7 +623,11 @@ pub fn draw_action_scores(
         let is_highlight = highlight.map_or(false, |h| h == *name);
 
         // Label
-        ctx.set_fill_style_str(if is_highlight { "rgba(251, 191, 36, 1.0)" } else { "rgba(170, 180, 230, 0.9)" });
+        ctx.set_fill_style_str(if is_highlight {
+            "rgba(251, 191, 36, 1.0)"
+        } else {
+            "rgba(170, 180, 230, 0.9)"
+        });
         let _ = ctx.fill_text(name, label_width - 5.0, y + bar_height * 0.7);
 
         // Bar background
@@ -422,7 +636,11 @@ pub fn draw_action_scores(
 
         // Bar value
         let bar_w = bar_area * (*score as f64).clamp(0.0, 1.0);
-        let bar_color = if is_highlight { "rgba(251, 191, 36, 0.8)" } else { "rgba(122, 162, 255, 0.6)" };
+        let bar_color = if is_highlight {
+            "rgba(251, 191, 36, 0.8)"
+        } else {
+            "rgba(122, 162, 255, 0.6)"
+        };
         ctx.set_fill_style_str(bar_color);
         ctx.fill_rect(label_width, y, bar_w, bar_height);
     }
@@ -742,7 +960,7 @@ pub fn draw_unit_plot_3d(
         ctx.move_to(padding, y);
         ctx.line_to(w - padding, y);
         ctx.stroke();
-        
+
         let x = padding + (i as f64) * plot_w / 10.0;
         ctx.begin_path();
         ctx.move_to(x, padding);
@@ -769,7 +987,7 @@ pub fn draw_unit_plot_3d(
     ctx.set_font("11px system-ui, sans-serif");
     ctx.set_text_align("center");
     let _ = ctx.fill_text("rel_age (old → new)", w / 2.0, h - 8.0);
-    
+
     ctx.save();
     ctx.translate(12.0, h / 2.0).ok();
     ctx.rotate(-std::f64::consts::PI / 2.0).ok();
@@ -796,8 +1014,24 @@ pub fn draw_unit_plot_3d(
     // Sort points by "depth" - reserved/background first, sensor/group last (foreground)
     let mut sorted_points: Vec<_> = points.iter().collect();
     sorted_points.sort_by(|a, b| {
-        let depth_a = if a.is_sensor_member { 3 } else if a.is_group_member { 2 } else if a.is_reserved { 0 } else { 1 };
-        let depth_b = if b.is_sensor_member { 3 } else if b.is_group_member { 2 } else if b.is_reserved { 0 } else { 1 };
+        let depth_a = if a.is_sensor_member {
+            3
+        } else if a.is_group_member {
+            2
+        } else if a.is_reserved {
+            0
+        } else {
+            1
+        };
+        let depth_b = if b.is_sensor_member {
+            3
+        } else if b.is_group_member {
+            2
+        } else if b.is_reserved {
+            0
+        } else {
+            1
+        };
         depth_a.cmp(&depth_b)
     });
 
@@ -805,7 +1039,7 @@ pub fn draw_unit_plot_3d(
     for point in sorted_points {
         let x = padding + (point.rel_age as f64) * plot_w;
         let y = h - padding - (point.amp01 as f64) * plot_h;
-        
+
         // Size based on depth (sensor = largest, reserved = smallest)
         let base_size = if point.is_sensor_member {
             8.0
@@ -816,7 +1050,7 @@ pub fn draw_unit_plot_3d(
         } else {
             5.0
         };
-        
+
         // Color based on unit type
         let (color, glow_color) = if point.is_sensor_member {
             ("rgba(122, 162, 255, 0.9)", "rgba(122, 162, 255, 0.4)")
@@ -827,22 +1061,24 @@ pub fn draw_unit_plot_3d(
         } else {
             ("rgba(251, 191, 36, 0.75)", "rgba(251, 191, 36, 0.25)")
         };
-        
+
         // Draw glow effect for foreground units
         if point.is_sensor_member || point.is_group_member {
             ctx.set_fill_style_str(glow_color);
             ctx.begin_path();
-            ctx.arc(x, y, base_size * 2.0, 0.0, std::f64::consts::PI * 2.0).ok();
+            ctx.arc(x, y, base_size * 2.0, 0.0, std::f64::consts::PI * 2.0)
+                .ok();
             ctx.fill();
         }
-        
+
         // Draw 3D-style sphere (gradient circle)
         // Outer darker ring
         ctx.set_fill_style_str(color);
         ctx.begin_path();
-        ctx.arc(x, y, base_size, 0.0, std::f64::consts::PI * 2.0).ok();
+        ctx.arc(x, y, base_size, 0.0, std::f64::consts::PI * 2.0)
+            .ok();
         ctx.fill();
-        
+
         // Inner highlight for 3D effect
         let highlight_color = if point.is_sensor_member {
             "rgba(180, 200, 255, 0.6)"
@@ -855,7 +1091,14 @@ pub fn draw_unit_plot_3d(
         };
         ctx.set_fill_style_str(highlight_color);
         ctx.begin_path();
-        ctx.arc(x - base_size * 0.25, y - base_size * 0.25, base_size * 0.5, 0.0, std::f64::consts::PI * 2.0).ok();
+        ctx.arc(
+            x - base_size * 0.25,
+            y - base_size * 0.25,
+            base_size * 0.5,
+            0.0,
+            std::f64::consts::PI * 2.0,
+        )
+        .ok();
         ctx.fill();
     }
 
@@ -863,7 +1106,11 @@ pub fn draw_unit_plot_3d(
     ctx.set_fill_style_str("rgba(122, 162, 255, 0.8)");
     ctx.set_font("12px system-ui, sans-serif");
     ctx.set_text_align("right");
-    let _ = ctx.fill_text(&format!("{} units", points.len()), w - padding, padding - 8.0);
+    let _ = ctx.fill_text(
+        &format!("{} units", points.len()),
+        w - padding,
+        padding - 8.0,
+    );
 
     Ok(())
 }

@@ -13,7 +13,12 @@ impl TextWebGame {
         }
     }
 
-    pub fn new_with_corpora(corpus0: &str, corpus1: &str, max_vocab: usize, shift_every: u32) -> Self {
+    pub fn new_with_corpora(
+        corpus0: &str,
+        corpus1: &str,
+        max_vocab: usize,
+        shift_every: u32,
+    ) -> Self {
         let mut game = TextNextTokenGame::new_with_corpora(corpus0, corpus1, max_vocab);
         game.set_shift_every_outcomes(shift_every);
         Self { game }

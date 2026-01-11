@@ -1,4 +1,6 @@
-use braine::substrate::{Brain, BrainConfig, Stimulus, UnitPlotPoint};
+use braine::substrate::{
+    Brain, BrainConfig, CausalEdgeViz, CausalGraphViz, CausalNodeViz, Stimulus, UnitPlotPoint,
+};
 use braine_games::{
     bandit::BanditGame, spot::SpotGame, spot_reversal::SpotReversalGame, spot_xy::SpotXYGame,
 };
@@ -12,9 +14,9 @@ use pong_web::PongWebGame;
 mod sequence_web;
 use sequence_web::SequenceWebGame;
 mod text_web;
+use charts::RollingHistory;
 use text_web::TextWebGame;
 use wasm_bindgen::closure::Closure;
-use charts::RollingHistory;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -163,13 +165,13 @@ fn App() -> impl IntoView {
     let (import_autosave, set_import_autosave) = signal(true);
 
     let (interval_id, set_interval_id) = signal::<Option<i32>>(None);
-    
+
     let (is_running, set_is_running) = signal(false);
-    
+
     // Performance history for charting
     let perf_history = StoredValue::new(RollingHistory::new(200));
     let (perf_history_version, set_perf_history_version) = signal(0u32);
-    
+
     // Neuromodulator (reward) history
     let neuromod_history = StoredValue::new(RollingHistory::new(50));
     let (neuromod_version, set_neuromod_version) = signal(0u32);
@@ -181,17 +183,17 @@ fn App() -> impl IntoView {
 
     // Persist per-game stats to localStorage (one write per trial per game)
     let persisted_trial_cursor = StoredValue::new((game_kind.get_untracked(), 0u32));
-    
+
     // Learning milestone tracking
     let (learning_milestone, set_learning_milestone) = signal("Starting...".to_string());
     let (learning_milestone_tone, set_learning_milestone_tone) = signal("starting".to_string());
     let (learned_at_trial, set_learned_at_trial) = signal::<Option<u32>>(None);
     let (mastered_at_trial, set_mastered_at_trial) = signal::<Option<u32>>(None);
-    
+
     // Correct/incorrect counts
     let (correct_count, set_correct_count) = signal(0u32);
     let (incorrect_count, set_incorrect_count) = signal(0u32);
-    
+
     // Unit plot data for Graph page
     let (unit_plot, set_unit_plot) = signal::<Vec<UnitPlotPoint>>(Vec::new());
 
@@ -211,15 +213,20 @@ fn App() -> impl IntoView {
     let (brainviz_zoom, set_brainviz_zoom) = signal(1.5f32);
     let (brainviz_pan_x, set_brainviz_pan_x) = signal(0.0f32);
     let (brainviz_pan_y, set_brainviz_pan_y) = signal(0.0f32);
-    let (brainviz_auto_rotate, set_brainviz_auto_rotate) = signal(true);
+    let (brainviz_auto_rotate, _set_brainviz_auto_rotate) = signal(false); // Disabled by default
+    let (brainviz_manual_rotation, set_brainviz_manual_rotation) = signal(0.0f32); // Manual rotation angle
+    let (brainviz_vibration, set_brainviz_vibration) = signal(0.0f32); // Activity-based vibration
     let (brainviz_hover, set_brainviz_hover) = signal::<Option<(u32, f64, f64)>>(None);
     let (brainviz_view_mode, set_brainviz_view_mode) = signal::<&'static str>("substrate"); // "substrate" or "causal"
+    let (brainviz_causal_graph, set_brainviz_causal_graph) =
+        signal::<CausalGraphViz>(CausalGraphViz::default());
     let brainviz_dragging = StoredValue::new(false);
     let brainviz_last_drag_xy = StoredValue::new((0.0f64, 0.0f64));
     let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
-    
+
     // Per-game accuracy persistence (loaded from IDB)
-    let (game_accuracies, set_game_accuracies) = signal::<std::collections::HashMap<String, f32>>(std::collections::HashMap::new());
+    let (game_accuracies, set_game_accuracies) =
+        signal::<std::collections::HashMap<String, f32>>(std::collections::HashMap::new());
 
     // WebGPU availability check (currently: Brain uses CPU Scalar tier always; future: could detect and use WebGPU).
     let webgpu_available = {
@@ -250,7 +257,7 @@ fn App() -> impl IntoView {
             set_incorrect_count.set(stats.incorrect);
             set_learned_at_trial.set(stats.learned_at_trial);
             set_mastered_at_trial.set(stats.mastered_at_trial);
-            
+
             // Update unit plot data for Graph page (sample 128 units)
             let plot_points = runtime.with_value(|r| r.brain.unit_plot_points(128));
             set_unit_plot.set(plot_points);
@@ -266,11 +273,11 @@ fn App() -> impl IntoView {
             set_game_accuracies.update(|accs| {
                 accs.insert(game_label, rate);
             });
-            
+
             // Update performance history
             perf_history.update_value(|h| h.push(rate));
             set_perf_history_version.update(|v| *v = v.wrapping_add(1));
-            
+
             // Update learning milestones
             if rate >= 0.95 {
                 set_learning_milestone.set("🏆 MASTERED".to_string());
@@ -308,7 +315,8 @@ fn App() -> impl IntoView {
 
             // Persist per-game stats + chart history so refresh restores the current state.
             let kind = game_kind.get_untracked();
-            let should_persist = persisted_trial_cursor.with_value(|(k, t)| *k != kind || *t != stats.trials);
+            let should_persist =
+                persisted_trial_cursor.with_value(|(k, t)| *k != kind || *t != stats.trials);
             if should_persist {
                 persisted_trial_cursor.update_value(|(k, t)| {
                     *k = kind;
@@ -396,7 +404,7 @@ fn App() -> impl IntoView {
             spawn_local(async move {
                 let _ = save_game_accuracies(&current_accs).await;
             });
-            
+
             runtime.update_value(|r| r.set_game(kind));
             set_game_kind.set(kind);
 
@@ -448,7 +456,7 @@ fn App() -> impl IntoView {
                     }
                 });
                 set_choices_version.update(|v| *v = v.wrapping_add(1));
-                
+
                 // Track neuromod history
                 neuromod_history.update_value(|h| h.push(out.reward));
                 set_neuromod_version.update(|v| *v = v.wrapping_add(1));
@@ -533,15 +541,15 @@ fn App() -> impl IntoView {
     let do_stop = {
         let persist_stats_state = Arc::clone(&persist_stats_state);
         move || {
-        if let Some(id) = interval_id.get_untracked() {
-            if let Some(w) = web_sys::window() {
-                w.clear_interval_with_handle(id);
+            if let Some(id) = interval_id.get_untracked() {
+                if let Some(w) = web_sys::window() {
+                    w.clear_interval_with_handle(id);
+                }
+                set_interval_id.set(None);
+                set_is_running.set(false);
+                (persist_stats_state)(game_kind.get_untracked());
+                set_status.set("stopped".to_string());
             }
-            set_interval_id.set(None);
-            set_is_running.set(false);
-            (persist_stats_state)(game_kind.get_untracked());
-            set_status.set("stopped".to_string());
-        }
         }
     };
 
@@ -611,7 +619,10 @@ fn App() -> impl IntoView {
 
             runtime.update_value(|r| {
                 let (known_sensors, known_actions) = match &r.game {
-                    WebGame::Text(g) => (g.token_sensor_names().to_vec(), g.allowed_actions().to_vec()),
+                    WebGame::Text(g) => (
+                        g.token_sensor_names().to_vec(),
+                        g.allowed_actions().to_vec(),
+                    ),
                     _ => return,
                 };
 
@@ -634,7 +645,11 @@ fn App() -> impl IntoView {
                         let desired_action = token_action_name_from_sensor(&next_sensor);
 
                         r.brain.apply_stimulus(Stimulus::new("text", 1.0));
-                        let regime_sensor = if regime == 1 { "txt_regime_1" } else { "txt_regime_0" };
+                        let regime_sensor = if regime == 1 {
+                            "txt_regime_1"
+                        } else {
+                            "txt_regime_0"
+                        };
                         r.brain.apply_stimulus(Stimulus::new(regime_sensor, 0.8));
                         r.brain.apply_stimulus(Stimulus::new(&cur_sensor, 1.0));
 
@@ -664,12 +679,19 @@ fn App() -> impl IntoView {
                                 .unwrap_or_else(|| "tok_UNK".to_string())
                         };
 
-                        let raw_reward = if chosen_action == desired_action { 1.0 } else { -1.0 };
+                        let raw_reward = if chosen_action == desired_action {
+                            1.0
+                        } else {
+                            -1.0
+                        };
                         let shaped = ((raw_reward + reward_bias) * reward_scale).clamp(-5.0, 5.0);
 
                         r.brain.note_action(&chosen_action);
-                        r.brain
-                            .note_compound_symbol(&["pair", ctx.as_str(), chosen_action.as_str()]);
+                        r.brain.note_compound_symbol(&[
+                            "pair",
+                            ctx.as_str(),
+                            chosen_action.as_str(),
+                        ]);
 
                         if allow_learning {
                             r.brain.set_neuromodulator(shaped);
@@ -719,7 +741,7 @@ fn App() -> impl IntoView {
                     return;
                 }
             };
-            
+
             // Also get current accuracies to save
             let accs = game_accuracies.get_untracked();
 
@@ -917,8 +939,12 @@ fn App() -> impl IntoView {
             return;
         };
 
-    let grid_n = spotxy_grid_n.get();
-        let accent = if spotxy_eval.get() { "#22c55e" } else { "#7aa2ff" };
+        let grid_n = spotxy_grid_n.get();
+        let accent = if spotxy_eval.get() {
+            "#22c55e"
+        } else {
+            "#7aa2ff"
+        };
 
         match pos {
             Some((x, y)) => {
@@ -951,16 +977,20 @@ fn App() -> impl IntoView {
     let perf_chart_ref = NodeRef::<leptos::html::Canvas>::new();
     Effect::new(move |_| {
         let _ = perf_history_version.get(); // Subscribe to updates
-        let Some(canvas) = perf_chart_ref.get() else { return; };
+        let Some(canvas) = perf_chart_ref.get() else {
+            return;
+        };
         let data: Vec<f32> = perf_history.with_value(|h| h.data().to_vec());
         let _ = charts::draw_line_chart(&canvas, &data, 0.0, 1.0, "#7aa2ff", "#0a0f1a", "#1a2540");
     });
-    
+
     // Neuromod (reward) chart canvas
     let neuromod_chart_ref = NodeRef::<leptos::html::Canvas>::new();
     Effect::new(move |_| {
         let _ = neuromod_version.get();
-        let Some(canvas) = neuromod_chart_ref.get() else { return; };
+        let Some(canvas) = neuromod_chart_ref.get() else {
+            return;
+        };
         let data: Vec<f32> = neuromod_history.with_value(|h| h.data().to_vec());
         let _ = charts::draw_neuromod_trace(&canvas, &data, "#0a0f1a");
     });
@@ -975,7 +1005,9 @@ fn App() -> impl IntoView {
             }
             let _ = choices_version.get();
             let _ = choice_window.get();
-            let Some(canvas) = choices_chart_ref.get() else { return; };
+            let Some(canvas) = choices_chart_ref.get() else {
+                return;
+            };
 
             // Limit to a reasonable number of series for readability.
             let mut actions: Vec<String> = runtime.with_value(|r| r.game.allowed_actions_for_ui());
@@ -995,37 +1027,48 @@ fn App() -> impl IntoView {
                     .collect();
                 events
                     .into_iter()
-                    .map(|a| if keep.contains(&a) { a } else { "(other)".to_string() })
+                    .map(|a| {
+                        if keep.contains(&a) {
+                            a
+                        } else {
+                            "(other)".to_string()
+                        }
+                    })
                     .collect()
             } else {
                 events
             };
 
             let _ = charts::draw_choices_over_time(
-                &canvas,
-                &actions,
-                &mapped,
-                window,
-                "#0a0f1a",
-                "#1a2540",
+                &canvas, &actions, &mapped, window, "#0a0f1a", "#1a2540",
             );
         }
     });
-    
+
     // Accuracy gauge canvas
     let gauge_ref = NodeRef::<leptos::html::Canvas>::new();
     Effect::new(move |_| {
         let rate = recent_rate.get();
-        let Some(canvas) = gauge_ref.get() else { return; };
-        let color = if rate >= 0.85 { "#4ade80" } else if rate >= 0.70 { "#fbbf24" } else { "#7aa2ff" };
+        let Some(canvas) = gauge_ref.get() else {
+            return;
+        };
+        let color = if rate >= 0.85 {
+            "#4ade80"
+        } else if rate >= 0.70 {
+            "#fbbf24"
+        } else {
+            "#7aa2ff"
+        };
         let _ = charts::draw_gauge(&canvas, rate, 0.0, 1.0, "Accuracy", color, "#0a0f1a");
     });
-    
+
     // Unit plot 3D-style canvas for Graph page
     let unit_plot_ref = NodeRef::<leptos::html::Canvas>::new();
     Effect::new(move |_| {
         let points = unit_plot.get();
-        let Some(canvas) = unit_plot_ref.get() else { return; };
+        let Some(canvas) = unit_plot_ref.get() else {
+            return;
+        };
         let _ = charts::draw_unit_plot_3d(&canvas, &points, "#0a0f1a");
     });
 
@@ -1037,14 +1080,36 @@ fn App() -> impl IntoView {
                 return;
             }
 
+            let view_mode = brainviz_view_mode.get();
             let n = brainviz_node_sample.get().clamp(16, 1024) as usize;
-            let pts = runtime.with_value(|r| r.brain.unit_plot_points(n));
-            set_brainviz_points.set(pts);
+
+            if view_mode == "causal" {
+                // Fetch causal graph data
+                let causal = runtime.with_value(|r| r.brain.causal_graph_viz(n, n * 2));
+                set_brainviz_causal_graph.set(causal);
+            } else {
+                // Fetch substrate unit points
+                let pts = runtime.with_value(|r| r.brain.unit_plot_points(n));
+
+                // Calculate vibration based on average amplitude of sampled units
+                let avg_amp = if pts.is_empty() {
+                    0.0
+                } else {
+                    pts.iter().map(|p| p.amp.abs()).sum::<f32>() / pts.len() as f32
+                };
+                // Apply vibration based on amplitude and current step (for oscillation)
+                let step = steps.get();
+                let vibration = avg_amp * 0.1 * ((step as f32 * 0.3).sin() * 0.5 + 0.5);
+                set_brainviz_vibration.set(vibration);
+
+                set_brainviz_points.set(pts);
+            }
         }
     });
 
-    // BrainViz: rotating sphere + sampled connectivity
+    // BrainViz: rotating sphere + sampled connectivity (or causal graph)
     let brain_viz_ref = NodeRef::<leptos::html::Canvas>::new();
+    let brainviz_causal_hit_nodes = StoredValue::new(Vec::<charts::CausalHitNode>::new());
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
@@ -1052,57 +1117,81 @@ fn App() -> impl IntoView {
                 return;
             }
 
-            let steps = steps.get();
-            let points = brainviz_points.get();
-            let Some(canvas) = brain_viz_ref.get() else { return; };
+            let _steps = steps.get(); // Still track for reactivity
+            let view_mode = brainviz_view_mode.get();
+            let Some(canvas) = brain_viz_ref.get() else {
+                return;
+            };
 
-            let edges_per_node = brainviz_edges_per_node.get().clamp(1, 32) as usize;
             let zoom = brainviz_zoom.get();
             let pan_x = brainviz_pan_x.get();
             let pan_y = brainviz_pan_y.get();
-            let auto_rotate = brainviz_auto_rotate.get();
+            let manual_rot = brainviz_manual_rotation.get();
+            let vibration = brainviz_vibration.get();
+            let rot = manual_rot + vibration;
 
-            let mut sampled: std::collections::HashSet<usize> = std::collections::HashSet::new();
-            sampled.extend(points.iter().map(|p| p.id as usize));
-
-            let edges: Vec<(u32, u32, f32)> = runtime.with_value(|r| {
-                let mut edges: Vec<(u32, u32, f32)> = Vec::new();
-                for p in &points {
-                    let src = p.id as usize;
-                    let mut candidates: Vec<(usize, f32)> = r
-                        .brain
-                        .neighbors(src)
-                        .filter(|(t, _w)| sampled.contains(t))
-                        .collect();
-                    candidates.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
-                    for (t, w) in candidates.into_iter().take(edges_per_node) {
-                        edges.push((p.id, t as u32, w));
-                    }
+            if view_mode == "causal" {
+                // Render causal graph
+                let causal = brainviz_causal_graph.get();
+                let opts = charts::CausalVizRenderOptions {
+                    zoom,
+                    pan_x,
+                    pan_y,
+                    rotation: rot,
+                };
+                if let Ok(hits) = charts::draw_causal_graph(
+                    &canvas,
+                    &causal.nodes,
+                    &causal.edges,
+                    "#0a0f1a",
+                    opts,
+                ) {
+                    brainviz_causal_hit_nodes.set_value(hits);
                 }
-                edges
-            });
+            } else {
+                // Render substrate view
+                let points = brainviz_points.get();
+                let edges_per_node = brainviz_edges_per_node.get().clamp(1, 32) as usize;
 
-            let rot = if auto_rotate { (steps as f32) * 0.02 } else { 0.0 };
-            let opts = charts::BrainVizRenderOptions {
-                zoom,
-                pan_x,
-                pan_y,
-                draw_outline: false,
-                node_size_scale: 0.5,
-            };
-            if let Ok(hits) = charts::draw_brain_connectivity_sphere(
-                &canvas,
-                &points,
-                &edges,
-                rot,
-                "#0a0f1a",
-                opts,
-            ) {
-                brainviz_hit_nodes.set_value(hits);
+                let mut sampled: std::collections::HashSet<usize> =
+                    std::collections::HashSet::new();
+                sampled.extend(points.iter().map(|p| p.id as usize));
+
+                let edges: Vec<(u32, u32, f32)> = runtime.with_value(|r| {
+                    let mut edges: Vec<(u32, u32, f32)> = Vec::new();
+                    for p in &points {
+                        let src = p.id as usize;
+                        let mut candidates: Vec<(usize, f32)> = r
+                            .brain
+                            .neighbors(src)
+                            .filter(|(t, _w)| sampled.contains(t))
+                            .collect();
+                        candidates.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
+                        for (t, w) in candidates.into_iter().take(edges_per_node) {
+                            edges.push((p.id, t as u32, w));
+                        }
+                    }
+                    edges
+                });
+
+                let is_learning = learning_enabled.get();
+                let opts = charts::BrainVizRenderOptions {
+                    zoom,
+                    pan_x,
+                    pan_y,
+                    draw_outline: false,
+                    node_size_scale: 0.5,
+                    learning_mode: is_learning,
+                };
+                if let Ok(hits) = charts::draw_brain_connectivity_sphere(
+                    &canvas, &points, &edges, rot, "#0a0f1a", opts,
+                ) {
+                    brainviz_hit_nodes.set_value(hits);
+                }
             }
         }
     });
-    
+
     // Load game accuracies from IndexedDB on mount
     Effect::new(move |_| {
         spawn_local(async move {
@@ -1507,7 +1596,7 @@ fn App() -> impl IntoView {
                                         {move || if spotxy_eval.get() { "🧪 EVAL" } else { "📚 TRAIN" }}
                                     </div>
                                 </div>
-                                
+
                                 // Canvas container with ambient glow
                                 <div style="position: relative; display: flex; justify-content: center;">
                                     <div style=move || format!("position: absolute; width: 280px; height: 280px; border-radius: 50%; filter: blur(60px); opacity: 0.3; background: {};",
@@ -1523,7 +1612,7 @@ fn App() -> impl IntoView {
                                         ></canvas>
                                     </div>
                                 </div>
-                                
+
                                 // Controls row
                                 <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
                                     <div style="display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 10px;">
@@ -1549,7 +1638,7 @@ fn App() -> impl IntoView {
                                         {move || if spotxy_eval.get() { "Switch to Train" } else { "Switch to Eval" }}
                                     </button>
                                 </div>
-                                
+
                                 // Status pills
                                 <div style="display: flex; gap: 8px; justify-content: center;">
                                     <span style="padding: 6px 14px; background: rgba(122, 162, 255, 0.1); border: 1px solid rgba(122, 162, 255, 0.2); border-radius: 20px; font-size: 0.8rem; color: var(--muted);">
@@ -1576,7 +1665,7 @@ fn App() -> impl IntoView {
                                         <kbd style="padding: 4px 10px; background: rgba(255,255,255,0.1); border: 1px solid var(--border); border-radius: 6px; font-size: 0.75rem; color: var(--muted);">"↑/↓"</kbd>
                                     </div>
                                 </div>
-                                
+
                                 // Game canvas with ambient glow
                                 <div style="position: relative; display: flex; justify-content: center;">
                                     <div style="position: absolute; width: 400px; height: 200px; border-radius: 50%; filter: blur(80px); opacity: 0.2; background: linear-gradient(135deg, #7aa2ff, #fbbf24);"></div>
@@ -1589,7 +1678,7 @@ fn App() -> impl IntoView {
                                         ></canvas>
                                     </div>
                                 </div>
-                                
+
                                 // Parameter sliders in a compact card
                                 <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; padding: 16px 20px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px;">
                                     <div style="display: flex; flex-direction: column; gap: 4px; min-width: 90px;">
@@ -2325,9 +2414,9 @@ fn App() -> impl IntoView {
                                 <Show when=move || analytics_panel.get() == AnalyticsPanel::BrainViz>
                                     <div class="card">
                                         <h3 class="card-title">"🧠 Internal Brain Visualization"</h3>
-                                        <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: shows symbol-to-symbol temporal edges (coming soon)." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
+                                        <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
                                         <div class="callout">
-                                            <p>"Drag to pan • Scroll to zoom • Hover for details"</p>
+                                            <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
                                         </div>
 
                                         <div class="row end wrap" style="margin-top: 10px;">
@@ -2376,22 +2465,16 @@ fn App() -> impl IntoView {
                                                     }
                                                 />
                                             </label>
-                                            <label class="label" style="flex-direction: row; align-items: center; gap: 10px;">
-                                                <input
-                                                    type="checkbox"
-                                                    prop:checked=move || brainviz_auto_rotate.get()
-                                                    on:change=move |ev| {
-                                                        set_brainviz_auto_rotate.set(event_target_checked(&ev));
-                                                    }
-                                                />
-                                                <span>"Auto-rotate"</span>
-                                            </label>
+                                            <span style="color: rgba(178,186,210,0.6); font-size: 12px; margin-left: 8px;">
+                                                "Drag to rotate | Shift+drag to pan | Scroll to zoom"
+                                            </span>
                                             <button
                                                 class="btn sm"
                                                 on:click=move |_| {
                                                     set_brainviz_zoom.set(1.0);
                                                     set_brainviz_pan_x.set(0.0);
                                                     set_brainviz_pan_y.set(0.0);
+                                                    set_brainviz_manual_rotation.set(0.0);
                                                 }
                                             >
                                                 "Reset view"
@@ -2450,8 +2533,15 @@ fn App() -> impl IntoView {
                                                         let (lx, ly) = brainviz_last_drag_xy.get_value();
                                                         let dx = (css_x - lx) * sx;
                                                         let dy = (css_y - ly) * sy;
-                                                        set_brainviz_pan_x.update(|v| *v += dx as f32);
-                                                        set_brainviz_pan_y.update(|v| *v += dy as f32);
+
+                                                        // Shift+drag = pan, regular drag = rotate
+                                                        if ev.shift_key() {
+                                                            set_brainviz_pan_x.update(|v| *v += dx as f32);
+                                                            set_brainviz_pan_y.update(|v| *v += dy as f32);
+                                                        } else {
+                                                            // Horizontal drag = Y-axis rotation
+                                                            set_brainviz_manual_rotation.update(|v| *v += (dx as f32) * 0.01);
+                                                        }
                                                         brainviz_last_drag_xy.set_value((css_x, css_y));
                                                         return;
                                                     }
@@ -2767,7 +2857,7 @@ impl GameKind {
             GameKind::Text => "text",
         }
     }
-    
+
     fn display_name(self) -> &'static str {
         match self {
             GameKind::Spot => "Spot",
@@ -2779,7 +2869,7 @@ impl GameKind {
             GameKind::Text => "Text",
         }
     }
-    
+
     fn icon(self) -> &'static str {
         match self {
             GameKind::Spot => "🎯",
@@ -2791,7 +2881,7 @@ impl GameKind {
             GameKind::Text => "📝",
         }
     }
-    
+
     fn description(self) -> &'static str {
         match self {
             GameKind::Spot => "Binary discrimination with two stimuli (spot_left/spot_right) and two actions (left/right). One response per trial; reward is +1 for correct, −1 for wrong.",
@@ -2803,7 +2893,7 @@ impl GameKind {
             GameKind::Text => "Next-token prediction over a byte vocabulary built from two small corpora (default: 'hello world\\n' vs 'goodbye world\\n') with a regime shift every 80 outcomes.",
         }
     }
-    
+
     fn what_it_tests(self) -> &'static str {
         match self {
             GameKind::Spot => "• Simple stimulus-action associations\n• Binary classification\n• Basic credit assignment\n• Fastest to learn (~50-100 trials)",
@@ -2815,7 +2905,7 @@ impl GameKind {
             GameKind::Text => "• Symbolic next-token prediction (byte tokens)\n• Regime/distribution shifts\n• Online learning without backprop\n• Vocabulary scaling (max_vocab)\n• Credit assignment with scalar reward",
         }
     }
-    
+
     fn inputs_info(self) -> &'static str {
         match self {
             GameKind::Spot => "Stimuli (by name): spot_left or spot_right\nActions: left, right\nTrial timing: controlled by Trial ms",
@@ -2827,7 +2917,7 @@ impl GameKind {
             GameKind::Text => "Base stimulus: text (context)\nSensors: txt_regime_0/1 and txt_tok_XX (byte tokens) + txt_tok_UNK\nActions: tok_XX for bytes in vocab + tok_UNK",
         }
     }
-    
+
     fn reward_info(self) -> &'static str {
         match self {
             GameKind::Spot => "+1.0: Correct response (stimulus matches action)\n−1.0: Incorrect response",
@@ -2839,7 +2929,7 @@ impl GameKind {
             GameKind::Text => "+1.0: Correct next-token prediction\n−1.0: Incorrect\nRegime flips every shift_every_outcomes=80",
         }
     }
-    
+
     fn learning_objectives(self) -> &'static str {
         match self {
             GameKind::Spot => "• Achieve >90% accuracy consistently\n• Learn in <100 trials\n• Demonstrate stable attractor formation",
@@ -2851,7 +2941,7 @@ impl GameKind {
             GameKind::Text => "• Build character transition model\n• Adapt to regime shifts\n• Predict based on statistical regularities",
         }
     }
-    
+
     fn all() -> &'static [GameKind] {
         &[
             GameKind::Spot,
@@ -3536,8 +3626,7 @@ fn make_default_brain() -> Brain {
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
+    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
 }
 
 fn local_storage_get_string(key: &str) -> Option<String> {
@@ -3747,10 +3836,7 @@ fn choose_text_token_sensor(last_byte: Option<u8>, known_sensors: &[String]) -> 
         return unk.to_string();
     }
 
-    known_sensors
-        .first()
-        .cloned()
-        .unwrap_or_else(|| preferred)
+    known_sensors.first().cloned().unwrap_or_else(|| preferred)
 }
 
 fn token_action_name_from_sensor(sensor: &str) -> String {
@@ -4164,19 +4250,27 @@ fn draw_pong(canvas: &web_sys::HtmlCanvasElement, s: &PongUiState) -> Result<(),
     let paddle_h = (s.paddle_half_height.clamp(0.01, 1.0) as f64) * 0.5 * inner_h;
     let paddle_height = (paddle_h * 2.0).min(inner_h);
     let paddle_top = (paddle_y - paddle_h).clamp(20.0, 20.0 + inner_h - paddle_height);
-    
+
     // Paddle glow
     ctx.set_fill_style_str("rgba(122, 162, 255, 0.3)");
     ctx.begin_path();
-    ctx.round_rect_with_f64(paddle_x - 4.0, paddle_top - 4.0, paddle_w + 8.0, paddle_height + 8.0, 6.0).ok();
+    ctx.round_rect_with_f64(
+        paddle_x - 4.0,
+        paddle_top - 4.0,
+        paddle_w + 8.0,
+        paddle_height + 8.0,
+        6.0,
+    )
+    .ok();
     ctx.fill();
-    
+
     // Paddle body
     ctx.set_fill_style_str("#7aa2ff");
     ctx.begin_path();
-    ctx.round_rect_with_f64(paddle_x, paddle_top, paddle_w, paddle_height, 4.0).ok();
+    ctx.round_rect_with_f64(paddle_x, paddle_top, paddle_w, paddle_height, 4.0)
+        .ok();
     ctx.fill();
-    
+
     // Paddle highlight
     ctx.set_fill_style_str("rgba(255, 255, 255, 0.4)");
     ctx.fill_rect(paddle_x + 2.0, paddle_top + 2.0, 3.0, paddle_height - 4.0);
@@ -4185,25 +4279,25 @@ fn draw_pong(canvas: &web_sys::HtmlCanvasElement, s: &PongUiState) -> Result<(),
     if s.ball_visible {
         let bx = map_x(s.ball_x);
         let by = map_y(s.ball_y);
-        
+
         // Ball glow (outer)
         ctx.set_fill_style_str("rgba(251, 191, 36, 0.2)");
         ctx.begin_path();
         let _ = ctx.arc(bx, by, 16.0, 0.0, std::f64::consts::PI * 2.0);
         ctx.fill();
-        
+
         // Ball glow (inner)
         ctx.set_fill_style_str("rgba(251, 191, 36, 0.4)");
         ctx.begin_path();
         let _ = ctx.arc(bx, by, 10.0, 0.0, std::f64::consts::PI * 2.0);
         ctx.fill();
-        
+
         // Ball body
         ctx.set_fill_style_str("#fbbf24");
         ctx.begin_path();
         let _ = ctx.arc(bx, by, 7.0, 0.0, std::f64::consts::PI * 2.0);
         ctx.fill();
-        
+
         // Ball highlight
         ctx.set_fill_style_str("rgba(255, 255, 255, 0.6)");
         ctx.begin_path();

@@ -216,6 +216,32 @@ impl CausalMemory {
         out
     }
 
+    /// Return all symbols with their base counts, sorted by count (descending).
+    pub fn all_symbols_sorted(&self, top_n: usize) -> Vec<(SymbolId, f32)> {
+        let mut out: Vec<(SymbolId, f32)> = self.base.iter().map(|(&s, &c)| (s, c)).collect();
+        out.sort_by(|x, y| y.1.total_cmp(&x.1));
+        out.truncate(top_n);
+        out
+    }
+
+    /// Return top N strongest causal edges in the entire graph.
+    ///
+    /// Returns (from_symbol, to_symbol, causal_strength).
+    pub fn top_edges(&self, top_n: usize) -> Vec<(SymbolId, SymbolId, f32)> {
+        let mut out: Vec<(SymbolId, SymbolId, f32)> = Vec::new();
+        for &key in self.edges.keys() {
+            let from = (key >> 32) as SymbolId;
+            let to = (key & 0xFFFF_FFFF) as SymbolId;
+            let s = self.causal_strength(from, to);
+            if s.abs() > 0.001 {
+                out.push((from, to, s));
+            }
+        }
+        out.sort_by(|x, y| y.2.abs().total_cmp(&x.2.abs()));
+        out.truncate(top_n);
+        out
+    }
+
     #[cfg(feature = "std")]
     pub(crate) fn image_payload_len_bytes(&self) -> u32 {
         let base_n = self.base.len() as u64;

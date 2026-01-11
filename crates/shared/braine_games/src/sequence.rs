@@ -170,7 +170,7 @@ impl SequenceGame {
         self.stats.record_trial(is_correct);
 
         self.outcomes = self.outcomes.wrapping_add(1);
-        if self.shift_every_outcomes != 0 && self.outcomes % self.shift_every_outcomes == 0
+        if self.shift_every_outcomes != 0 && self.outcomes.is_multiple_of(self.shift_every_outcomes)
         {
             self.use_pattern1 = !self.use_pattern1;
         }

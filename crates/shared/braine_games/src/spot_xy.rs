@@ -18,6 +18,7 @@ pub enum SpotXYMode {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SpotXYGame {
     pub pos_x: f32,
     pub pos_y: f32,

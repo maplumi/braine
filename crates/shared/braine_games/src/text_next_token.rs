@@ -1,6 +1,6 @@
 use crate::stats::GameStats;
-use std::collections::BTreeMap;
 use crate::time::{Duration, Instant};
+use std::collections::BTreeMap;
 
 #[cfg(feature = "braine")]
 use braine::substrate::{Brain, Stimulus};
@@ -269,7 +269,7 @@ impl TextNextTokenGame {
         self.stats.record_trial(is_correct);
 
         self.outcomes = self.outcomes.wrapping_add(1);
-        if self.shift_every_outcomes != 0 && self.outcomes % self.shift_every_outcomes == 0
+        if self.shift_every_outcomes != 0 && self.outcomes.is_multiple_of(self.shift_every_outcomes)
         {
             self.use_corpus1 = !self.use_corpus1;
         }
