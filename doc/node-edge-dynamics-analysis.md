@@ -225,13 +225,14 @@ The proposed model maintains key properties:
 3. ✅ Color nodes by learning state (learning=warm, inference=cool palette)
 4. ✅ Implement causal view (symbol graph with directed edges)
 5. ✅ Controls hint: "Drag to rotate | Shift+drag to pan | Scroll to zoom"
-6. Use inverse weight for edge length (no core changes)
+6. ⏭️ Edge length from inverse weight (skipped - weight already encodes proximity)
 
-### Phase 2: Node Salience (Medium Risk)
-1. Add `salience: f32` to Unit struct
-2. Update during step
-3. Persist in BBI format (version bump)
-4. Use for visualization size
+### Phase 2: Node Salience (Medium Risk) ✅ IMPLEMENTED
+1. ✅ Add `salience: f32` to Unit struct
+2. ✅ Update during step: `s = (1-λ)*s + α*max(0, amp-θ)` with configurable decay/gain
+3. ✅ Persist in BBI format (separate SALI chunk for backwards compatibility)
+4. ✅ Use for visualization size (larger nodes = higher salience = more frequently accessed)
+5. ✅ Added `salience_decay` and `salience_gain` to BrainConfig (defaults: 0.001, 0.1)
 
 ### Phase 3: Edge Distance (Higher Risk)
 1. Design edge metadata structure

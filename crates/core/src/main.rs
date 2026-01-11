@@ -54,6 +54,7 @@ fn main() {
         imprint_rate: 0.6,
         seed: None,
         causal_decay: 0.01,
+        ..Default::default()
     });
 
     // Declare actions: they are simply named readouts from dedicated unit groups.
@@ -153,6 +154,7 @@ fn run_pong_demo() {
         imprint_rate: 0.6,
         seed: Some(123),
         causal_decay: 0.01,
+        ..Default::default()
     });
 
     experiments::env_pong::run_pong_demo(&mut brain, experiments::env_pong::PongConfig::default());
@@ -181,6 +183,7 @@ fn run_autonomy_demo() {
         imprint_rate: 0.6,
         seed: Some(42),
         causal_decay: 0.01,
+        ..Default::default()
     });
 
     parent.define_action("approach", 6);
@@ -302,6 +305,7 @@ fn run_spawn_demo() {
         imprint_rate: 0.6,
         seed: Some(7),
         causal_decay: 0.01,
+        ..Default::default()
     });
 
     parent.define_action("approach", 6);

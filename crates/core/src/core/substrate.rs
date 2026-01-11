@@ -84,6 +84,11 @@ pub struct Unit {
 
     pub bias: f32,
     pub decay: f32,
+
+    /// Salience: cumulative access/activation frequency.
+    /// Grows when the unit is active, decays slowly over time.
+    /// Used for visualization (node size) and could inform pruning decisions.
+    pub salience: f32,
 }
 
 /// CSR (Compressed Sparse Row) connection storage for cache-friendly iteration.
@@ -134,6 +139,12 @@ pub struct BrainConfig {
     // One-shot concept formation strength (imprinting).
     pub imprint_rate: f32,
 
+    // Salience tracking: nodes accumulate importance when activated.
+    // salience_decay: rate at which salience decays each step (e.g., 0.001).
+    // salience_gain: how much salience increases when amplitude exceeds threshold.
+    pub salience_decay: f32,
+    pub salience_gain: f32,
+
     // If set, makes behavior reproducible for evaluation.
     pub seed: Option<u64>,
 
@@ -162,6 +173,8 @@ impl Default for BrainConfig {
             coactive_threshold: 0.3,
             phase_lock_threshold: 0.7,
             imprint_rate: 0.5,
+            salience_decay: 0.001, // Slow decay to preserve importance history
+            salience_gain: 0.1,    // Moderate gain when activated
             seed: None,
             causal_decay: 0.002,
         }
@@ -297,6 +310,9 @@ pub struct UnitPlotPoint {
     /// Unit's current oscillatory phase in [0, 2π).
     /// Used for pulsing visualization effects.
     pub phase: f32,
+    /// Salience normalized to [0,1] relative to the sampled max.
+    /// Represents cumulative access frequency - higher salience = more frequently activated.
+    pub salience01: f32,
     /// Normalized relative age proxy in [0,1].
     /// Higher means "newer" (later unit IDs), which aligns with neurogenesis appends.
     pub rel_age: f32,
@@ -584,6 +600,7 @@ impl Brain {
                 phase: rng.gen_range_f32(-core::f32::consts::PI, core::f32::consts::PI),
                 bias: 0.0,
                 decay: 0.12,
+                salience: 0.0,
             });
         }
 
@@ -966,6 +983,7 @@ impl Brain {
         self.write_stat_chunk(w)?;
         self.write_unit_chunk(w)?;
         self.write_mask_chunk(w)?;
+        self.write_salience_chunk(w)?;
         self.write_groups_chunk(w)?;
         self.write_symbols_chunk(w)?;
         self.write_causality_chunk(w)?;
@@ -982,6 +1000,7 @@ impl Brain {
         self.write_stat_chunk_v2(w)?;
         self.write_unit_chunk_v2(w)?;
         self.write_mask_chunk_v2(w)?;
+        self.write_salience_chunk_v2(w)?;
         self.write_groups_chunk_v2(w)?;
         self.write_symbols_chunk_v2(w)?;
         self.write_causality_chunk_v2(w)?;
@@ -1016,6 +1035,7 @@ impl Brain {
         let mut connections: Option<CsrConnections> = None;
         let mut reserved: Option<Vec<bool>> = None;
         let mut learning_enabled: Option<Vec<bool>> = None;
+        let mut salience: Option<Vec<f32>> = None;
         let mut sensor_groups: Option<Vec<NamedGroup>> = None;
         let mut action_groups: Option<Vec<NamedGroup>> = None;
         let mut symbols_rev: Option<Vec<String>> = None;
@@ -1061,6 +1081,7 @@ impl Brain {
                     reserved = Some(rsv);
                     learning_enabled = Some(learn);
                 }
+                b"SALI" => salience = Some(Self::read_salience_payload(&mut cursor)?),
                 b"GRPS" => {
                     let (sg, ag) = Self::read_groups_payload(&mut cursor)?;
                     sensor_groups = Some(sg);
@@ -1116,6 +1137,17 @@ impl Brain {
             rng_state.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing PRNG"))?;
 
         let age_steps = age_steps.unwrap_or(0);
+
+        // Apply salience from SALI chunk if present (backwards compatible).
+        // Older images without SALI chunk will have salience = 0.0 (already set in read_unit_payload).
+        let mut units = units;
+        if let Some(sal) = salience {
+            for (i, s) in sal.into_iter().enumerate() {
+                if i < units.len() {
+                    units[i].salience = s;
+                }
+            }
+        }
 
         let mut brain = Self {
             cfg,
@@ -1220,6 +1252,8 @@ impl Brain {
             + 4  // coactive_threshold
             + 4  // phase_lock_threshold
             + 4  // imprint_rate
+            + 4  // salience_decay
+            + 4  // salience_gain
             + 4  // seed_present
             + 8  // seed
             + 4 // causal_decay
@@ -1240,6 +1274,8 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.coactive_threshold)?;
         storage::write_f32_le(w, self.cfg.phase_lock_threshold)?;
         storage::write_f32_le(w, self.cfg.imprint_rate)?;
+        storage::write_f32_le(w, self.cfg.salience_decay)?;
+        storage::write_f32_le(w, self.cfg.salience_gain)?;
         storage::write_u32_le(w, if self.cfg.seed.is_some() { 1 } else { 0 })?;
         storage::write_u64_le(w, self.cfg.seed.unwrap_or(0))?;
         storage::write_f32_le(w, self.cfg.causal_decay)?;
@@ -1262,6 +1298,12 @@ impl Brain {
         let coactive_threshold = storage::read_f32_le(r)?;
         let phase_lock_threshold = storage::read_f32_le(r)?;
         let imprint_rate = storage::read_f32_le(r)?;
+
+        // New fields (salience_decay, salience_gain) added after imprint_rate.
+        // For backwards compatibility, try reading them with defaults.
+        let salience_decay = storage::read_f32_le(r).unwrap_or(0.001);
+        let salience_gain = storage::read_f32_le(r).unwrap_or(0.1);
+
         let seed_present = storage::read_u32_le(r)?;
         let seed = storage::read_u64_le(r)?;
         let causal_decay = storage::read_f32_le(r)?;
@@ -1280,6 +1322,8 @@ impl Brain {
             coactive_threshold,
             phase_lock_threshold,
             imprint_rate,
+            salience_decay,
+            salience_gain,
             seed: if seed_present != 0 { Some(seed) } else { None },
             causal_decay,
         })
@@ -1422,6 +1466,7 @@ impl Brain {
         let unit_count = storage::read_u32_le(r)? as usize;
 
         // Read unit scalars.
+        // Note: salience is loaded separately from SALI chunk for backwards compatibility.
         let mut units: Vec<Unit> = Vec::with_capacity(unit_count);
         for _ in 0..unit_count {
             let amp = storage::read_f32_le(r)?;
@@ -1433,6 +1478,7 @@ impl Brain {
                 phase,
                 bias,
                 decay,
+                salience: 0.0, // Default; will be updated from SALI chunk if present
             });
         }
 
@@ -1568,6 +1614,49 @@ impl Brain {
             out[i] = bit != 0;
         }
         out
+    }
+
+    // -------------------------------------------------------------------------
+    // Salience chunk (SALI) - stores per-unit salience values
+    // -------------------------------------------------------------------------
+
+    #[cfg(feature = "std")]
+    fn salience_payload_len_bytes(&self) -> u32 {
+        // unit_count (u32) + unit_count * salience (f32)
+        4 + (self.units.len() as u32) * 4
+    }
+
+    #[cfg(feature = "std")]
+    fn write_salience_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = self.salience_payload_len_bytes();
+        w.write_all(b"SALI")?;
+        storage::write_u32_le(w, payload_len)?;
+
+        storage::write_u32_le(w, self.units.len() as u32)?;
+        for u in &self.units {
+            storage::write_f32_le(w, u.salience)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    fn write_salience_chunk_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut payload: Vec<u8> = Vec::with_capacity(self.salience_payload_len_bytes() as usize);
+        storage::write_u32_le(&mut payload, self.units.len() as u32)?;
+        for u in &self.units {
+            storage::write_f32_le(&mut payload, u.salience)?;
+        }
+        storage::write_chunk_v2_lz4(w, *b"SALI", &payload)
+    }
+
+    #[cfg(feature = "std")]
+    fn read_salience_payload<R: Read>(r: &mut R) -> io::Result<Vec<f32>> {
+        let n = storage::read_u32_le(r)? as usize;
+        let mut salience = Vec::with_capacity(n);
+        for _ in 0..n {
+            salience.push(storage::read_f32_le(r)?);
+        }
+        Ok(salience)
     }
 
     #[cfg(feature = "std")]
@@ -1870,16 +1959,26 @@ impl Brain {
         let take = max_points.min(n);
         let denom = (n - 1).max(1) as f32;
 
-        // First pass: determine max amplitude across sampled points.
+        // First pass: determine max amplitude and max salience across sampled points.
         let mut max_amp = 0.0f32;
+        let mut max_salience = 0.0f32;
         for i in 0..take {
             let id = (i * n) / take;
             let a = self.units[id].amp;
+            let s = self.units[id].salience;
             if a > max_amp {
                 max_amp = a;
             }
+            if s > max_salience {
+                max_salience = s;
+            }
         }
         let inv_max = if max_amp > 1e-6 { 1.0 / max_amp } else { 0.0 };
+        let inv_max_salience = if max_salience > 1e-6 {
+            1.0 / max_salience
+        } else {
+            0.0
+        };
 
         let mut out = Vec::with_capacity(take);
         for i in 0..take {
@@ -1887,11 +1986,13 @@ impl Brain {
             let rel_age = (id as f32 / denom).clamp(0.0, 1.0);
             let amp = self.units[id].amp;
             let phase = self.units[id].phase;
+            let salience = self.units[id].salience;
             out.push(UnitPlotPoint {
                 id: id as u32,
                 amp,
                 amp01: (amp * inv_max).clamp(0.0, 1.0),
                 phase,
+                salience01: (salience * inv_max_salience).clamp(0.0, 1.0),
                 rel_age,
                 is_reserved: self.reserved.get(id).copied().unwrap_or(false),
                 is_sensor_member: self.sensor_member.get(id).copied().unwrap_or(false),
@@ -2826,9 +2927,22 @@ impl Brain {
             next_phase[i] = wrap_angle(u.phase + d_phase);
         }
 
+        // Update units with new amp/phase and update salience.
+        // Salience formula: s = (1 - λ) * s + α * max(0, amp - threshold)
+        let salience_decay = self.cfg.salience_decay;
+        let salience_gain = self.cfg.salience_gain;
+        let salience_threshold = self.cfg.coactive_threshold;
+
         for i in 0..self.units.len() {
             self.units[i].amp = next_amp[i];
             self.units[i].phase = next_phase[i];
+
+            // Update salience: decay + gain when active
+            let activation = (next_amp[i] - salience_threshold).max(0.0);
+            self.units[i].salience =
+                (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
+            // Clamp salience to reasonable range
+            self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
         }
     }
 
@@ -2947,10 +3061,20 @@ impl Brain {
             phases[i] = wrap_angle(phases[i] + d_phase);
         }
 
-        // Write back to units.
+        // Write back to units and update salience.
+        let salience_decay = self.cfg.salience_decay;
+        let salience_gain = self.cfg.salience_gain;
+        let salience_threshold = self.cfg.coactive_threshold;
+
         for i in 0..n {
             self.units[i].amp = amps[i];
             self.units[i].phase = phases[i];
+
+            // Update salience: decay + gain when active
+            let activation = (amps[i] - salience_threshold).max(0.0);
+            self.units[i].salience =
+                (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
+            self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
         }
     }
 
@@ -3016,9 +3140,20 @@ impl Brain {
             })
             .collect();
 
+        // Update units and salience.
+        let salience_decay = self.cfg.salience_decay;
+        let salience_gain = self.cfg.salience_gain;
+        let salience_threshold = self.cfg.coactive_threshold;
+
         for (i, (amp, phase)) in next.into_iter().enumerate() {
             self.units[i].amp = amp;
             self.units[i].phase = phase;
+
+            // Update salience: decay + gain when active
+            let activation = (amp - salience_threshold).max(0.0);
+            self.units[i].salience =
+                (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
+            self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
         }
     }
 
@@ -3104,13 +3239,23 @@ impl Brain {
         });
 
         if used_gpu {
-            // Write back from GPU.
+            // Write back from GPU and update salience.
+            let salience_decay = self.cfg.salience_decay;
+            let salience_gain = self.cfg.salience_gain;
+            let salience_threshold = self.cfg.coactive_threshold;
+
             for (i, gu) in gpu_units.into_iter().enumerate() {
                 self.units[i].amp = gu.amp;
                 self.units[i].phase = gu.phase;
+
+                // Update salience: decay + gain when active
+                let activation = (gu.amp - salience_threshold).max(0.0);
+                self.units[i].salience =
+                    (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
+                self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
             }
         } else {
-            // Fallback to scalar if no GPU.
+            // Fallback to scalar if no GPU (scalar already updates salience).
             self.step_dynamics_scalar();
         }
     }
@@ -3370,6 +3515,7 @@ impl Brain {
                 .gen_range_f32(-core::f32::consts::PI, core::f32::consts::PI),
             bias: 0.05, // Slightly excitable so it can integrate
             decay: 0.12,
+            salience: 0.0,
         };
         self.units.push(new_unit);
 
@@ -3522,6 +3668,7 @@ impl Brain {
                     .gen_range_f32(-core::f32::consts::PI, core::f32::consts::PI),
                 bias: 0.08, // Slightly more excitable for targeted growth
                 decay: 0.12,
+                salience: 0.0,
             };
             self.units.push(new_unit);
             self.reserved.push(false);
@@ -4352,6 +4499,7 @@ mod tests {
             imprint_rate: 0.3,
             seed: Some(123),
             causal_decay: 0.01,
+            ..Default::default()
         };
 
         let brain = Brain::new(cfg);
@@ -4400,6 +4548,7 @@ mod tests {
             imprint_rate: 0.0,
             seed: Some(42),
             causal_decay: 0.01,
+            ..Default::default()
         };
 
         let brain = Brain::new(cfg);
@@ -4432,6 +4581,7 @@ mod tests {
             imprint_rate: 0.0,
             seed: Some(7),
             causal_decay: 0.01,
+            ..Default::default()
         };
 
         let mut brain = Brain::new(cfg);
@@ -4470,6 +4620,7 @@ mod tests {
             imprint_rate: 0.0,
             seed: Some(99),
             causal_decay: 0.01,
+            ..Default::default()
         };
 
         let mut brain = Brain::new(cfg);

@@ -311,28 +311,55 @@ pub fn draw_brain_connectivity_sphere(
 
         let amp = (node.amp01 as f64).clamp(0.0, 1.0);
         let phase = node.phase as f64;
+        let salience = (node.salience01 as f64).clamp(0.0, 1.0);
 
-        // Pulsing effect: nodes pulse based on their phase and amplitude
-        // High amplitude nodes pulse more visibly
+        // Pulsing effect: ONLY active nodes pulse (amp > 0.3 threshold)
+        // Static/inactive nodes remain still for visual clarity
+        let is_active = amp > 0.3;
         let pulse_freq = 0.15; // Pulse frequency (slower for better visibility)
-        let pulse = ((anim_time * pulse_freq + phase).sin() * 0.5 + 0.5) * amp;
-
-        let base = if node.is_sensor_member {
-            2.4
-        } else if node.is_group_member {
-            2.0
+        let pulse = if is_active {
+            ((anim_time * pulse_freq + phase).sin() * 0.5 + 0.5) * amp
         } else {
-            1.7
+            0.0 // No pulsing for inactive nodes
         };
 
+        // Base size depends on node type (REDUCED from original)
+        // Unit type classification:
+        // - sensor_member: units allocated to sensor groups (input encoding)
+        // - group_member: units allocated to action groups (output selection)
+        // - reserved: units with learning disabled (sensor/action or special)
+        // - regular: freely available units for concept formation
+        let type_base = if node.is_sensor_member {
+            1.8 // Sensors (blue) - reduced from 2.4
+        } else if node.is_group_member {
+            1.5 // Actions/groups (green) - reduced from 2.0
+        } else {
+            1.2 // Regular units (yellow) - reduced from 1.7
+        };
+
+        // Salience adds to base size: more frequently accessed nodes appear larger
+        // Salience contribution: up to +1.5 size for max salience (reduced from +3.0)
+        let salience_size = 1.5 * salience;
+
+        // Dynamic amplitude contribution (current activity) - reduced from 4.0
+        let amp_size = 2.0 * amp;
+
+        // Combined base (type + salience)
+        let base = type_base + salience_size;
+
         // Scale down nodes (and a touch with zoom) to keep density readable.
-        // Add pulsing to size for active nodes
-        let pulse_size_factor = 1.0 + pulse * 0.4; // Up to 40% size increase when pulsing
-        let mut size = (base + 5.0 * amp) * opts.node_size_scale * pulse_size_factor;
+        // Only add pulsing to size for ACTIVE nodes
+        let pulse_size_factor = if is_active { 1.0 + pulse * 0.3 } else { 1.0 };
+        let mut size = (base + amp_size) * opts.node_size_scale * pulse_size_factor;
         size *= zoom.sqrt();
 
-        // Alpha also pulses for active nodes
-        let alpha = (0.35 + 0.65 * amp) * (0.8 + 0.2 * pulse);
+        // Alpha: salience contributes to base visibility, amplitude adds dynamic
+        // Active nodes are more visible, inactive nodes fade into background
+        let alpha = if is_active {
+            (0.4 + 0.3 * salience + 0.3 * amp) * (0.85 + 0.15 * pulse)
+        } else {
+            0.25 + 0.25 * salience // Static low visibility for inactive
+        };
 
         // Color nodes based on type AND learning/inference mode
         // Learning mode: warmer tones (orange/amber accents)

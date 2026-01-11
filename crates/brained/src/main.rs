@@ -718,6 +718,7 @@ impl DaemonState {
             imprint_rate: 0.6,
             seed: Some(123),
             causal_decay: 0.01,
+            ..Default::default()
         });
 
         brain.define_sensor("spot_left", 4);

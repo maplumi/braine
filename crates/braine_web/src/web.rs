@@ -536,6 +536,55 @@ fn App() -> impl IntoView {
         }
     };
 
+    // Accelerated Learning functions (Dream, Burst, Sync, Imprint)
+    let do_dream = {
+        let runtime = runtime.clone();
+        let refresh_ui_from_runtime = refresh_ui_from_runtime.clone();
+        move || {
+            runtime.update_value(|r| {
+                r.brain.dream(100, 2.0, 0.5);
+            });
+            refresh_ui_from_runtime();
+            set_status.set("dream: consolidation complete".to_string());
+        }
+    };
+
+    let do_burst = {
+        let runtime = runtime.clone();
+        let refresh_ui_from_runtime = refresh_ui_from_runtime.clone();
+        move || {
+            runtime.update_value(|r| {
+                r.brain.set_burst_mode(true, 3.0);
+            });
+            refresh_ui_from_runtime();
+            set_status.set("burst: learning rate boosted".to_string());
+        }
+    };
+
+    let do_sync = {
+        let runtime = runtime.clone();
+        let refresh_ui_from_runtime = refresh_ui_from_runtime.clone();
+        move || {
+            runtime.update_value(|r| {
+                r.brain.force_synchronize_sensors();
+            });
+            refresh_ui_from_runtime();
+            set_status.set("sync: sensor phases aligned".to_string());
+        }
+    };
+
+    let do_imprint = {
+        let runtime = runtime.clone();
+        let refresh_ui_from_runtime = refresh_ui_from_runtime.clone();
+        move || {
+            runtime.update_value(|r| {
+                r.brain.imprint_current_context(0.5);
+            });
+            refresh_ui_from_runtime();
+            set_status.set("imprint: context associations created".to_string());
+        }
+    };
+
     let do_start = {
         let do_tick = do_tick.clone();
         move || {
@@ -3274,7 +3323,7 @@ fn App() -> impl IntoView {
                             <div class="stack">
                                 <div class="card">
                                     <h3 class="card-title">"🧪 Learning"</h3>
-                                    <p class="subtle">"Controls for learning writes, reward shaping, and simulation cadence."</p>
+                                    <p class="subtle">"Controls for learning writes, accelerated learning, and simulation cadence."</p>
                                 </div>
 
                                 <div class="card">
@@ -3293,6 +3342,22 @@ fn App() -> impl IntoView {
                                         </label>
                                     </div>
                                     <p class="subtle">"Disable this to run inference-only without updating causal/meaning memory."</p>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"⚡ Accelerated Learning"</h3>
+                                    <div class="row end wrap">
+                                        <button class="btn" on:click=move |_| do_dream()>"💭 Dream"</button>
+                                        <button class="btn" on:click=move |_| do_burst()>"🔥 Burst"</button>
+                                        <button class="btn" on:click=move |_| do_sync()>"🔄 Sync"</button>
+                                        <button class="btn" on:click=move |_| do_imprint()>"💡 Imprint"</button>
+                                    </div>
+                                    <div class="callout" style="margin-top: 10px;">
+                                        <p style="margin: 2px 0;"><strong>"Dream"</strong>": Offline replay to consolidate recent structure (stabilizes what just worked)."</p>
+                                        <p style="margin: 2px 0;"><strong>"Burst"</strong>": Temporary learning-rate boost (helps rapid adaptation; can increase drift if overused)."</p>
+                                        <p style="margin: 2px 0;"><strong>"Sync"</strong>": Aligns sensor phases for cleaner encoding (use after a regime shift / reversal)."</p>
+                                        <p style="margin: 2px 0;"><strong>"Imprint"</strong>": One-shot linking of the current context (fast association when the brain is missing a concept)."</p>
+                                    </div>
                                 </div>
 
                                 <div class="card">

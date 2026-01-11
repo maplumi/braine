@@ -44,6 +44,7 @@ pub fn run() {
         imprint_rate: 0.6,
         seed: Some(seed),
         causal_decay: 0.01,
+        ..Default::default()
     });
 
     brain.define_action("approach", 6);
@@ -244,6 +245,7 @@ fn run_novel_reward_loop(seed: u64, meaning_guided: bool) -> (f32, Option<(Strin
         imprint_rate: 0.6,
         seed: Some(seed),
         causal_decay: 0.01,
+        ..Default::default()
     });
 
     brain.define_action("approach", 6);

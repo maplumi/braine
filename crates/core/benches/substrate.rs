@@ -27,6 +27,7 @@ fn make_brain(unit_count: usize, connectivity: usize, seed: u64) -> Brain {
         imprint_rate: 0.6,
         seed: Some(seed),
         causal_decay: 0.01,
+        ..Default::default()
     })
 }
 
