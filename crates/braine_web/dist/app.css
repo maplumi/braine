@@ -592,3 +592,122 @@ a {
 .hidden {
   display: none;
 }
+
+/* Mobile responsive styles */
+@media (max-width: 768px) {
+  .content-split {
+    grid-template-columns: 1fr;
+  }
+
+  .game-area {
+    border-right: none;
+  }
+
+  .dashboard {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 85%;
+    max-width: 400px;
+    z-index: 100;
+    transform: translateX(100%);
+    transition: transform 0.3s ease;
+    box-shadow: -4px 0 20px rgba(0, 0, 0, 0.4);
+  }
+
+  .dashboard.open {
+    transform: translateX(0);
+  }
+
+  .dashboard-overlay {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+  }
+
+  .dashboard-overlay.open {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .dashboard-toggle {
+    display: flex;
+    position: fixed;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 98;
+    width: 36px;
+    height: 60px;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px 0 0 8px;
+    color: #fff;
+    font-size: 1.2rem;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .dashboard-toggle:hover {
+    background: color-mix(in oklab, var(--accent) 85%, #fff);
+  }
+
+  .app-nav {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-header {
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .brand {
+    font-size: 1.1rem;
+  }
+
+  .subtle {
+    font-size: 0.75rem;
+  }
+
+  .controls {
+    gap: 4px;
+  }
+
+  .btn {
+    padding: 6px 10px;
+    font-size: 0.85rem;
+  }
+
+  .label {
+    font-size: 0.8rem;
+  }
+
+  .input {
+    width: 70px;
+    padding: 5px 8px;
+  }
+}
+
+/* Desktop: hide mobile-only elements */
+@media (min-width: 769px) {
+  .dashboard-toggle {
+    display: none;
+  }
+
+  .dashboard-overlay {
+    display: none;
+  }
+}

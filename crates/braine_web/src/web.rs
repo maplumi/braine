@@ -103,7 +103,9 @@ fn App() -> impl IntoView {
     let (diag, set_diag) = signal(runtime.with_value(|r| r.brain.diagnostics()));
 
     let (game_kind, set_game_kind) = signal(GameKind::Spot);
-    let (dashboard_tab, set_dashboard_tab) = signal(DashboardTab::GameDetails);
+    let (dashboard_tab, set_dashboard_tab) = signal(DashboardTab::Learning);
+    // Mobile responsive: dashboard drawer (hidden by default on small screens)
+    let (dashboard_open, set_dashboard_open) = signal(false);
     let (analytics_panel, set_analytics_panel) = signal(AnalyticsPanel::Performance);
     let (trial_period_ms, set_trial_period_ms) = signal(500u32);
     let (run_interval_ms, set_run_interval_ms) = signal(33u32);
@@ -206,7 +208,7 @@ fn App() -> impl IntoView {
     let (brainviz_points, set_brainviz_points) = signal::<Vec<UnitPlotPoint>>(Vec::new());
     let (brainviz_node_sample, set_brainviz_node_sample) = signal(128u32);
     let (brainviz_edges_per_node, set_brainviz_edges_per_node) = signal(4u32);
-    let (brainviz_zoom, set_brainviz_zoom) = signal(1.0f32);
+    let (brainviz_zoom, set_brainviz_zoom) = signal(1.5f32);
     let (brainviz_pan_x, set_brainviz_pan_x) = signal(0.0f32);
     let (brainviz_pan_y, set_brainviz_pan_y) = signal(0.0f32);
     let (brainviz_auto_rotate, set_brainviz_auto_rotate) = signal(true);
@@ -1730,8 +1732,23 @@ fn App() -> impl IntoView {
                     </Show>
                     </div>
 
+                // Mobile dashboard toggle button (visible only on small screens)
+                <button
+                    class="dashboard-toggle"
+                    on:click=move |_| set_dashboard_open.set(true)
+                    title="Open Dashboard"
+                >
+                    "◀"
+                </button>
+
+                // Mobile dashboard overlay (click to close)
+                <div
+                    class=move || if dashboard_open.get() { "dashboard-overlay open" } else { "dashboard-overlay" }
+                    on:click=move |_| set_dashboard_open.set(false)
+                ></div>
+
                 // Dashboard (right) - Tabbed panel
-                <div class="dashboard">
+                <div class=move || if dashboard_open.get() { "dashboard open" } else { "dashboard" }>
                     <div class="dashboard-tabs">
                         {DashboardTab::all().iter().map(|tab| {
                             let t = *tab;
@@ -2649,78 +2666,6 @@ fn App() -> impl IntoView {
                             </div>
                         </Show>
 
-                        <Show when=move || dashboard_tab.get() == DashboardTab::About>
-                            <div style="display: flex; flex-direction: column; gap: 14px;">
-                                <div style="text-align: center; padding: 14px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.12), rgba(0,0,0,0.2)); border: 1px solid var(--border); border-radius: 12px;">
-                                    <div style="font-size: 1.8rem;">"🧠"</div>
-                                    <h2 style="margin: 6px 0 2px 0; font-size: 1.15rem; color: var(--accent);">"Braine — closed-loop learning substrate"</h2>
-                                    <p style="margin: 0; color: var(--muted); font-size: 0.85rem;">"Sparse recurrent dynamics • local plasticity • scalar reward (neuromodulation) • no backprop"</p>
-                                </div>
-
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"What you’re looking at"</h3>
-                                    <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                        "This web lab is designed to run a game (left) while you watch learning signals, indicators, and graphs (right). The goal is interpretability while learning happens — not offline training."
-                                    </p>
-                                </div>
-
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Key principles"</h3>
-                                    <div style="display: flex; flex-direction: column; gap: 10px;">
-                                        <div>
-                                            <strong style="color: var(--text);">"Learning modifies state"</strong>
-                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Plasticity + reward updates internal couplings and causal memory."</div>
-                                        </div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Inference uses state"</strong>
-                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Action selection is a readout from the learned dynamics."</div>
-                                        </div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Closed loop"</strong>
-                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Stimulus → dynamics → action → reward, repeated online."</div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Data format (.bbi brain image)"</h3>
-                                    <p style="margin: 0 0 10px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                        "Braine persists the substrate as a custom, versioned, chunked binary format (BBI). This is not generic serde; it’s designed to be forward-skippable and capacity-aware."
-                                    </p>
-                                    <pre class="codeblock">{"BBI header (little-endian)\n- magic: BRAINE01 (8 bytes)\n- version: u32 (currently 2)\n\nChunk layout (v2, compressed)\n- tag: [u8;4] ASCII\n- len: u32 (bytes following)\n- uncompressed_len: u32\n- lz4_payload: bytes\n\nKnown chunk tags\n- CFG0: BrainConfig (unit_count, connectivity_per_unit, dt, base_freq, noise_amp, noise_phase, global_inhibition, hebb_rate, forget_rate, prune_below, coactive_threshold, phase_lock_threshold, imprint_rate, seed?, causal_decay)\n- PRNG: RNG state (u64)\n- STAT: age_steps (u64)\n- UNIT: unit states + CSR sparse connections\n- MASK: reserved[] + learning_enabled[] (bitsets)\n- GRPS: sensor/action group definitions\n- SYMB: symbol string table (rebuilds symbol map)\n- CAUS: causal memory counts/edges\n\nUnknown tags are skipped on load for forward-compatibility."}</pre>
-                                </div>
-
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Storage mechanisms"</h3>
-                                    <pre class="codeblock">{"Web (this app)\n- IndexedDB (db: 'braine', store: 'kv')\n  - key 'brain_image': raw BBI bytes (Brain::save_image_bytes / load_image_bytes)\n  - key 'game_accuracy': JSON map {game -> accuracy}\n- localStorage\n  - 'braine_theme': UI theme\n  - 'braine_settings_v1': JSON {reward_scale, reward_bias, learning_enabled, run_interval_ms, trial_period_ms}\n  - 'braine_game_stats_v1.<Game>': JSON (stats + chart history + choices history)\n- Export/Import\n  - Export downloads the current brain image as a .bbi snapshot\n  - Import loads a .bbi (optionally autosave to IndexedDB)\n\nDaemon mode (brained)\n- Persists to OS data directories (brain.bbi)\n  - Linux: ~/.local/share/braine/brain.bbi\n  - Windows: %APPDATA%\\Braine\\brain.bbi\n  - macOS: ~/Library/Application Support/Braine/brain.bbi\n- Uses newline-delimited JSON over TCP (127.0.0.1:9876) between daemon and clients."}</pre>
-                                </div>
-
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Configuration parameters"</h3>
-                                    <pre class="codeblock">{"BrainConfig (core defaults)\n- unit_count: 256\n- connectivity_per_unit: 12\n- dt: 0.05\n- base_freq: 1.0\n- noise_amp: 0.02\n- noise_phase: 0.01\n- global_inhibition: 0.2\n- hebb_rate: 0.08\n- forget_rate: 0.0005\n- prune_below: 0.01\n- coactive_threshold: 0.3\n- phase_lock_threshold: 0.7\n- imprint_rate: 0.5\n- seed: None\n- causal_decay: 0.002\n\nWeb lab defaults\n- seed override: 2026 (make_default_brain)\n- trial_period_ms: 500\n- run_interval_ms: 33 (≈30Hz)\n- exploration_eps (ε): 0.08\n- meaning_alpha (α): 6.0\n\nGame seeds\n- PongSim seed: 0xB0A7_F00D\n- Web runtime RNG seed: 0xC0FF_EE12"}</pre>
-                                </div>
-
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Equations (dynamics + learning)"</h3>
-                                    <p style="margin: 0 0 10px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                        "These equations mirror the implementation in the core substrate (amp/phase oscillators + sparse couplings + local plasticity + forgetting/pruning + causal memory)."
-                                    </p>
-                                    <pre class="codeblock">{"State per unit i\n- amplitude a_i(t)\n- phase φ_i(t)\n- bias b_i, decay d_i\n- one-tick input x_i(t) from applied stimuli\n\nSparse recurrent influence (neighbors N(i) with weights w_{ij})\n- amp influence:  S_i(t) = Σ_{j∈N(i)} w_{ij} · a_j(t)\n- phase influence: P_i(t) = Σ_{j∈N(i)} w_{ij} · Δ(φ_j(t), φ_i(t))\n\nGlobal inhibition (competition)\n- ā(t) = (1/N) Σ_k a_k(t)\n- I(t) = g · ā(t)   where g = global_inhibition\n\nNoise\n- η^a_i ~ U[-noise_amp, +noise_amp]\n- η^φ_i ~ U[-noise_phase, +noise_phase]\n\nDynamics update (Euler step, dt)\n- damp term: D_i(t) = d_i · a_i(t)\n- a_i(t+dt) = clip( a_i(t) + (b_i + x_i + S_i − I − D_i + η^a_i) · dt , [-2, 2])\n- φ_i(t+dt) = wrap( φ_i(t) + (base_freq + P_i + η^φ_i) · dt )\n\nHebbian plasticity on existing sparse edges\n- activity threshold θ = coactive_threshold\n- phase alignment A(φ_i, φ_j) ∈ [0,1]\n- phase threshold θ_φ = phase_lock_threshold\n- learning rate: lr = hebb_rate · (1 + max(0, neuromod))\n\nFor each edge i→j (stored in CSR)\n- if a_i > θ and a_j > θ and A(φ_i, φ_j) > θ_φ:\n    Δw_{ij} = lr · A(φ_i, φ_j)\n  else if a_i > θ and a_j > θ and A(φ_i, φ_j) ≤ θ_φ:\n    Δw_{ij} = −lr · 0.05\n  else:\n    Δw_{ij} = 0\n- w_{ij} ← clip(w_{ij} + Δw_{ij}, [-1.5, 1.5])\n\nForgetting + pruning (structural decay)\n- w_{ij} ← (1 − forget_rate) · w_{ij}\n- if |w_{ij}| < prune_below: prune edge (except “engram” sensor↔concept edges keep a minimal trace)\n\nAction scoring (habit + meaning)\n- habit_norm(a) = clamp( (Σ_{u∈action_units(a)} max(0, a_u)) / (|units| · 2), [0,1])\n- meaning(a|stimulus) = (pair_value · 1.0) + (global_value · 0.15)\n  where\n    global_value = causal(a, reward_pos) − causal(a, reward_neg)\n    pair_value = causal(pair(stimulus,a), reward_pos) − causal(pair(stimulus,a), reward_neg)\n- score(a|stimulus) = 0.5 · habit_norm(a) + meaning_alpha · meaning(a|stimulus)\n\nIn the web loop, exploration is ε-gated: with probability ε choose a random allowed action; otherwise choose the top scored action."}</pre>
-                                </div>
-
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Version Info"</h3>
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem;">
-                                        <span style="color: var(--muted);">"Braine Core:"</span>
-                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE}</span>
-                                        <span style="color: var(--muted);">"Brain Image (BBI):"</span>
-                                        <span style="color: var(--text); font-weight: 600;">{format!("v{}", VERSION_BBI_FORMAT)}</span>
-                                        <span style="color: var(--muted);">"Braine Web:"</span>
-                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE_WEB}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </Show>
                     </div>
                 </div>
             </div>
@@ -2730,13 +2675,12 @@ fn App() -> impl IntoView {
 /// Dashboard tabs for the right panel in split-page layout
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum DashboardTab {
+    Learning,
     #[default]
     GameDetails,
-    Learning,
     Stats,
     Analytics,
     Settings,
-    About,
 }
 
 impl DashboardTab {
@@ -2747,7 +2691,6 @@ impl DashboardTab {
             DashboardTab::Stats => "Stats",
             DashboardTab::Analytics => "Analytics",
             DashboardTab::Settings => "Settings",
-            DashboardTab::About => "About",
         }
     }
     fn icon(self) -> &'static str {
@@ -2757,12 +2700,10 @@ impl DashboardTab {
             DashboardTab::Stats => "📊",
             DashboardTab::Analytics => "📈",
             DashboardTab::Settings => "⚙️",
-            DashboardTab::About => "ℹ️",
         }
     }
     fn all() -> &'static [DashboardTab] {
         &[
-            DashboardTab::About,
             DashboardTab::Learning,
             DashboardTab::GameDetails,
             DashboardTab::Stats,
