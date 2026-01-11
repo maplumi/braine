@@ -1,5 +1,5 @@
 use crate::stats::GameStats;
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Spot reversal: the stimulus side stays the same, but the correct action

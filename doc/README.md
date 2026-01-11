@@ -26,6 +26,7 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 - [Architecture](architecture/architecture.md): core substrate + "body/frame" interface + execution tiers
 - (In Architecture) `brained` daemon + UI/CLI protocol, including FPS vs trial-period controls
 - [Interaction](architecture/interaction.md): inputs, outputs, and basic interaction model
+- [Language contract](architecture/language-contract.md): text prediction as a closed-loop task (no LLM mechanisms)
 - [Brain Image Format](architecture/brain-image.md): custom persistence format + storage adapters
 - [Performance](architecture/performance.md): execution tiers, SIMD, GPU, and benchmarking
 - [Experts / Child Brains](architecture/experts.md): general sandbox learning mechanism for all games (design contract; implemented later)

@@ -1,0 +1,13 @@
+[build]
+target = "index.html"
+dist = "dist"
+# Force clean build to pickup rustflags
+filehash = true
+
+[watch]
+watch = ["src", "index.html"]
+
+[[hooks]]
+stage = "pre_build"
+command = "sh"
+command_arguments = ["-c", "export RUSTFLAGS='-C target-feature=-reference-types'"]

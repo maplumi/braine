@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+
+[target.wasm32-unknown-unknown]
+# This won't work but let me try another approach

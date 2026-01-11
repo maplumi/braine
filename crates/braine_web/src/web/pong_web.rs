@@ -1,7 +1,8 @@
 use braine::substrate::{Brain, Stimulus};
 use braine_games::pong::{PongAction, PongSim};
 use braine_games::stats::GameStats;
-use std::time::{Duration, Instant};
+use core::time::Duration;
+use web_time::Instant;
 
 #[derive(Debug)]
 pub struct PongWebGame {

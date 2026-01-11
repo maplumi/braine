@@ -14,3 +14,6 @@ braine = ["std", "dep:braine"]
 # Optional: allow certain games to directly apply stimuli to a `braine::substrate::Brain`.
 # This is used by the daemon today, and can be disabled for WASM builds.
 braine = { workspace = true, optional = true, features = ["std"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"

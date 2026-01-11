@@ -21,6 +21,7 @@ export component GameHeader inherits Rectangle {
         (kind == "spot_reversal") ? "Spot Reversal" :
         (kind == "spotxy") ? "SpotXY" :
         (kind == "pong") ? "Pong" :
+        (kind == "text") ? "Text" :
         "Spot";
 
     property <string> help_text:
@@ -28,6 +29,7 @@ export component GameHeader inherits Rectangle {
         (kind == "bandit") ? "Two-armed bandit: rewards are stochastic; learn which arm pays." :
         (kind == "spotxy") ? "Track the dot (TRAIN) or holdout (EVAL)." :
         (kind == "spot_reversal") ? "Rule flips; context bit helps detect reversals." :
+        (kind == "text") ? "Next-token prediction: observe token, choose the next token." :
         "Discriminate left vs right spot.";
 
     VerticalBox {
@@ -43,6 +45,15 @@ export component GameHeader inherits Rectangle {
             color: Theme.text-secondary;
             font-size: 12px;
             wrap: word-wrap;
+        }
+
+        if kind == "text": Text {
+            text: "regime=" + game.text-regime +
+                  " token=" + game.text-token +
+                  " target_next=" + game.text-target-next +
+                  " vocab=" + game.text-vocab-size;
+            color: Theme.text-secondary;
+            font-size: 12px;
         }
     }
 }

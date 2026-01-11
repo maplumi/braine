@@ -31,7 +31,7 @@ mod paths;
 mod state_image;
 
 use experts::{ExpertManager, ExpertsPersistenceMode, ParentLearningPolicy};
-use game::{BanditGame, PongGame, SpotGame, SpotReversalGame, SpotXYGame};
+use game::{BanditGame, PongGame, SpotGame, SpotReversalGame, SpotXYGame, TextNextTokenGame};
 use paths::AppPaths;
 
 fn default_experts_max_depth() -> u32 {
@@ -62,6 +62,7 @@ enum ActiveGame {
     SpotReversal(SpotReversalGame),
     SpotXY(SpotXYGame),
     Pong(PongGame),
+    Text(TextNextTokenGame),
 }
 
 impl ActiveGame {
@@ -72,6 +73,7 @@ impl ActiveGame {
             ActiveGame::SpotReversal(_) => "spot_reversal",
             ActiveGame::SpotXY(_) => "spotxy",
             ActiveGame::Pong(_) => "pong",
+            ActiveGame::Text(_) => "text",
         }
     }
 
@@ -82,6 +84,7 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.update_timing(trial_period_ms),
             ActiveGame::SpotXY(g) => g.update_timing(trial_period_ms),
             ActiveGame::Pong(g) => g.update_timing(trial_period_ms),
+            ActiveGame::Text(g) => g.update_timing(trial_period_ms),
         }
     }
 
@@ -92,16 +95,18 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.stimulus_name(),
             ActiveGame::SpotXY(g) => g.stimulus_name(),
             ActiveGame::Pong(g) => g.stimulus_name(),
+            ActiveGame::Text(g) => g.stimulus_name(),
         }
     }
 
-    fn correct_action(&self) -> &str {
+    fn correct_action(&self) -> std::borrow::Cow<'_, str> {
         match self {
-            ActiveGame::Spot(g) => g.correct_action(),
-            ActiveGame::Bandit(g) => g.best_action(),
-            ActiveGame::SpotReversal(g) => g.correct_action(),
-            ActiveGame::SpotXY(g) => g.correct_action(),
-            ActiveGame::Pong(g) => g.correct_action(),
+            ActiveGame::Spot(g) => std::borrow::Cow::Borrowed(g.correct_action()),
+            ActiveGame::Bandit(g) => std::borrow::Cow::Borrowed(g.best_action()),
+            ActiveGame::SpotReversal(g) => std::borrow::Cow::Borrowed(g.correct_action()),
+            ActiveGame::SpotXY(g) => std::borrow::Cow::Borrowed(g.correct_action()),
+            ActiveGame::Pong(g) => std::borrow::Cow::Borrowed(g.correct_action()),
+            ActiveGame::Text(g) => std::borrow::Cow::Owned(g.correct_action()),
         }
     }
 
@@ -113,6 +118,7 @@ impl ActiveGame {
             }
             ActiveGame::SpotXY(g) => g.allowed_actions(),
             ActiveGame::Pong(g) => g.allowed_actions(),
+            ActiveGame::Text(g) => g.allowed_actions(),
         }
     }
 
@@ -123,6 +129,7 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.response_made,
             ActiveGame::SpotXY(g) => g.response_made,
             ActiveGame::Pong(g) => g.response_made,
+            ActiveGame::Text(g) => g.response_made,
         }
     }
 
@@ -133,6 +140,7 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.trial_frame,
             ActiveGame::SpotXY(g) => g.trial_frame,
             ActiveGame::Pong(g) => g.trial_frame,
+            ActiveGame::Text(g) => g.trial_frame,
         }
     }
 
@@ -146,6 +154,8 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => g.pos_x < 0.0,
             // For Pong, reuse this field as "ball is above paddle".
             ActiveGame::Pong(g) => g.sim.state.ball_y > g.sim.state.paddle_y,
+            // For Text, this field is not meaningful.
+            ActiveGame::Text(_) => false,
         }
     }
 
@@ -163,6 +173,10 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.score_action(action),
             ActiveGame::SpotXY(g) => g.score_action(action),
             ActiveGame::Pong(g) => g.score_action(action, trial_period_ms),
+            ActiveGame::Text(g) => {
+                let _ = trial_period_ms;
+                g.score_action(action)
+            }
         }
     }
 
@@ -173,6 +187,7 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => &g.stats,
             ActiveGame::SpotXY(g) => &g.stats,
             ActiveGame::Pong(g) => &g.stats,
+            ActiveGame::Text(g) => &g.stats,
         }
     }
 
@@ -183,6 +198,7 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => &mut g.stats,
             ActiveGame::SpotXY(g) => &mut g.stats,
             ActiveGame::Pong(g) => &mut g.stats,
+            ActiveGame::Text(g) => &mut g.stats,
         }
     }
 
@@ -193,6 +209,7 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.last_action.as_deref(),
             ActiveGame::SpotXY(g) => g.last_action.as_deref(),
             ActiveGame::Pong(g) => g.last_action.as_deref(),
+            ActiveGame::Text(g) => g.last_action.as_deref(),
         }
     }
 
@@ -200,6 +217,7 @@ impl ActiveGame {
         match self {
             ActiveGame::SpotXY(g) => Some(g.stimulus_key()),
             ActiveGame::Pong(g) => Some(g.stimulus_key()),
+            ActiveGame::Text(g) => Some(g.stimulus_key()),
             _ => None,
         }
     }
@@ -217,13 +235,6 @@ impl ActiveGame {
         match self {
             ActiveGame::SpotXY(g) => g.eval_mode,
             _ => false,
-        }
-    }
-
-    fn spotxy_stimulus_key(&self) -> Option<&str> {
-        match self {
-            ActiveGame::SpotXY(g) => Some(g.stimulus_key()),
-            _ => None,
         }
     }
 
@@ -581,6 +592,23 @@ enum GameState {
         #[serde(default)]
         pong_ball_speed: f32,
     },
+    #[serde(rename = "text")]
+    Text {
+        #[serde(flatten)]
+        common: GameCommon,
+        #[serde(default)]
+        text_regime: u32,
+        #[serde(default)]
+        text_token: String,
+        #[serde(default)]
+        text_target_next: String,
+        #[serde(default)]
+        text_outcomes: u32,
+        #[serde(default)]
+        text_shift_every: u32,
+        #[serde(default)]
+        text_vocab_size: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -843,9 +871,14 @@ impl DaemonState {
                 self.ensure_pong_io();
                 self.game = ActiveGame::Pong(PongGame::new());
             }
+            "text" | "text_next_token" | "text-next-token" => {
+                let gg = TextNextTokenGame::new();
+                self.ensure_text_io(&gg);
+                self.game = ActiveGame::Text(gg);
+            }
             _ => {
                 return Err(format!(
-                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|pong"
+                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|pong|text"
                 ))
             }
         }
@@ -899,6 +932,17 @@ impl DaemonState {
         self.brain.ensure_action_min_width("stay", 6);
     }
 
+    fn ensure_text_io(&mut self, g: &TextNextTokenGame) {
+        self.brain.ensure_sensor_min_width("txt_regime_0", 3);
+        self.brain.ensure_sensor_min_width("txt_regime_1", 3);
+        for name in g.token_sensor_names() {
+            self.brain.ensure_sensor_min_width(name, 3);
+        }
+        for name in g.allowed_actions() {
+            self.brain.ensure_action_min_width(name, 6);
+        }
+    }
+
     fn push_history(buf: &mut Vec<f32>, v: f32, cap: usize) {
         buf.push(v);
         if buf.len() > cap {
@@ -942,10 +986,8 @@ impl DaemonState {
         let stimulus_key_owned: Option<String> =
             if self.game.kind() == "spot_reversal" && self.game.reversal_active() {
                 Some(format!("{}::rev", base_stimulus))
-            } else if self.game.kind() == "spotxy" {
-                self.game.spotxy_stimulus_key().map(|s| s.to_string())
             } else {
-                None
+                self.game.stimulus_key().map(|s| s.to_string())
             };
         let stimulus_key = stimulus_key_owned.as_deref().unwrap_or(base_stimulus);
         let context_key = stimulus_key;
@@ -997,6 +1039,10 @@ impl DaemonState {
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
                 ActiveGame::Pong(g) => {
+                    g.apply_stimuli(brain);
+                    brain.note_compound_symbol(&[stimulus_key]);
+                }
+                ActiveGame::Text(g) => {
                     g.apply_stimuli(brain);
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
@@ -1135,7 +1181,7 @@ impl DaemonState {
             let m = self.compute_meaning_snapshot_vs(
                 controller_brain,
                 stimulus_key,
-                self.game.correct_action(),
+                self.game.correct_action().as_ref(),
                 chosen,
             );
             Self::push_history(&mut self.meaning_pair_gap_history, m.pair_gap, 96);
@@ -1232,6 +1278,15 @@ impl DaemonState {
                 pong_paddle_speed: g.sim.params.paddle_speed,
                 pong_ball_speed: g.sim.params.ball_speed,
             },
+            ActiveGame::Text(g) => GameState::Text {
+                common: common(),
+                text_regime: g.regime(),
+                text_token: g.current_token().display(),
+                text_target_next: g.target_next_token().display(),
+                text_outcomes: g.outcomes(),
+                text_shift_every: g.shift_every_outcomes(),
+                text_vocab_size: g.vocab_size() as u32,
+            },
         };
 
         let (osc_x, osc_y, osc_mag) = view_brain.oscillation_sample(512);
@@ -1280,7 +1335,7 @@ impl DaemonState {
                 let mut m = self.compute_meaning_snapshot_vs(
                     view_brain,
                     stimulus,
-                    self.game.correct_action(),
+                    self.game.correct_action().as_ref(),
                     chosen,
                 );
                 m.pair_gap_history = self.meaning_pair_gap_history.clone();

@@ -515,7 +515,7 @@ impl Brain {
         deltas.sort_by(|a, b| {
             b.1.abs()
                 .partial_cmp(&a.1.abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(core::cmp::Ordering::Equal)
         });
         deltas.truncate(topk);
 
@@ -4021,7 +4021,7 @@ impl Brain {
         }
 
         // Compact periodically to reclaim tombstones.
-        if self.age_steps.is_multiple_of(1000) {
+        if self.age_steps % 1000 == 0 {
             self.compact_connections();
         }
     }

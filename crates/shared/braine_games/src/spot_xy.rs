@@ -1,5 +1,5 @@
 use crate::stats::GameStats;
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 #[cfg(feature = "braine")]
 use braine::substrate::{Brain, Stimulus};

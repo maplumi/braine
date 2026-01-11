@@ -241,6 +241,7 @@ export component MainWindow inherits Window {
                           (root.effective-game-kind == "spot_reversal") ? "Spot Reversal" :
                           (root.effective-game-kind == "spotxy") ? "SpotXY" :
                           (root.effective-game-kind == "pong") ? "Pong" :
+                          (root.effective-game-kind == "text") ? "Text" :
                           "Spot";
                     enabled: !running;
                     clicked => {
@@ -248,6 +249,7 @@ export component MainWindow inherits Window {
                                                   (root.selected-game-kind == "bandit") ? "spot_reversal" :
                                                   (root.selected-game-kind == "spot_reversal") ? "spotxy" :
                                                   (root.selected-game-kind == "spotxy") ? "pong" :
+                                                  (root.selected-game-kind == "pong") ? "text" :
                                                   "spot";
 
                         // Pong is sensitive to control cadence. If the user hasn't already chosen
@@ -674,32 +676,119 @@ export component MainWindow inherits Window {
                                     }
 
                                     Text {
-                                        text: "Units (sampled): amp vs age";
+                                        text: "Units (sampled): amplitude vs age";
                                         color: Theme.text-primary;
                                         font-size: 14px;
                                         font-weight: 600;
                                     }
 
+                                    // 3D-style unit plot container
                                     Rectangle {
-                                        height: 260px;
+                                        height: 280px;
                                         horizontal-stretch: 1;
                                         background: Theme.bg-dark;
                                         border-width: 1px;
                                         border-color: Theme.border;
+                                        border-radius: 8px;
+                                        clip: true;
+                                        
+                                        // Grid lines for depth effect
+                                        for i in 10: Rectangle {
+                                            width: 1px;
+                                            height: parent.height;
+                                            x: (i + 1) * parent.width / 11;
+                                            background: Theme.border;
+                                            opacity: 0.3;
+                                        }
+                                        for i in 5: Rectangle {
+                                            width: parent.width;
+                                            height: 1px;
+                                            y: (i + 1) * parent.height / 6;
+                                            background: Theme.border;
+                                            opacity: 0.3;
+                                        }
 
+                                        // Unit points with 3D-style sizing
                                         for p in unit-points: Rectangle {
-                                            width: 6px;
-                                            height: 6px;
+                                            // Size varies by unit type (sensor largest, reserved smallest)
+                                            property <length> base-size: p.is_sensor_member ? 10px : (p.is_group_member ? 8px : (p.is_reserved ? 4px : 6px));
+                                            width: self.base-size;
+                                            height: self.base-size;
+                                            border-radius: self.base-size / 2;
                                             x: p.rel_age * (parent.width - self.width);
                                             y: (1.0 - p.amp01) * (parent.height - self.height);
-                                            background: p.is_reserved ? Theme.text-secondary : (p.is_sensor_member ? Theme.accent-blue : (p.is_group_member ? Theme.accent-green : Theme.accent-yellow));
+                                            background: p.is_reserved ? #888888 : (p.is_sensor_member ? Theme.accent-blue : (p.is_group_member ? Theme.accent-green : Theme.accent-yellow));
+                                            opacity: p.is_reserved ? 0.5 : (p.is_sensor_member ? 1.0 : (p.is_group_member ? 0.9 : 0.8));
+                                            
+                                            // Glow effect for sensor/group units
+                                            if !p.is_reserved: Rectangle {
+                                                width: parent.width * 2;
+                                                height: parent.height * 2;
+                                                x: -parent.width / 2;
+                                                y: -parent.height / 2;
+                                                border-radius: self.width / 2;
+                                                background: parent.background;
+                                                opacity: 0.2;
+                                            }
+                                        }
+                                        
+                                        // Axis labels
+                                        Text {
+                                            x: 4px;
+                                            y: 4px;
+                                            text: "1.0";
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                        }
+                                        Text {
+                                            x: 4px;
+                                            y: parent.height - 16px;
+                                            text: "0.0";
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                        }
+                                        Text {
+                                            x: parent.width - 24px;
+                                            y: parent.height - 16px;
+                                            text: "new";
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                        }
+                                        Text {
+                                            x: 24px;
+                                            y: parent.height - 16px;
+                                            text: "old";
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
                                         }
                                     }
 
-                                    Text {
-                                        text: "Legend: reserved, sensor, group, other";
-                                        color: Theme.text-secondary;
-                                        font-size: 12px;
+                                    // Legend with color swatches
+                                    HorizontalLayout {
+                                        spacing: 16px;
+                                        padding: 8px;
+                                        alignment: center;
+                                        
+                                        HorizontalLayout {
+                                            spacing: 4px;
+                                            Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Theme.accent-blue; }
+                                            Text { text: "Sensor"; color: Theme.text-secondary; font-size: 11px; }
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 4px;
+                                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.accent-green; }
+                                            Text { text: "Group"; color: Theme.text-secondary; font-size: 11px; }
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 4px;
+                                            Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Theme.accent-yellow; }
+                                            Text { text: "Other"; color: Theme.text-secondary; font-size: 11px; }
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 4px;
+                                            Rectangle { width: 4px; height: 4px; border-radius: 2px; background: #888888; opacity: 0.6; }
+                                            Text { text: "Reserved"; color: Theme.text-secondary; font-size: 11px; }
+                                        }
                                     }
 
                                     Rectangle { height: 1px; background: Theme.border; }

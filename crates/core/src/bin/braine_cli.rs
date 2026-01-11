@@ -199,6 +199,23 @@ enum GameState {
         #[serde(flatten)]
         common: GameCommon,
     },
+    #[serde(rename = "text")]
+    Text {
+        #[serde(flatten)]
+        common: GameCommon,
+        #[serde(default)]
+        text_regime: u32,
+        #[serde(default)]
+        text_token: String,
+        #[serde(default)]
+        text_target_next: String,
+        #[serde(default)]
+        text_outcomes: u32,
+        #[serde(default)]
+        text_shift_every: u32,
+        #[serde(default)]
+        text_vocab_size: u32,
+    },
     #[serde(other)]
     #[default]
     Unknown,
@@ -212,6 +229,7 @@ impl GameState {
             Self::SpotReversal { .. } => "spot_reversal",
             Self::SpotXY { .. } => "spotxy",
             Self::Pong { .. } => "pong",
+            Self::Text { .. } => "text",
             Self::Unknown => "unknown",
         }
     }
@@ -222,7 +240,8 @@ impl GameState {
             | Self::Bandit { common }
             | Self::SpotReversal { common, .. }
             | Self::SpotXY { common }
-            | Self::Pong { common } => Some(common),
+            | Self::Pong { common }
+            | Self::Text { common, .. } => Some(common),
             Self::Unknown => None,
         }
     }
@@ -248,6 +267,28 @@ impl GameState {
             Self::Spot { spot_is_left, .. } | Self::SpotReversal { spot_is_left, .. } => {
                 Some(*spot_is_left)
             }
+            _ => None,
+        }
+    }
+
+    fn text_summary(&self) -> Option<(u32, &str, &str, u32, u32, u32)> {
+        match self {
+            Self::Text {
+                text_regime,
+                text_token,
+                text_target_next,
+                text_outcomes,
+                text_shift_every,
+                text_vocab_size,
+                ..
+            } => Some((
+                *text_regime,
+                text_token.as_str(),
+                text_target_next.as_str(),
+                *text_outcomes,
+                *text_shift_every,
+                *text_vocab_size,
+            )),
             _ => None,
         }
     }
@@ -281,7 +322,7 @@ fn usage() -> ! {
     eprintln!("Commands:");
     eprintln!("  status                      Show daemon state");
     eprintln!("  start | stop                Control run loop");
-    eprintln!("  game <spot|bandit|spot_reversal>  Switch task/game (stop first)");
+    eprintln!("  game <spot|bandit|spot_reversal|spotxy|pong|text>  Switch task/game (stop first)");
     eprintln!("  mode <braine|human>         Switch control mode");
     eprintln!("  action <left|right>         Send human action");
     eprintln!("  trigger <dream|burst|sync|imprint>  Fire learning helpers");
@@ -383,6 +424,14 @@ fn print_state(s: StateSnapshot) {
         s.game.trial_frame(),
         s.game.trial_duration(),
     );
+
+    if let Some((regime, token, target, outcomes, shift_every, vocab_size)) = s.game.text_summary()
+    {
+        println!(
+            "text: regime={} token={} target_next={} outcomes={} shift_every={} vocab_size={}",
+            regime, token, target, outcomes, shift_every, vocab_size
+        );
+    }
 
     if s.experts_enabled || s.experts.active_count > 0 {
         println!(

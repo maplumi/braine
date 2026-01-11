@@ -1,5 +1,5 @@
 use crate::stats::GameStats;
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Bandit game: no stimulus, just left/right arms with fixed reward schedule.

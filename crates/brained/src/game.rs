@@ -12,6 +12,7 @@ pub use braine_games::spot::SpotGame;
 pub use braine_games::spot_reversal::SpotReversalGame;
 pub use braine_games::spot_xy::SpotXYGame;
 pub use braine_games::stats::GameStats;
+pub use braine_games::text_next_token::TextNextTokenGame;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Pong: minimal closed-loop paddle tracking with 3 actions (up/down/stay).

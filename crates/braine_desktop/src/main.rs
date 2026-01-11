@@ -560,6 +560,23 @@ enum DaemonGameState {
         #[serde(default)]
         pong_ball_speed: f32,
     },
+    #[serde(rename = "text")]
+    Text {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+        #[serde(default)]
+        text_regime: u32,
+        #[serde(default)]
+        text_token: String,
+        #[serde(default)]
+        text_target_next: String,
+        #[serde(default)]
+        text_outcomes: u32,
+        #[serde(default)]
+        text_shift_every: u32,
+        #[serde(default)]
+        text_vocab_size: u32,
+    },
     #[serde(other)]
     #[default]
     Unknown,
@@ -573,6 +590,7 @@ impl DaemonGameState {
             Self::SpotReversal { .. } => "spot_reversal",
             Self::SpotXY { .. } => "spotxy",
             Self::Pong { .. } => "pong",
+            Self::Text { .. } => "text",
             Self::Unknown => "unknown",
         }
     }
@@ -583,7 +601,8 @@ impl DaemonGameState {
             | Self::Bandit { common }
             | Self::SpotReversal { common, .. }
             | Self::SpotXY { common, .. }
-            | Self::Pong { common, .. } => Some(common),
+            | Self::Pong { common, .. }
+            | Self::Text { common, .. } => Some(common),
             Self::Unknown => None,
         }
     }
@@ -681,6 +700,54 @@ impl DaemonGameState {
                 pong_ball_visible, ..
             } => *pong_ball_visible,
             _ => true,
+        }
+    }
+
+    fn text_regime(&self) -> u32 {
+        match self {
+            Self::Text { text_regime, .. } => *text_regime,
+            _ => 0,
+        }
+    }
+
+    fn text_token(&self) -> &str {
+        match self {
+            Self::Text { text_token, .. } => text_token.as_str(),
+            _ => "",
+        }
+    }
+
+    fn text_target_next(&self) -> &str {
+        match self {
+            Self::Text {
+                text_target_next, ..
+            } => text_target_next.as_str(),
+            _ => "",
+        }
+    }
+
+    fn text_outcomes(&self) -> u32 {
+        match self {
+            Self::Text { text_outcomes, .. } => *text_outcomes,
+            _ => 0,
+        }
+    }
+
+    fn text_shift_every(&self) -> u32 {
+        match self {
+            Self::Text {
+                text_shift_every, ..
+            } => *text_shift_every,
+            _ => 0,
+        }
+    }
+
+    fn text_vocab_size(&self) -> u32 {
+        match self {
+            Self::Text {
+                text_vocab_size, ..
+            } => *text_vocab_size,
+            _ => 0,
         }
     }
 }
@@ -1399,6 +1466,12 @@ fn main() -> Result<(), slint::PlatformError> {
                     spotxy_chosen_iy,
                     spotxy_correct_ix,
                     spotxy_correct_iy,
+                    text_regime: snap.game.text_regime() as i32,
+                    text_token: snap.game.text_token().into(),
+                    text_target_next: snap.game.text_target_next().into(),
+                    text_outcomes: snap.game.text_outcomes() as i32,
+                    text_shift_every: snap.game.text_shift_every() as i32,
+                    text_vocab_size: snap.game.text_vocab_size() as i32,
                     last_reward: snap.game.last_reward(),
                     spot_is_left: snap.game.spot_is_left(),
                     response_made: snap.game.response_made(),
