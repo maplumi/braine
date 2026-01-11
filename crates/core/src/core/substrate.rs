@@ -4080,7 +4080,7 @@ impl Brain {
         }
 
         // Compact periodically to reclaim tombstones.
-        if self.age_steps.is_multiple_of(1000) {
+        if self.age_steps % 1000 == 0 {
             self.compact_connections();
         }
     }

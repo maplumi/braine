@@ -58,6 +58,7 @@ impl TextWebGame {
         self.game.score_action(action)
     }
 
+    #[allow(dead_code)]
     pub fn shift_every_outcomes(&self) -> u32 {
         self.game.shift_every_outcomes()
     }

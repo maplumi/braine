@@ -564,6 +564,7 @@ pub fn draw_causal_graph(
 
 /// Hit test node for causal graph visualization
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CausalHitNode {
     pub id: u32,
     pub name: String,

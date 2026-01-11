@@ -1,6 +1,4 @@
-use braine::substrate::{
-    Brain, BrainConfig, CausalEdgeViz, CausalGraphViz, CausalNodeViz, Stimulus, UnitPlotPoint,
-};
+use braine::substrate::{Brain, BrainConfig, CausalGraphViz, Stimulus, UnitPlotPoint};
 use braine_games::{
     bandit::BanditGame, spot::SpotGame, spot_reversal::SpotReversalGame, spot_xy::SpotXYGame,
 };
@@ -248,7 +246,7 @@ fn App() -> impl IntoView {
     let (brainviz_zoom, set_brainviz_zoom) = signal(1.5f32);
     let (brainviz_pan_x, set_brainviz_pan_x) = signal(0.0f32);
     let (brainviz_pan_y, set_brainviz_pan_y) = signal(0.0f32);
-    let (brainviz_auto_rotate, _set_brainviz_auto_rotate) = signal(false); // Disabled by default
+    let (_brainviz_auto_rotate, _set_brainviz_auto_rotate) = signal(false); // Disabled by default
     let (brainviz_manual_rotation, set_brainviz_manual_rotation) = signal(0.0f32); // Manual rotation angle
     let (brainviz_vibration, set_brainviz_vibration) = signal(0.0f32); // Activity-based vibration
     let (brainviz_hover, set_brainviz_hover) = signal::<Option<(u32, f64, f64)>>(None);
@@ -2878,9 +2876,26 @@ fn App() -> impl IntoView {
                                 <Show when=move || analytics_panel.get() == AnalyticsPanel::UnitPlot>
                                     <div class="card">
                                         <h3 class="card-title">"🧬 Unit Activity Plot"</h3>
-                                        <p class="subtle">"sensor / group / other / reserved"</p>
+                                        <p class="subtle">"Sampled unit activations showing amplitude and type distribution"</p>
                                         <canvas node_ref=unit_plot_ref width="800" height="360" class="canvas tall"></canvas>
-                                        <p class="subtle">"Sensors (blue), groups (green), other (yellow), reserved (gray)."</p>
+                                        <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.75rem;">
+                                            <div style="display: flex; align-items: center; gap: 4px;">
+                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(122, 162, 255);"></div>
+                                                <span style="color: var(--muted);">"Sensors (input)"</span>
+                                            </div>
+                                            <div style="display: flex; align-items: center; gap: 4px;">
+                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(74, 222, 128);"></div>
+                                                <span style="color: var(--muted);">"Groups (actions)"</span>
+                                            </div>
+                                            <div style="display: flex; align-items: center; gap: 4px;">
+                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(251, 191, 36);"></div>
+                                                <span style="color: var(--muted);">"Regular (free)"</span>
+                                            </div>
+                                            <div style="display: flex; align-items: center; gap: 4px;">
+                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(148, 163, 184);"></div>
+                                                <span style="color: var(--muted);">"Concepts (imprinted)"</span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </Show>
 
@@ -3074,6 +3089,41 @@ fn App() -> impl IntoView {
                                                     }}
                                                 </div>
                                             </Show>
+                                        </div>
+
+                                        // Legend with node type descriptions
+                                        <div style="margin-top: 12px; padding: 10px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px;">
+                                            <div style="font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-weight: 600;">"Node Types"</div>
+                                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; font-size: 0.75rem;">
+                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(255, 153, 102); flex-shrink: 0; margin-top: 2px;"></div>
+                                                    <div>
+                                                        <strong style="color: var(--text);">"Sensors"</strong>
+                                                        <div style="color: var(--muted);">"Input units that receive external stimuli from the environment"</div>
+                                                    </div>
+                                                </div>
+                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(74, 222, 128); flex-shrink: 0; margin-top: 2px;"></div>
+                                                    <div>
+                                                        <strong style="color: var(--text);">"Groups"</strong>
+                                                        <div style="color: var(--muted);">"Action units that form output groups for behavior/decisions"</div>
+                                                    </div>
+                                                </div>
+                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(251, 191, 36); flex-shrink: 0; margin-top: 2px;"></div>
+                                                    <div>
+                                                        <strong style="color: var(--text);">"Regular"</strong>
+                                                        <div style="color: var(--muted);">"Free units that form associations through learning dynamics"</div>
+                                                    </div>
+                                                </div>
+                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(148, 163, 184); flex-shrink: 0; margin-top: 2px;"></div>
+                                                    <div>
+                                                        <strong style="color: var(--text);">"Concepts"</strong>
+                                                        <div style="color: var(--muted);">"Reserved units that have formed stable engrams via imprinting"</div>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </Show>

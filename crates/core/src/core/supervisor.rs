@@ -281,18 +281,10 @@ fn child_environment_step(_spec: &ChildSpec, remaining: usize) -> (Stimulus<'sta
     //
     // The point is not realism; it's to let the child build a causal link
     // stimulus -> action -> reward in its sandbox.
-    let strength = if remaining.is_multiple_of(17) {
-        0.35
-    } else {
-        1.0
-    };
+    let strength = if remaining % 17 == 0 { 0.35 } else { 1.0 };
 
     // Leak a tiny negative reward sometimes so meaning isn't trivial.
-    let reward = if remaining.is_multiple_of(41) {
-        -0.4
-    } else {
-        0.7
-    };
+    let reward = if remaining % 41 == 0 { -0.4 } else { 0.7 };
 
     // We need a 'static str for the demo; this is fine because the spec strings are owned.
     // To avoid lifetime complexity, we map on known demo names.
@@ -353,12 +345,12 @@ fn step_one_child(child: &mut ChildBrain) {
     }
 
     // Occasionally ask for parent guidance.
-    if child.remaining.is_multiple_of(120) {
+    if child.remaining % 120 == 0 {
         child.requests.push(ChildRequest::Guidance);
     }
 
     // If stuck for a long time, request spawning a grandchild explorer.
-    if child.remaining.is_multiple_of(300)
+    if child.remaining % 300 == 0
         && child
             .brain
             .meaning_hint(&child.spec.stimulus_name)
