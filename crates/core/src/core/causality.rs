@@ -241,6 +241,12 @@ impl CausalMemory {
         out
     }
 
+    /// Return the current (decayed) base count for a symbol.
+    #[must_use]
+    pub fn base_count(&self, sym: SymbolId) -> f32 {
+        *self.base.get(&sym).unwrap_or(&0.0)
+    }
+
     /// Return top N strongest causal edges in the entire graph.
     ///
     /// Returns (from_symbol, to_symbol, causal_strength).

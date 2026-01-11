@@ -569,8 +569,15 @@ pub fn draw_causal_graph(
     ctx.set_fill_style_str(bg_color);
     ctx.fill_rect(0.0, 0.0, w, h);
 
-    // Outline removed for cleaner causal view - nodes and edges speak for themselves
-    // The outline is hidden by default in causal mode for a more immersive visualization
+    // Match substrate view framing (outline is optional).
+    if opts.draw_outline {
+        ctx.set_stroke_style_str("rgba(122, 162, 255, 0.20)");
+        ctx.set_line_width(1.0);
+        ctx.begin_path();
+        ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0)
+            .ok();
+        ctx.stroke();
+    }
 
     if nodes.is_empty() {
         // Draw placeholder text

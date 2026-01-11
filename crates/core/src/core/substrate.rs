@@ -924,19 +924,68 @@ impl Brain {
     /// - `edges`: Top M causal edges with from/to symbol IDs and strength
     #[must_use]
     pub fn causal_graph_viz(&self, max_nodes: usize, max_edges: usize) -> CausalGraphViz {
-        let symbols = self.causal.all_symbols_sorted(max_nodes);
-        let nodes: Vec<CausalNodeViz> = symbols
+        use std::collections::HashSet;
+
+        let max_nodes = max_nodes.max(1);
+
+        // Pick edges first; then ensure all edge endpoints are present as nodes.
+        // Otherwise the renderer will skip edges whose endpoints aren't in the node set.
+        let top_edges = self.causal.top_edges(max_edges);
+
+        let mut endpoint_ids: Vec<SymbolId> = Vec::new();
+        endpoint_ids.reserve(top_edges.len().saturating_mul(2));
+        for (from, to, _strength) in &top_edges {
+            endpoint_ids.push(*from);
+            endpoint_ids.push(*to);
+        }
+
+        endpoint_ids.sort_unstable();
+        endpoint_ids.dedup();
+
+        // Order endpoints by base count so the most salient endpoints get kept
+        // if we hit the `max_nodes` cap.
+        endpoint_ids.sort_by(|&a, &b| {
+            let ca = self.causal.base_count(a);
+            let cb = self.causal.base_count(b);
+            cb.total_cmp(&ca)
+        });
+
+        let mut node_ids: Vec<SymbolId> = Vec::with_capacity(max_nodes);
+        let mut seen: HashSet<SymbolId> = HashSet::with_capacity(max_nodes * 2);
+
+        for id in endpoint_ids {
+            if node_ids.len() >= max_nodes {
+                break;
+            }
+            if seen.insert(id) {
+                node_ids.push(id);
+            }
+        }
+
+        // Fill remaining slots with the most frequent symbols.
+        if node_ids.len() < max_nodes {
+            for (id, _count) in self.causal.all_symbols_sorted(max_nodes) {
+                if node_ids.len() >= max_nodes {
+                    break;
+                }
+                if seen.insert(id) {
+                    node_ids.push(id);
+                }
+            }
+        }
+
+        let nodes: Vec<CausalNodeViz> = node_ids
             .into_iter()
-            .map(|(id, count)| CausalNodeViz {
+            .map(|id| CausalNodeViz {
                 id,
                 name: self.symbol_name(id).unwrap_or("?").to_string(),
-                base_count: count,
+                base_count: self.causal.base_count(id),
             })
             .collect();
 
-        let top_edges = self.causal.top_edges(max_edges);
         let edges: Vec<CausalEdgeViz> = top_edges
             .into_iter()
+            .filter(|(from, to, _strength)| seen.contains(from) && seen.contains(to))
             .map(|(from, to, strength)| CausalEdgeViz { from, to, strength })
             .collect();
 
