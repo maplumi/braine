@@ -3487,6 +3487,43 @@ impl Brain {
         &self.cfg
     }
 
+    /// Update the live configuration.
+    ///
+    /// This is intended for tuning continuous parameters (dt, noise, learning rates, etc)
+    /// from UIs/clients. It does **not** allow changing topology-bearing fields
+    /// (`unit_count`, `connectivity_per_unit`) on a running brain.
+    ///
+    /// Returns an error if validation fails.
+    pub fn update_config<F>(&mut self, f: F) -> Result<(), &'static str>
+    where
+        F: FnOnce(&mut BrainConfig),
+    {
+        let old = self.cfg;
+        let old_seed = old.seed;
+
+        let mut cfg = old;
+        f(&mut cfg);
+
+        if cfg.unit_count != old.unit_count {
+            return Err("unit_count cannot be changed on a live brain");
+        }
+        if cfg.connectivity_per_unit != old.connectivity_per_unit {
+            return Err("connectivity_per_unit cannot be changed on a live brain");
+        }
+
+        cfg.validate()?;
+        self.cfg = cfg;
+
+        // If a seed is newly set/changed, reset the PRNG for reproducibility.
+        if self.cfg.seed != old_seed {
+            if let Some(seed) = self.cfg.seed {
+                self.rng = Prng::new(seed);
+            }
+        }
+
+        Ok(())
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Neurogenesis: Growing New Units
     // ─────────────────────────────────────────────────────────────────────────
@@ -4759,6 +4796,23 @@ mod tests {
 
         // Total connections = 8 * 2 = 16.
         assert_eq!(brain.total_connection_count(), 16);
+    }
+
+    #[test]
+    fn update_config_allows_tuning_but_not_topology() {
+        let mut brain = Brain::new(BrainConfig::with_size(32, 4));
+
+        // Safe tuning: dt within valid range.
+        brain.update_config(|cfg| cfg.dt = 0.1).unwrap();
+        assert!((brain.config().dt - 0.1).abs() < 1e-6);
+
+        // Topology changes are rejected.
+        let err = brain.update_config(|cfg| cfg.unit_count = 64).unwrap_err();
+        assert!(err.contains("unit_count"));
+        let err = brain
+            .update_config(|cfg| cfg.connectivity_per_unit = 8)
+            .unwrap_err();
+        assert!(err.contains("connectivity_per_unit"));
     }
 
     #[test]

@@ -155,6 +155,36 @@ fn App() -> impl IntoView {
     let (learning_enabled, set_learning_enabled) = signal(true);
     let (grow_units_n, set_grow_units_n) = signal(128u32);
 
+    // BrainConfig tuning (live). These mirror `BrainConfig` fields that are safe to
+    // update on a running brain. Topology fields are shown read-only.
+    let (cfg_dt, set_cfg_dt) = signal(runtime.with_value(|r| r.brain.config().dt));
+    let (cfg_base_freq, set_cfg_base_freq) =
+        signal(runtime.with_value(|r| r.brain.config().base_freq));
+    let (cfg_noise_amp, set_cfg_noise_amp) =
+        signal(runtime.with_value(|r| r.brain.config().noise_amp));
+    let (cfg_noise_phase, set_cfg_noise_phase) =
+        signal(runtime.with_value(|r| r.brain.config().noise_phase));
+    let (cfg_global_inhibition, set_cfg_global_inhibition) =
+        signal(runtime.with_value(|r| r.brain.config().global_inhibition));
+    let (cfg_hebb_rate, set_cfg_hebb_rate) =
+        signal(runtime.with_value(|r| r.brain.config().hebb_rate));
+    let (cfg_forget_rate, set_cfg_forget_rate) =
+        signal(runtime.with_value(|r| r.brain.config().forget_rate));
+    let (cfg_prune_below, set_cfg_prune_below) =
+        signal(runtime.with_value(|r| r.brain.config().prune_below));
+    let (cfg_coactive_threshold, set_cfg_coactive_threshold) =
+        signal(runtime.with_value(|r| r.brain.config().coactive_threshold));
+    let (cfg_phase_lock_threshold, set_cfg_phase_lock_threshold) =
+        signal(runtime.with_value(|r| r.brain.config().phase_lock_threshold));
+    let (cfg_imprint_rate, set_cfg_imprint_rate) =
+        signal(runtime.with_value(|r| r.brain.config().imprint_rate));
+    let (cfg_salience_decay, set_cfg_salience_decay) =
+        signal(runtime.with_value(|r| r.brain.config().salience_decay));
+    let (cfg_salience_gain, set_cfg_salience_gain) =
+        signal(runtime.with_value(|r| r.brain.config().salience_gain));
+    let (cfg_causal_decay, set_cfg_causal_decay) =
+        signal(runtime.with_value(|r| r.brain.config().causal_decay));
+
     let (last_action, set_last_action) = signal(String::new());
     let (last_reward, set_last_reward) = signal(0.0f32);
 
@@ -179,6 +209,78 @@ fn App() -> impl IntoView {
 
     // Spot/SpotReversal stimulus (left/right) for UI highlighting.
     let (spot_is_left, set_spot_is_left) = signal::<Option<bool>>(None);
+
+    let apply_brain_config = {
+        let runtime = runtime.clone();
+        move || {
+            let dt = cfg_dt.get_untracked();
+            let base_freq = cfg_base_freq.get_untracked();
+            let noise_amp = cfg_noise_amp.get_untracked();
+            let noise_phase = cfg_noise_phase.get_untracked();
+            let global_inhibition = cfg_global_inhibition.get_untracked();
+            let hebb_rate = cfg_hebb_rate.get_untracked();
+            let forget_rate = cfg_forget_rate.get_untracked();
+            let prune_below = cfg_prune_below.get_untracked();
+            let coactive_threshold = cfg_coactive_threshold.get_untracked();
+            let phase_lock_threshold = cfg_phase_lock_threshold.get_untracked();
+            let imprint_rate = cfg_imprint_rate.get_untracked();
+            let salience_decay = cfg_salience_decay.get_untracked();
+            let salience_gain = cfg_salience_gain.get_untracked();
+            let causal_decay = cfg_causal_decay.get_untracked();
+
+            let mut err: Option<String> = None;
+            runtime.update_value(|r| {
+                if let Err(e) = r.brain.update_config(|cfg| {
+                    cfg.dt = dt;
+                    cfg.base_freq = base_freq;
+                    cfg.noise_amp = noise_amp;
+                    cfg.noise_phase = noise_phase;
+                    cfg.global_inhibition = global_inhibition;
+                    cfg.hebb_rate = hebb_rate;
+                    cfg.forget_rate = forget_rate;
+                    cfg.prune_below = prune_below;
+                    cfg.coactive_threshold = coactive_threshold;
+                    cfg.phase_lock_threshold = phase_lock_threshold;
+                    cfg.imprint_rate = imprint_rate;
+                    cfg.salience_decay = salience_decay;
+                    cfg.salience_gain = salience_gain;
+                    cfg.causal_decay = causal_decay;
+                }) {
+                    err = Some(e.to_string());
+                }
+            });
+
+            if let Some(e) = err {
+                set_status.set(format!("Config error: {e}"));
+            } else {
+                set_status.set("Brain config applied".to_string());
+            }
+        }
+    };
+
+    let reset_brain_config_from_runtime = {
+        let runtime = runtime.clone();
+        move || {
+            runtime.with_value(|r| {
+                let cfg = r.brain.config();
+                set_cfg_dt.set(cfg.dt);
+                set_cfg_base_freq.set(cfg.base_freq);
+                set_cfg_noise_amp.set(cfg.noise_amp);
+                set_cfg_noise_phase.set(cfg.noise_phase);
+                set_cfg_global_inhibition.set(cfg.global_inhibition);
+                set_cfg_hebb_rate.set(cfg.hebb_rate);
+                set_cfg_forget_rate.set(cfg.forget_rate);
+                set_cfg_prune_below.set(cfg.prune_below);
+                set_cfg_coactive_threshold.set(cfg.coactive_threshold);
+                set_cfg_phase_lock_threshold.set(cfg.phase_lock_threshold);
+                set_cfg_imprint_rate.set(cfg.imprint_rate);
+                set_cfg_salience_decay.set(cfg.salience_decay);
+                set_cfg_salience_gain.set(cfg.salience_gain);
+                set_cfg_causal_decay.set(cfg.causal_decay);
+            });
+            set_status.set("Config reset to current".to_string());
+        }
+    };
 
     // Text prediction "lab" (inference-only on a cloned brain)
     let (text_prompt, set_text_prompt) = signal(String::from("hello worl"));
@@ -338,11 +440,10 @@ fn App() -> impl IntoView {
     let (game_accuracies, set_game_accuracies) =
         signal::<std::collections::HashMap<String, f32>>(std::collections::HashMap::new());
 
-    // WebGPU availability check for future GPU-accelerated learning/inference.
-    // Currently: Brain runs on CPU (Scalar tier) in WASM. The wgpu crate supports WebGPU,
-    // but integration requires adapting the compute shaders for browser context.
-    // Future: When WebGPU is detected and enabled, both learning and inference can run
-    // in parallel on GPU for substrates with 10k+ units.
+    // WebGPU availability check.
+    // If this build includes the core `gpu` feature, we can select the GPU execution tier
+    // when WebGPU is present. Note: today the GPU tier accelerates the dense dynamics
+    // update inside `Brain::step()`, while learning/plasticity updates remain CPU.
     let webgpu_available = {
         web_sys::window()
             .and_then(|w| {
@@ -353,8 +454,23 @@ fn App() -> impl IntoView {
             })
             .unwrap_or(false)
     };
+
+    #[cfg(feature = "gpu")]
+    {
+        if webgpu_available {
+            runtime.update_value(|r| {
+                r.brain
+                    .set_execution_tier(braine::substrate::ExecutionTier::Gpu)
+            });
+        }
+    }
+
     let (gpu_status, _set_gpu_status) = signal(if webgpu_available {
-        "WebGPU: detected (future: GPU-accelerated learning)"
+        if cfg!(feature = "gpu") {
+            "WebGPU: detected (GPU dynamics enabled; learning is CPU)"
+        } else {
+            "WebGPU: detected (CPU build; enable the web `gpu` feature)"
+        }
     } else {
         "WebGPU: not available (CPU mode)"
     });
@@ -3763,6 +3879,259 @@ fn App() -> impl IntoView {
                                         </button>
                                     </div>
                                     <p class="subtle">"Adds new units to the substrate without gradients/backprop."</p>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"🧠 Brain Config (Live)"</h3>
+                                    <p class="subtle">"Tunes continuous dynamics/learning parameters. Topology (unit count/connectivity) is not changed here."</p>
+
+                                    <div class="row end wrap">
+                                        <label class="label">
+                                            <span>"dt"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0.001"
+                                                max="1"
+                                                step="0.001"
+                                                prop:value=move || format!("{:.3}", cfg_dt.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_dt.set(v.clamp(0.001, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"base_freq"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="10"
+                                                step="0.05"
+                                                prop:value=move || format!("{:.2}", cfg_base_freq.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_base_freq.set(v.clamp(0.0, 10.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"global_inhibition"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="5"
+                                                step="0.01"
+                                                prop:value=move || format!("{:.2}", cfg_global_inhibition.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_global_inhibition.set(v.clamp(0.0, 5.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+
+                                    <div class="row end wrap">
+                                        <label class="label">
+                                            <span>"noise_amp"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.001"
+                                                prop:value=move || format!("{:.3}", cfg_noise_amp.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_noise_amp.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"noise_phase"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.001"
+                                                prop:value=move || format!("{:.3}", cfg_noise_phase.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_noise_phase.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"causal_decay"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.001"
+                                                prop:value=move || format!("{:.3}", cfg_causal_decay.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_causal_decay.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+
+                                    <div class="row end wrap">
+                                        <label class="label">
+                                            <span>"hebb_rate"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.01"
+                                                prop:value=move || format!("{:.2}", cfg_hebb_rate.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_hebb_rate.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"forget_rate"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.001"
+                                                prop:value=move || format!("{:.4}", cfg_forget_rate.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_forget_rate.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"prune_below"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.001"
+                                                prop:value=move || format!("{:.3}", cfg_prune_below.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_prune_below.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+
+                                    <div class="row end wrap">
+                                        <label class="label">
+                                            <span>"coactive_threshold"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.01"
+                                                prop:value=move || format!("{:.2}", cfg_coactive_threshold.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_coactive_threshold.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"phase_lock_threshold"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.01"
+                                                prop:value=move || format!("{:.2}", cfg_phase_lock_threshold.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_phase_lock_threshold.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"imprint_rate"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.01"
+                                                prop:value=move || format!("{:.2}", cfg_imprint_rate.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_imprint_rate.set(v.clamp(0.0, 1.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+
+                                    <div class="row end wrap">
+                                        <label class="label">
+                                            <span>"salience_decay"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="0.1"
+                                                step="0.0001"
+                                                prop:value=move || format!("{:.4}", cfg_salience_decay.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_salience_decay.set(v.clamp(0.0, 0.1));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label">
+                                            <span>"salience_gain"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="0"
+                                                max="5"
+                                                step="0.01"
+                                                prop:value=move || format!("{:.2}", cfg_salience_gain.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                        set_cfg_salience_gain.set(v.clamp(0.0, 5.0));
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+
+                                    <div class="row end wrap">
+                                        <button class="btn" on:click=move |_| reset_brain_config_from_runtime()>
+                                            "Reset"
+                                        </button>
+                                        <button class="btn primary" on:click=move |_| apply_brain_config()>
+                                            "Apply"
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </Show>

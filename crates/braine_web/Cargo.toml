@@ -19,6 +19,11 @@ web = [
 	"braine/std",
 ]
 
+# Enable GPU execution tier via wgpu/WebGPU.
+# Note: learning/plasticity updates are still CPU today; GPU accelerates the dense
+# dynamics update inside `Brain::step()`.
+gpu = ["web", "braine/gpu"]
+
 [dependencies]
 braine = { path = "../core", default-features = false, features = ["serde"] }
 braine_games = { path = "../shared/braine_games", default-features = false, features = ["braine"], optional = true }

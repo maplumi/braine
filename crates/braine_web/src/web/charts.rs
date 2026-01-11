@@ -253,6 +253,22 @@ pub fn draw_brain_connectivity_sphere(
         pos.insert(node.id, (xr, yr, zr2));
     }
 
+    // Precompute projected screen positions for all nodes.
+    // Edges MUST use the exact same projection as nodes, otherwise they can appear
+    // visually disconnected.
+    let dist = 2.8;
+    let mut proj: std::collections::HashMap<u32, (f64, f64, f64)> =
+        std::collections::HashMap::with_capacity(nodes.len());
+    for node in nodes {
+        let Some(&(x, y, z)) = pos.get(&node.id) else {
+            continue;
+        };
+        let p = radius / (z + dist);
+        let px = cx + x * p;
+        let py = cy + y * p;
+        proj.insert(node.id, (px, py, z));
+    }
+
     // Draw edges (projected). Limit visual density by weight.
     let mut max_abs_w = 0.0001f32;
     for &(_s, _t, w) in edges {
@@ -260,37 +276,20 @@ pub fn draw_brain_connectivity_sphere(
     }
 
     for &(s, t, w) in edges {
-        let Some(&(sx, sy, sz)) = pos.get(&s) else {
+        let Some(&(x1, y1, sz)) = proj.get(&s) else {
             continue;
         };
-        let Some(&(tx, ty, tz)) = pos.get(&t) else {
+        let Some(&(x2, y2, tz)) = proj.get(&t) else {
             continue;
         };
 
-        let _depth = ((sz + tz) * 0.5 + 1.0) * 0.5; // 0..1 approx (1=front, 0=back)
         let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
         if absw < 0.12 {
             continue;
         }
 
-        // Connection strength determines "closeness" via perspective pull.
-        // Stronger connections appear closer (pulled toward viewer), weaker ones stay back.
-        // Both closeness and width share the same source (absw) but scale differently.
-        let strength_closeness = absw * 0.4; // Pull strong edges forward (0 to 0.4 offset)
-        let dist_base = 2.8;
-        let sz_adj = sz - strength_closeness; // Stronger = closer to viewer
-        let tz_adj = tz - strength_closeness;
-
-        // Perspective projection with strength-adjusted depth
-        let sp = radius / (sz_adj + dist_base);
-        let tp = radius / (tz_adj + dist_base);
-        let x1 = cx + sx * sp;
-        let y1 = cy + sy * sp;
-        let x2 = cx + tx * tp;
-        let y2 = cy + ty * tp;
-
-        // Recalculate depth after adjustment for alpha/width effects
-        let adj_depth = ((sz_adj + tz_adj) * 0.5 + 1.0) * 0.5;
+        // Depth (0..1 approx): 1=front, 0=back.
+        let adj_depth = ((sz + tz) * 0.5 + 1.0) * 0.5;
 
         // Width is primarily based on connection strength, with slight depth influence
         // Strong connections = thick lines, weak connections = thin lines
@@ -334,7 +333,6 @@ pub fn draw_brain_connectivity_sphere(
         let Some(&(x, y, z)) = pos.get(&node.id) else {
             continue;
         };
-        let dist = 2.8;
         let p = radius / (z + dist);
         let px = cx + x * p;
         let py = cy + y * p;
@@ -361,28 +359,33 @@ pub fn draw_brain_connectivity_sphere(
         // - reserved: units with learning disabled (sensor/action or special)
         // - regular: freely available units for concept formation
         let type_base = if node.is_sensor_member {
-            1.8 // Sensors (blue) - reduced from 2.4
+            1.5
         } else if node.is_group_member {
-            1.5 // Actions/groups (green) - reduced from 2.0
+            1.25
         } else {
-            1.2 // Regular units (yellow) - reduced from 1.7
+            1.0
         };
 
         // Salience adds to base size: more frequently accessed nodes appear larger
         // Salience contribution: up to +1.5 size for max salience (reduced from +3.0)
-        let salience_size = 1.5 * salience;
+        let salience_size = 1.1 * salience;
 
         // Dynamic amplitude contribution (current activity) - reduced from 4.0
-        let amp_size = 2.0 * amp;
+        let amp_size = 1.6 * amp;
 
         // Combined base (type + salience)
         let base = type_base + salience_size;
 
         // Scale down nodes (and a touch with zoom) to keep density readable.
         // Only add pulsing to size for ACTIVE nodes
-        let pulse_size_factor = if is_active { 1.0 + pulse * 0.3 } else { 1.0 };
+        let pulse_size_factor = if is_active { 1.0 + pulse * 0.25 } else { 1.0 };
         let mut size = (base + amp_size) * opts.node_size_scale * pulse_size_factor;
         size *= zoom.sqrt();
+
+        // Cap node size so high-salience / high-amp nodes don't overwhelm the view.
+        // Keep the cap proportional to zoom (so zooming in still feels like zoom).
+        let max_size = 9.0 * zoom.sqrt();
+        size = size.clamp(1.2, max_size);
 
         // Alpha: salience contributes to base visibility, amplitude adds dynamic
         // Active nodes are more visible, inactive nodes fade into background
@@ -444,7 +447,7 @@ pub fn draw_brain_connectivity_sphere(
             id: node.id,
             x: px,
             y: py,
-            r: size.max(2.0),
+            r: size.max(1.2),
         });
     }
 
