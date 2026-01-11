@@ -29,6 +29,11 @@ const LOCALSTORAGE_SETTINGS_KEY: &str = "braine_settings_v1";
 
 const STYLE_CARD: &str = "padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;";
 
+// Version strings for display
+const VERSION_BRAINE: &str = env!("CARGO_PKG_VERSION");
+const VERSION_BRAINE_WEB: &str = "0.1.0";
+const VERSION_BBI_FORMAT: u32 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Theme {
     #[default]
@@ -188,6 +193,15 @@ fn App() -> impl IntoView {
     // Unit plot data for Graph page
     let (unit_plot, set_unit_plot) = signal::<Vec<UnitPlotPoint>>(Vec::new());
 
+    // Brain age (steps) for stats display
+    let (brain_age, set_brain_age) = signal(0u64);
+    // Causal memory stats for stats display
+    let (causal_symbols, set_causal_symbols) = signal(0usize);
+    let (causal_edges, set_causal_edges) = signal(0usize);
+
+    // Left panel mode: show About or show Game
+    let (show_about_page, set_show_about_page) = signal(true);
+
     // BrainViz uses its own sampling so it can be tuned independently.
     let (brainviz_points, set_brainviz_points) = signal::<Vec<UnitPlotPoint>>(Vec::new());
     let (brainviz_node_sample, set_brainviz_node_sample) = signal(128u32);
@@ -197,6 +211,7 @@ fn App() -> impl IntoView {
     let (brainviz_pan_y, set_brainviz_pan_y) = signal(0.0f32);
     let (brainviz_auto_rotate, set_brainviz_auto_rotate) = signal(true);
     let (brainviz_hover, set_brainviz_hover) = signal::<Option<(u32, f64, f64)>>(None);
+    let (brainviz_view_mode, set_brainviz_view_mode) = signal::<&'static str>("substrate"); // "substrate" or "causal"
     let brainviz_dragging = StoredValue::new(false);
     let brainviz_last_drag_xy = StoredValue::new((0.0f64, 0.0f64));
     let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
@@ -237,6 +252,12 @@ fn App() -> impl IntoView {
             // Update unit plot data for Graph page (sample 128 units)
             let plot_points = runtime.with_value(|r| r.brain.unit_plot_points(128));
             set_unit_plot.set(plot_points);
+
+            // Update brain age and causal stats
+            set_brain_age.set(runtime.with_value(|r| r.brain.age_steps()));
+            let cstats = runtime.with_value(|r| r.brain.causal_stats());
+            set_causal_symbols.set(cstats.base_symbols);
+            set_causal_edges.set(cstats.edges);
 
             // Update game accuracy in memory (will be persisted on game switch or save)
             let game_label = game_kind.get_untracked().label().to_string();
@@ -522,6 +543,8 @@ fn App() -> impl IntoView {
         }
     };
 
+    let do_tick_sv = StoredValue::new(do_tick.clone());
+    let do_reset_sv = StoredValue::new(do_reset.clone());
     let do_start_sv = StoredValue::new(do_start.clone());
     let do_stop_sv = StoredValue::new(do_stop.clone());
 
@@ -1170,14 +1193,23 @@ fn App() -> impl IntoView {
                 </div>
             </header>
 
-            // Game tabs navigation
+            // Game tabs navigation (with About as first tab on left)
             <nav class="app-nav">
+                <button
+                    class=move || if show_about_page.get() { "tab active" } else { "tab" }
+                    on:click=move |_| set_show_about_page.set(true)
+                >
+                    "ℹ️ About"
+                </button>
                 {GameKind::all().iter().map(|&kind| {
                     let set_game = Arc::clone(&set_game);
                     view! {
                         <button
-                            class=move || if game_kind.get() == kind { "tab active" } else { "tab" }
-                            on:click=move |_| set_game(kind)
+                            class=move || if !show_about_page.get() && game_kind.get() == kind { "tab active" } else { "tab" }
+                            on:click=move |_| {
+                                set_show_about_page.set(false);
+                                set_game(kind);
+                            }
                         >
                             {kind.display_name()}
                         </button>
@@ -1187,14 +1219,86 @@ fn App() -> impl IntoView {
 
             // Main content area
             <div class="content-split">
-                // Game area (left)
+                // Game area (left) - shows About page or game controls/canvas
                 <div class="game-area">
+                    <Show when=move || show_about_page.get()>
+                        // Left-panel About page
+                        <div style="padding: 20px; max-width: 700px; margin: 0 auto; overflow-y: auto; height: 100%;">
+                            <div style="display: flex; flex-direction: column; gap: 16px;">
+                                <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.15), rgba(0,0,0,0.2)); border: 1px solid var(--border); border-radius: 16px;">
+                                    <div style="font-size: 3rem;">"🧠"</div>
+                                    <h1 style="margin: 8px 0 4px 0; font-size: 1.6rem; font-weight: 700; color: var(--accent);">"Braine"</h1>
+                                    <p style="margin: 0; color: var(--text); font-size: 0.95rem;">"Closed-loop learning substrate"</p>
+                                    <p style="margin: 8px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Sparse recurrent dynamics • Local plasticity • Scalar reward • No backprop"</p>
+                                </div>
+
+                                <div style=STYLE_CARD>
+                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Version Info"</h3>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem;">
+                                        <span style="color: var(--muted);">"Braine Core:"</span>
+                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE}</span>
+                                        <span style="color: var(--muted);">"Brain Image (BBI):"</span>
+                                        <span style="color: var(--text); font-weight: 600;">{format!("v{}", VERSION_BBI_FORMAT)}</span>
+                                        <span style="color: var(--muted);">"Braine Web:"</span>
+                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE_WEB}</span>
+                                    </div>
+                                </div>
+
+                                <div style=STYLE_CARD>
+                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"What is this?"</h3>
+                                    <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                        "This web lab runs interactive games (Spot, Bandit, Pong, etc.) while you watch learning signals, indicators, and graphs in real-time. The goal is interpretability while learning happens — not offline training."
+                                    </p>
+                                </div>
+
+                                <div style=STYLE_CARD>
+                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Key Principles"</h3>
+                                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                                        <div>
+                                            <strong style="color: var(--text);">"Learning modifies state"</strong>
+                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Plasticity + reward updates internal couplings and causal memory."</div>
+                                        </div>
+                                        <div>
+                                            <strong style="color: var(--text);">"Inference uses state"</strong>
+                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Action selection is a readout from the learned dynamics."</div>
+                                        </div>
+                                        <div>
+                                            <strong style="color: var(--text);">"Closed loop"</strong>
+                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Stimulus → dynamics → action → reward, repeated online."</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div style=STYLE_CARD>
+                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Quick Start"</h3>
+                                    <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.8;">
+                                        <li>"Select a game tab above (e.g., Spot, Bandit)"</li>
+                                        <li>"Click "<strong>"▶ Run"</strong>" to start the learning loop"</li>
+                                        <li>"Watch the Stats and Analytics panels on the right"</li>
+                                        <li>"Observe accuracy climb as the brain learns associations"</li>
+                                    </ol>
+                                </div>
+
+                                <div style="text-align: center; padding: 12px;">
+                                    <button
+                                        class="btn primary"
+                                        style="padding: 12px 24px; font-size: 1rem;"
+                                        on:click=move |_| set_show_about_page.set(false)
+                                    >
+                                        "🎮 Start Playing"
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </Show>
+
+                    <Show when=move || !show_about_page.get()>
                         // Controls bar
                         <div class="controls">
-                            <button class="btn" on:click=move |_| do_tick()>"⏯ Step"</button>
-                            <button class=move || if is_running.get() { "btn" } else { "btn primary" } on:click=move |_| do_start()>"▶ Run"</button>
-                            <button class="btn" on:click=move |_| do_stop()>"⏹ Stop"</button>
-                            <button class="btn" on:click=move |_| do_reset()>"↺ Reset"</button>
+                            <button class="btn" on:click=move |_| (do_tick_sv.get_value())()>"⏯ Step"</button>
+                            <button class=move || if is_running.get() { "btn" } else { "btn primary" } on:click=move |_| (do_start_sv.get_value())()>"▶ Run"</button>
+                            <button class="btn" on:click=move |_| (do_stop_sv.get_value())()>"⏹ Stop"</button>
+                            <button class="btn" on:click=move |_| (do_reset_sv.get_value())()>"↺ Reset"</button>
                             <div class="spacer"></div>
                             <label class="label">
                                 <span>"Trial ms"</span>
@@ -1623,6 +1727,7 @@ fn App() -> impl IntoView {
                             </div>
                         </Show>
                         </div>
+                    </Show>
                     </div>
 
                 // Dashboard (right) - Tabbed panel
@@ -2020,6 +2125,10 @@ fn App() -> impl IntoView {
                                 <div class="card">
                                     <h3 class="card-title">"🧠 Brain Substrate"</h3>
                                     <div class="stat-row">
+                                        <span class="stat-label">"Age (steps)"</span>
+                                        <span class="stat-value">{move || brain_age.get().to_string()}</span>
+                                    </div>
+                                    <div class="stat-row">
                                         <span class="stat-label">"Units"</span>
                                         <span class="stat-value">{move || diag.get().unit_count.to_string()}</span>
                                     </div>
@@ -2032,8 +2141,26 @@ fn App() -> impl IntoView {
                                         <span class="stat-value">{move || format!("{:.4}", diag.get().avg_weight)}</span>
                                     </div>
                                     <div class="stat-row">
+                                        <span class="stat-label">"Avg Amplitude"</span>
+                                        <span class="stat-value">{move || format!("{:.4}", diag.get().avg_amp)}</span>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="stat-label">"Pruned (last)"</span>
+                                        <span class="stat-value">{move || diag.get().pruned_last_step.to_string()}</span>
+                                    </div>
+                                    <div class="stat-row">
                                         <span class="stat-label">"Memory"</span>
                                         <span class="stat-value">{move || format!("{}KB", diag.get().memory_bytes / 1024)}</span>
+                                    </div>
+                                    <div class="divider"></div>
+                                    <h4 style="margin: 8px 0 4px 0; font-size: 0.85rem; color: var(--muted);">"Causal Memory"</h4>
+                                    <div class="stat-row">
+                                        <span class="stat-label">"Symbols"</span>
+                                        <span class="stat-value">{move || causal_symbols.get().to_string()}</span>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="stat-label">"Edges"</span>
+                                        <span class="stat-value">{move || causal_edges.get().to_string()}</span>
                                     </div>
                                 </div>
 
@@ -2181,12 +2308,25 @@ fn App() -> impl IntoView {
                                 <Show when=move || analytics_panel.get() == AnalyticsPanel::BrainViz>
                                     <div class="card">
                                         <h3 class="card-title">"🧠 Internal Brain Visualization"</h3>
-                                        <p class="subtle">"Sampled nodes on a rotating sphere; edges show connection strength."</p>
+                                        <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: shows symbol-to-symbol temporal edges (coming soon)." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
                                         <div class="callout">
                                             <p>"Drag to pan • Scroll to zoom • Hover for details"</p>
                                         </div>
 
                                         <div class="row end wrap" style="margin-top: 10px;">
+                                            <label class="label">
+                                                <span>"View"</span>
+                                                <select
+                                                    class="input"
+                                                    on:change=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        set_brainviz_view_mode.set(if v == "causal" { "causal" } else { "substrate" });
+                                                    }
+                                                >
+                                                    <option value="substrate" selected=move || brainviz_view_mode.get() == "substrate">"Substrate"</option>
+                                                    <option value="causal" selected=move || brainviz_view_mode.get() == "causal">"Causal"</option>
+                                                </select>
+                                            </label>
                                             <label class="label">
                                                 <span>"Nodes"</span>
                                                 <input
@@ -2568,9 +2708,16 @@ fn App() -> impl IntoView {
                                     <pre class="codeblock">{"State per unit i\n- amplitude a_i(t)\n- phase φ_i(t)\n- bias b_i, decay d_i\n- one-tick input x_i(t) from applied stimuli\n\nSparse recurrent influence (neighbors N(i) with weights w_{ij})\n- amp influence:  S_i(t) = Σ_{j∈N(i)} w_{ij} · a_j(t)\n- phase influence: P_i(t) = Σ_{j∈N(i)} w_{ij} · Δ(φ_j(t), φ_i(t))\n\nGlobal inhibition (competition)\n- ā(t) = (1/N) Σ_k a_k(t)\n- I(t) = g · ā(t)   where g = global_inhibition\n\nNoise\n- η^a_i ~ U[-noise_amp, +noise_amp]\n- η^φ_i ~ U[-noise_phase, +noise_phase]\n\nDynamics update (Euler step, dt)\n- damp term: D_i(t) = d_i · a_i(t)\n- a_i(t+dt) = clip( a_i(t) + (b_i + x_i + S_i − I − D_i + η^a_i) · dt , [-2, 2])\n- φ_i(t+dt) = wrap( φ_i(t) + (base_freq + P_i + η^φ_i) · dt )\n\nHebbian plasticity on existing sparse edges\n- activity threshold θ = coactive_threshold\n- phase alignment A(φ_i, φ_j) ∈ [0,1]\n- phase threshold θ_φ = phase_lock_threshold\n- learning rate: lr = hebb_rate · (1 + max(0, neuromod))\n\nFor each edge i→j (stored in CSR)\n- if a_i > θ and a_j > θ and A(φ_i, φ_j) > θ_φ:\n    Δw_{ij} = lr · A(φ_i, φ_j)\n  else if a_i > θ and a_j > θ and A(φ_i, φ_j) ≤ θ_φ:\n    Δw_{ij} = −lr · 0.05\n  else:\n    Δw_{ij} = 0\n- w_{ij} ← clip(w_{ij} + Δw_{ij}, [-1.5, 1.5])\n\nForgetting + pruning (structural decay)\n- w_{ij} ← (1 − forget_rate) · w_{ij}\n- if |w_{ij}| < prune_below: prune edge (except “engram” sensor↔concept edges keep a minimal trace)\n\nAction scoring (habit + meaning)\n- habit_norm(a) = clamp( (Σ_{u∈action_units(a)} max(0, a_u)) / (|units| · 2), [0,1])\n- meaning(a|stimulus) = (pair_value · 1.0) + (global_value · 0.15)\n  where\n    global_value = causal(a, reward_pos) − causal(a, reward_neg)\n    pair_value = causal(pair(stimulus,a), reward_pos) − causal(pair(stimulus,a), reward_neg)\n- score(a|stimulus) = 0.5 · habit_norm(a) + meaning_alpha · meaning(a|stimulus)\n\nIn the web loop, exploration is ε-gated: with probability ε choose a random allowed action; otherwise choose the top scored action."}</pre>
                                 </div>
 
-                                <div style="text-align: center; padding: 12px; color: var(--muted); font-size: 0.8rem;">
-                                    "More docs live in the repo: "
-                                    <a href="https://github.com/maplumi/braine" target="_blank" style="color: var(--accent);">"github.com/maplumi/braine"</a>
+                                <div style=STYLE_CARD>
+                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Version Info"</h3>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem;">
+                                        <span style="color: var(--muted);">"Braine Core:"</span>
+                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE}</span>
+                                        <span style="color: var(--muted);">"Brain Image (BBI):"</span>
+                                        <span style="color: var(--text); font-weight: 600;">{format!("v{}", VERSION_BBI_FORMAT)}</span>
+                                        <span style="color: var(--muted);">"Braine Web:"</span>
+                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE_WEB}</span>
+                                    </div>
                                 </div>
                             </div>
                         </Show>
