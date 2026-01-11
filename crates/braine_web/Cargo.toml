@@ -53,6 +53,7 @@ web-sys = { version = "=0.3.76", optional = true, default-features = false, feat
 	"MouseEvent",
 	"WheelEvent",
 	"CanvasRenderingContext2d",
+	"CanvasGradient",
 	"IdbFactory",
 	"IdbOpenDbRequest",
 	"IdbDatabase",

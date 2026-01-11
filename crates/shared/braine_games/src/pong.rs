@@ -72,6 +72,41 @@ pub struct PongSim {
     pending_event_reward: f32,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn miss_hides_ball_and_respawns_from_right() {
+        let mut sim = PongSim::new(123);
+
+        // Force a miss at the left boundary on the next update.
+        sim.state.ball_x = 0.01;
+        sim.state.ball_y = 0.0;
+        sim.state.ball_vx = -1.0;
+        sim.state.ball_vy = 0.0;
+        sim.state.paddle_y = 1.0; // far from ball_y
+        sim.params.paddle_half_height = 0.05;
+        sim.params.respawn_delay_s = 0.02;
+
+        let ev = sim.update(0.05);
+        assert_eq!(ev, PongEvent::Miss);
+        assert!(!sim.ball_visible());
+
+        // Ball should already be staged at the right edge for the next serve.
+        assert!((sim.state.ball_x - 1.0).abs() < 1.0e-6);
+        assert!(sim.state.ball_vx < 0.0);
+
+        // After enough time passes, it becomes visible and starts moving left.
+        let _ = sim.update(sim.params.respawn_delay_s);
+        assert!(sim.ball_visible());
+
+        let x_before = sim.state.ball_x;
+        let _ = sim.update(0.01);
+        assert!(sim.state.ball_x < x_before);
+    }
+}
+
 impl PongSim {
     pub fn new(seed: u64) -> Self {
         let mut sim = Self {
@@ -127,9 +162,20 @@ impl PongSim {
         }
 
         if self.respawn_remaining_s > 0.0 {
-            self.respawn_remaining_s = (self.respawn_remaining_s - dt).max(0.0);
-            // While hidden, do not advance ball physics.
-            return PongEvent::None;
+            // While hidden, do not advance ball physics. If the respawn timer
+            // elapses during this tick, consume the remaining dt for physics
+            // so the ball starts moving immediately upon reappearing.
+            if dt < self.respawn_remaining_s {
+                self.respawn_remaining_s -= dt;
+                return PongEvent::None;
+            }
+
+            let leftover = dt - self.respawn_remaining_s;
+            self.respawn_remaining_s = 0.0;
+            if leftover <= 0.0 {
+                return PongEvent::None;
+            }
+            return self.step_physics(leftover);
         }
 
         self.step_physics(dt)
@@ -246,9 +292,10 @@ impl PongSim {
 
     fn reset_point_for_serve(&mut self) {
         // Like `reset_point`, but does not clear respawn timer.
-        self.state.ball_x = 0.5;
+        // Respawn from the right edge moving left toward the paddle.
+        self.state.ball_x = 1.0;
         self.state.ball_y = self.sample_uniform(-0.6, 0.6);
-        self.state.ball_vx = 0.75;
+        self.state.ball_vx = -0.75;
         self.state.ball_vy = self.sample_uniform(-0.55, 0.55);
         if self.state.ball_vy.abs() < 0.15 {
             self.state.ball_vy = if self.state.ball_vy >= 0.0 {
@@ -257,7 +304,6 @@ impl PongSim {
                 -0.15
             };
         }
-        self.state.paddle_y = 0.0;
     }
 
     pub fn bin_signed(v: f32, bins: u32) -> u32 {

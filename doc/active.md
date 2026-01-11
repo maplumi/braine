@@ -86,15 +86,13 @@ Implement visual and core enhancements for node/edge dynamics based on the analy
    - No core changes required
    - Priority: HIGH
 
-2. **Node size based on activity/frequency**
-   - In substrate view: size based on amplitude
+2. ✅ **Node size based on activity/frequency**
+   - In substrate view: size based on amplitude (and now re-samples periodically so node sizes update live while running/idle)
    - In causal view: already done (base_count)
-   - Priority: MEDIUM
 
-3. **Edge opacity gradient**
-   - Stronger edges more opaque
-   - Already partially done
-   - Priority: LOW
+3. ✅ **Per-edge color gradient**
+   - Edges use a canvas linear gradient between endpoint node colors
+   - Improves readability vs sign-only coloring
 
 ### Phase 3: Core Enhancements (Research)
 
@@ -164,6 +162,20 @@ Implement visual and core enhancements for node/edge dynamics based on the analy
 - **Hover**: Show node details tooltip
 - Activity-based vibration from average amplitude of sampled units
 - Reset View button resets zoom, pan, and rotation
+
+### Persistence / Brain Image (IndexedDB)
+
+**Status: Implemented**
+
+- Web autoloads `brain_image` from IndexedDB (DB: `braine`, store: `kv`) on startup when present
+- Autosaves periodically when the brain is marked dirty (best-effort, non-blocking)
+- UI shows source + autosave state + last-save timestamp
+
+### Pong Visual Polish
+
+**Status: Implemented**
+
+- Removed in-canvas glow effects and removed the remaining outer “ambient glow” around the Pong canvas container
 
 ### Statistics Tab Improvements
 
@@ -241,6 +253,17 @@ CSS classes added:
 - `unit_plot_points()` and `draw_unit_plot_3d()` properly support reserved nodes (gray color)
 - BrainViz also supports reserved nodes with proper coloring
 - Reserved nodes would appear if a brain image with reserved units is loaded
+
+### Web-only Persistence, BrainViz, Pong Polish ✅
+
+**Status: Implemented**
+
+- **IndexedDB autoload + autosave** for the brain image, including UI indicators for brain source / autosave / last save
+- **BrainViz live node refresh** while edges update (sampling refresh tied to runtime activity)
+- **BrainViz connection edges** render with per-edge gradients derived from endpoint node colors
+- **Pong visuals** aligned with sim collisions, paddle rendered on the left wall, and all remaining glow removed (in-canvas and DOM)
+- **Tooltips** added for Trial timing / ε / α and Settings fields
+- **WASM build fix**: removed `std` hashing from `connections_fingerprint()` to keep `wasm32-unknown-unknown` compatible
 
 ### Default Values Changed
 

@@ -1,6 +1,7 @@
 //! Canvas-based charting and visualization for braine_web.
 
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
+use js_sys::Reflect;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 const SERIES_COLORS: [&str; 8] = [
@@ -269,6 +270,35 @@ pub fn draw_brain_connectivity_sphere(
         proj.insert(node.id, (px, py, z));
     }
 
+    // Fast lookup for per-node coloring (used by gradient edges).
+    let node_by_id: std::collections::HashMap<u32, &braine::substrate::UnitPlotPoint> =
+        nodes.iter().map(|n| (n.id, n)).collect();
+
+    let node_base_rgb =
+        |node: &braine::substrate::UnitPlotPoint, learning_mode: bool| -> (u8, u8, u8) {
+            if learning_mode {
+                if node.is_sensor_member {
+                    (255, 153, 102) // warm orange
+                } else if node.is_group_member {
+                    (74, 222, 128) // green
+                } else if node.is_reserved {
+                    (148, 163, 184) // gray
+                } else {
+                    (251, 191, 36) // amber
+                }
+            } else {
+                if node.is_sensor_member {
+                    (122, 162, 255) // blue
+                } else if node.is_group_member {
+                    (34, 211, 238) // cyan
+                } else if node.is_reserved {
+                    (148, 163, 184) // gray
+                } else {
+                    (167, 139, 250) // purple
+                }
+            }
+        };
+
     // Draw edges (projected). Limit visual density by weight.
     let mut max_abs_w = 0.0001f32;
     for &(_s, _t, w) in edges {
@@ -299,25 +329,55 @@ pub fn draw_brain_connectivity_sphere(
 
         // Alpha combines strength (strong = more visible) and depth (front = more visible)
         let alpha = (0.10 + 0.45 * absw) * (0.30 + 0.70 * adj_depth);
-        if w >= 0.0 {
-            ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", alpha));
-        } else {
-            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
-        }
+
+        // Edge gradient is derived from endpoint node colors.
+        // If either endpoint is missing (shouldn't happen), fall back to sign-based colors.
+        let (r1, g1, b1, r2, g2, b2) = match (node_by_id.get(&s), node_by_id.get(&t)) {
+            (Some(ns), Some(nt)) => {
+                let (r1, g1, b1) = node_base_rgb(ns, opts.learning_mode);
+                let (r2, g2, b2) = node_base_rgb(nt, opts.learning_mode);
+                (r1, g1, b1, r2, g2, b2)
+            }
+            _ => {
+                if w >= 0.0 {
+                    (122, 162, 255, 122, 162, 255)
+                } else {
+                    (251, 113, 133, 251, 113, 133)
+                }
+            }
+        };
+
+        let grad = ctx.create_linear_gradient(x1, y1, x2, y2);
+        let _ = grad.add_color_stop(0.0, &format!("rgba({r1}, {g1}, {b1}, {:.3})", alpha));
+        let _ = grad.add_color_stop(1.0, &format!("rgba({r2}, {g2}, {b2}, {:.3})", alpha));
+        let _ = Reflect::set(
+            ctx.as_ref(),
+            &JsValue::from_str("strokeStyle"),
+            grad.as_ref(),
+        );
         ctx.set_line_width(edge_width);
         ctx.begin_path();
         ctx.move_to(x1, y1);
         ctx.line_to(x2, y2);
         ctx.stroke();
 
-        // Draw glow for very strong edges (they're already pulled forward)
+        // Draw a subtle extra pass for very strong edges (they're already pulled forward)
         if absw > 0.6 {
             let tension_alpha = (absw - 0.6) * 0.4 * adj_depth;
-            if w >= 0.0 {
-                ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", tension_alpha));
-            } else {
-                ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", tension_alpha));
-            }
+            let grad = ctx.create_linear_gradient(x1, y1, x2, y2);
+            let _ = grad.add_color_stop(
+                0.0,
+                &format!("rgba({r1}, {g1}, {b1}, {:.3})", tension_alpha),
+            );
+            let _ = grad.add_color_stop(
+                1.0,
+                &format!("rgba({r2}, {g2}, {b2}, {:.3})", tension_alpha),
+            );
+            let _ = Reflect::set(
+                ctx.as_ref(),
+                &JsValue::from_str("strokeStyle"),
+                grad.as_ref(),
+            );
             ctx.set_line_width(edge_width * 1.8);
             ctx.begin_path();
             ctx.move_to(x1, y1);

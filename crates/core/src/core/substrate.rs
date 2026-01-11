@@ -533,13 +533,28 @@ impl Brain {
     /// If this value differs, applying deltas by edge-index is unsafe.
     #[must_use]
     pub fn connections_fingerprint(&self) -> u64 {
-        use std::hash::{Hash as _, Hasher as _};
+        // NOTE: This must work in `no_std` builds (e.g. wasm32-unknown-unknown).
+        // We don't need cryptographic security here; we just want a stable-ish
+        // topology fingerprint to gate safe delta application.
+        #[inline]
+        fn mix64(mut h: u64, x: u64) -> u64 {
+            // FNV-1a-ish mixing
+            h ^= x;
+            h = h.wrapping_mul(1099511628211);
+            // extra avalanching
+            h ^= h >> 33;
+            h = h.wrapping_mul(0xff51afd7ed558ccd);
+            h ^= h >> 33;
+            h
+        }
 
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.units.len().hash(&mut hasher);
-        self.connections.weights.len().hash(&mut hasher);
-        self.connections.targets.hash(&mut hasher);
-        hasher.finish()
+        let mut h = 14695981039346656037u64;
+        h = mix64(h, self.units.len() as u64);
+        h = mix64(h, self.connections.weights.len() as u64);
+        for &t in &self.connections.targets {
+            h = mix64(h, t as u64);
+        }
+        h
     }
 
     /// Number of connection weights (equals number of edges).
@@ -2292,6 +2307,45 @@ impl Brain {
         self.imprint_if_novel(group_units, stimulus.strength);
     }
 
+    /// Apply a stimulus for *inference only*.
+    ///
+    /// This injects input current into the named sensor group's units, but does **not**:
+    /// - create / imprint new concept units
+    /// - update symbol/telemetry tables
+    ///
+    /// Use this when you want a read-only "what would you do?" query without
+    /// any structural updates.
+    pub fn apply_stimulus_inference(&mut self, stimulus: Stimulus<'_>) {
+        let idx = match self.sensor_group_index.get(stimulus.name) {
+            Some(&i) => i,
+            None => match self
+                .sensor_groups
+                .iter()
+                .position(|g| g.name == stimulus.name)
+            {
+                Some(i) => {
+                    // Self-heal if constructed without a rebuild.
+                    self.sensor_group_index.insert(stimulus.name.to_string(), i);
+                    i
+                }
+                None => return,
+            },
+        };
+
+        let (units_ptr, units_len) = match self.sensor_groups.get(idx) {
+            Some(g) => (g.units.as_ptr(), g.units.len()),
+            None => return,
+        };
+
+        // Safety: `sensor_groups` is not mutated during this call, so the pointer
+        // remains valid for the duration of the function.
+        let group_units: &[UnitId] = unsafe { core::slice::from_raw_parts(units_ptr, units_len) };
+
+        for &id in group_units {
+            self.pending_input[id] += stimulus.strength;
+        }
+    }
+
     #[inline]
     fn build_compound_symbol<'a>(buf: &'a mut [u8; 256], parts: &[&str]) -> Option<&'a str> {
         let mut idx: usize = 0;
@@ -2911,6 +2965,32 @@ impl Brain {
         }
 
         self.forget_and_prune();
+    }
+
+    /// Advance the simulation by one timestep, **without learning**.
+    ///
+    /// This updates unit dynamics and clears one-tick inputs, but does not run
+    /// Hebbian learning or forgetting/pruning.
+    pub fn step_inference(&mut self) {
+        self.pruned_last_step = 0;
+        self.age_steps = self.age_steps.wrapping_add(1);
+
+        if self.telemetry.enabled {
+            self.telemetry.last_stimuli.clear();
+            self.telemetry.last_actions.clear();
+            self.telemetry.last_reinforced_actions.clear();
+        }
+
+        match self.tier {
+            ExecutionTier::Scalar => self.step_dynamics_scalar(),
+            ExecutionTier::Simd => self.step_dynamics_simd(),
+            ExecutionTier::Parallel => self.step_dynamics_parallel(),
+            ExecutionTier::Gpu => self.step_dynamics_gpu(),
+        }
+
+        for x in &mut self.pending_input {
+            *x = 0.0;
+        }
     }
 
     /// Scalar (baseline) dynamics update.
@@ -5000,6 +5080,28 @@ mod tests {
         // Test config accessor
         let cfg_ref = brain.config();
         assert_eq!(cfg_ref.unit_count, 64);
+    }
+
+    #[test]
+    fn inference_step_does_not_modify_weights() {
+        let cfg = BrainConfig::with_size(64, 6).with_seed(7);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("stim", 8);
+        brain.define_action("left", 4);
+        brain.define_action("right", 4);
+
+        let base = brain.clone();
+
+        brain.apply_stimulus_inference(Stimulus::new("stim", 1.0));
+        for _ in 0..3 {
+            brain.step_inference();
+        }
+
+        let delta = brain.diff_weights_topk(&base, 32);
+        assert!(
+            delta.weight_deltas.is_empty(),
+            "inference stepping should not change weights"
+        );
     }
 
     #[test]

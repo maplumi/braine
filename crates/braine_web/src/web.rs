@@ -303,6 +303,12 @@ fn App() -> impl IntoView {
 
     let (import_autosave, set_import_autosave) = signal(true);
 
+    // IndexedDB persistence UX
+    let (idb_autosave, set_idb_autosave) = signal(true);
+    let (idb_loaded, set_idb_loaded) = signal(false);
+    let (idb_last_save, set_idb_last_save) = signal(String::new());
+    let (brain_dirty, set_brain_dirty) = signal(false);
+
     let (interval_id, set_interval_id) = signal::<Option<i32>>(None);
 
     let (is_running, set_is_running) = signal(false);
@@ -409,6 +415,7 @@ fn App() -> impl IntoView {
                         set_idle_sync_done.set(true);
                         if synced.is_some() {
                             set_idle_status.set("sync: phases aligned".to_string());
+                            set_brain_dirty.set(true);
                         }
                     }
 
@@ -422,6 +429,7 @@ fn App() -> impl IntoView {
                             if let Some(processed) = r.brain.idle_maintenance(false) {
                                 set_idle_status
                                     .set(format!("dreaming: {} units consolidated", processed));
+                                set_brain_dirty.set(true);
                             }
                         });
                         set_idle_dream_counter.set(0);
@@ -439,6 +447,56 @@ fn App() -> impl IntoView {
     // Per-game accuracy persistence (loaded from IDB)
     let (game_accuracies, set_game_accuracies) =
         signal::<std::collections::HashMap<String, f32>>(std::collections::HashMap::new());
+
+    // IndexedDB autosave loop (best-effort).
+    // Saves only when the brain has changed (brain_dirty), to avoid excessive writes.
+    {
+        let runtime = runtime.clone();
+        let set_status = set_status.clone();
+        if let Some(window) = web_sys::window() {
+            let cb = Closure::wrap(Box::new(move || {
+                if !idb_autosave.get_untracked() {
+                    return;
+                }
+                if !brain_dirty.get_untracked() {
+                    return;
+                }
+
+                let bytes = match runtime.with_value(|r| r.brain.save_image_bytes()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        set_status.set(format!("autosave failed: {e}"));
+                        return;
+                    }
+                };
+                let accs = game_accuracies.get_untracked();
+
+                let set_status = set_status.clone();
+                spawn_local(async move {
+                    match idb_put_bytes(IDB_KEY_BRAIN_IMAGE, &bytes).await {
+                        Ok(()) => {
+                            let _ = save_game_accuracies(&accs).await;
+                            set_brain_dirty.set(false);
+                            set_idb_loaded.set(true);
+                            let ts = js_sys::Date::new_0()
+                                .to_iso_string()
+                                .as_string()
+                                .unwrap_or_else(|| "".to_string());
+                            set_idb_last_save.set(ts);
+                        }
+                        Err(e) => {
+                            set_status.set(format!("autosave failed: {e}"));
+                        }
+                    }
+                });
+            }) as Box<dyn FnMut()>);
+            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                5_000,
+            );
+            cb.forget();
+        }
+    }
 
     // WebGPU availability check.
     // If this build includes the core `gpu` feature, we can select the GPU execution tier
@@ -672,6 +730,7 @@ fn App() -> impl IntoView {
             runtime.update_value(|r| {
                 out = r.tick(&cfg);
             });
+            set_brain_dirty.set(true);
             if let Some(out) = out {
                 let last_action = out.last_action.clone();
                 set_last_action.set(last_action.clone());
@@ -728,6 +787,7 @@ fn App() -> impl IntoView {
                 let con = r.brain.config().connectivity_per_unit;
                 r.brain.grow_units(n, con);
             });
+            set_brain_dirty.set(true);
             refresh_ui_from_runtime();
             set_status.set(format!("grew units by {}", n));
         }
@@ -741,6 +801,7 @@ fn App() -> impl IntoView {
             runtime.update_value(|r| {
                 r.brain.dream(100, 2.0, 0.5);
             });
+            set_brain_dirty.set(true);
             refresh_ui_from_runtime();
             set_status.set("dream: consolidation complete".to_string());
         }
@@ -753,6 +814,7 @@ fn App() -> impl IntoView {
             runtime.update_value(|r| {
                 r.brain.set_burst_mode(true, 3.0);
             });
+            set_brain_dirty.set(true);
             refresh_ui_from_runtime();
             set_status.set("burst: learning rate boosted".to_string());
         }
@@ -765,6 +827,7 @@ fn App() -> impl IntoView {
             runtime.update_value(|r| {
                 r.brain.force_synchronize_sensors();
             });
+            set_brain_dirty.set(true);
             refresh_ui_from_runtime();
             set_status.set("sync: sensor phases aligned".to_string());
         }
@@ -777,6 +840,7 @@ fn App() -> impl IntoView {
             runtime.update_value(|r| {
                 r.brain.imprint_current_context(0.5);
             });
+            set_brain_dirty.set(true);
             refresh_ui_from_runtime();
             set_status.set("imprint: context associations created".to_string());
         }
@@ -1031,6 +1095,13 @@ fn App() -> impl IntoView {
                     Ok(()) => {
                         // Also save game accuracies
                         let _ = save_game_accuracies(&accs).await;
+                        set_brain_dirty.set(false);
+                        set_idb_loaded.set(true);
+                        let ts = js_sys::Date::new_0()
+                            .to_iso_string()
+                            .as_string()
+                            .unwrap_or_else(|| "".to_string());
+                        set_idb_last_save.set(ts);
                         set_status.set(format!("saved {} bytes to IndexedDB", bytes.len()));
                     }
                     Err(e) => set_status.set(format!("save failed: {e}")),
@@ -1053,6 +1124,10 @@ fn App() -> impl IntoView {
                             set_last_action.set(String::new());
                             set_last_reward.set(0.0);
                             refresh_ui_from_runtime();
+                            set_idb_loaded.set(true);
+                            set_brain_dirty.set(false);
+                            set_idb_loaded.set(true);
+                            set_brain_dirty.set(false);
                             set_status.set(format!("loaded {} bytes from IndexedDB", bytes.len()));
                         }
                         Err(e) => set_status.set(format!("load failed: {e}")),
@@ -1063,6 +1138,44 @@ fn App() -> impl IntoView {
             });
         }
     };
+
+    // Best-effort auto-load on startup so the web runtime can run without the daemon.
+    // This is intentionally quiet unless a saved image exists.
+    {
+        let runtime = runtime.clone();
+        let refresh_ui_from_runtime = refresh_ui_from_runtime.clone();
+        let did_autoload = StoredValue::new(false);
+        Effect::new(move |_| {
+            if did_autoload.get_value() {
+                return;
+            }
+            did_autoload.set_value(true);
+
+            let set_status = set_status.clone();
+            spawn_local(async move {
+                match idb_get_bytes(IDB_KEY_BRAIN_IMAGE).await {
+                    Ok(Some(bytes)) => match Brain::load_image_bytes(&bytes) {
+                        Ok(brain) => {
+                            runtime.update_value(|r| r.brain = brain);
+                            set_steps.set(0);
+                            set_last_action.set(String::new());
+                            set_last_reward.set(0.0);
+                            refresh_ui_from_runtime();
+                            set_idb_loaded.set(true);
+                            set_brain_dirty.set(false);
+                            set_status
+                                .set(format!("auto-loaded {} bytes from IndexedDB", bytes.len()));
+                        }
+                        Err(e) => set_status.set(format!("auto-load failed: {e}")),
+                    },
+                    Ok(None) => {
+                        // No-op
+                    }
+                    Err(e) => set_status.set(format!("auto-load failed: {e}")),
+                }
+            });
+        });
+    }
 
     let do_export_bbi = {
         let runtime = runtime.clone();
@@ -1145,10 +1258,17 @@ fn App() -> impl IntoView {
 
                             if autosave {
                                 match idb_put_bytes(IDB_KEY_BRAIN_IMAGE, &bytes).await {
-                                    Ok(()) => set_status.set(format!(
-                                        "imported {} bytes (.bbi); auto-saved to IndexedDB",
-                                        bytes.len()
-                                    )),
+                                    Ok(()) => {
+                                        let ts = js_sys::Date::new_0()
+                                            .to_iso_string()
+                                            .as_string()
+                                            .unwrap_or_else(|| "".to_string());
+                                        set_idb_last_save.set(ts);
+                                        set_status.set(format!(
+                                            "imported {} bytes (.bbi); auto-saved to IndexedDB",
+                                            bytes.len()
+                                        ));
+                                    }
                                     Err(e) => set_status.set(format!(
                                         "imported {} bytes (.bbi); auto-save failed: {e}",
                                         bytes.len()
@@ -1359,6 +1479,8 @@ fn App() -> impl IntoView {
     });
 
     // BrainViz: sample plot points based on UI settings (does not affect learning/perf history).
+    // NOTE: edges are re-derived every render; we must refresh nodes periodically too,
+    // otherwise node sizes/colors can look "stuck" while edges change.
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
@@ -1369,8 +1491,26 @@ fn App() -> impl IntoView {
             let view_mode = brainviz_view_mode.get();
             let n = brainviz_node_sample.get().clamp(16, 1024) as usize;
 
+            // Throttle refresh:
+            // - while running: refresh every ~2 steps
+            // - while idle: refresh every ~2 seconds (idle_time is ~30fps)
+            let step = steps.get();
+            let running = is_running.get();
+            let idle_time = brainviz_idle_time.get();
+            if running {
+                if step % 2 != 0 {
+                    return;
+                }
+            } else {
+                let bucket = (idle_time * 10.0) as u32; // ~10Hz buckets
+                if bucket % 20 != 0 {
+                    return;
+                }
+            }
+
             if view_mode == "causal" {
                 // Fetch causal graph data
+                // (heavier than substrate points; keep it on the same throttle)
                 let causal = runtime.with_value(|r| r.brain.causal_graph_viz(n, n * 2));
                 set_brainviz_causal_graph.set(causal);
             } else {
@@ -2386,6 +2526,18 @@ fn App() -> impl IntoView {
                                         </div>
 
                                         <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Inference"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Read-only action recommendation. Runs on a cloned brain and uses inference-only stepping (no imprinting, no Hebbian learning, no forgetting/pruning)."
+                                            </p>
+                                            <div style="font-family: monospace; font-size: 0.82rem; line-height: 1.7; background: var(--bg); padding: 12px; border-radius: 8px;">
+                                                <div><strong>"InferActionScores"</strong>" → InferActionScores"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"InferActionScores\", context_key?, stimuli?: [{ name, strength }], steps?, meaning_alpha? }"</div>
+                                                <div style="color: var(--muted);">"output: { type: \"InferActionScores\", context_key, action_scores: [{ name, score, meaning_*... }] }"</div>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Diagnostics"</h3>
                                             <p style="margin: 0 0 10px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
                                                 "Read-only endpoints intended for dashboards/monitoring."</p>
@@ -2446,12 +2598,13 @@ fn App() -> impl IntoView {
                             <button class="btn" on:click=move |_| (do_reset_sv.get_value())()>"↺ Reset"</button>
                             <div class="spacer"></div>
                             <label class="label">
-                                <span>"Trial ms"</span>
+                                    <span title="Trial period in milliseconds (one decision/reward per trial). Larger = slower game loop.">"Trial ms"</span>
                                 <input
                                     type="number"
                                 min="10"
                                 max="60000"
                                 class="input"
+                                    title="Trial period in milliseconds (one decision/reward per trial)."
                                 prop:value=move || trial_period_ms.get().to_string()
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
@@ -2462,13 +2615,14 @@ fn App() -> impl IntoView {
                             />
                         </label>
                         <label class="label">
-                            <span>"ε"</span>
+                                <span title="Exploration rate (epsilon). With probability ε, choose a random action instead of the best-scoring one.">"ε"</span>
                             <input
                                 type="number"
                                 min="0"
                                 max="1"
                                 step="0.01"
                                 class="input"
+                                    title="Exploration rate (epsilon): probability of taking a random action."
                                 prop:value=move || format!("{:.2}", exploration_eps.get())
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
@@ -2479,13 +2633,14 @@ fn App() -> impl IntoView {
                             />
                         </label>
                         <label class="label">
-                            <span>"α"</span>
+                                <span title="Meaning blending (alpha). Higher α puts more weight on learned meaning/association memory when ranking actions.">"α"</span>
                             <input
                                 type="number"
                                 min="0"
                                 max="30"
                                 step="0.5"
                                 class="input"
+                                    title="Meaning alpha: weighting for meaning-based action ranking (higher = stronger meaning influence)."
                                 prop:value=move || format!("{:.1}", meaning_alpha.get())
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
@@ -2720,15 +2875,14 @@ fn App() -> impl IntoView {
                                     </div>
                                 </div>
 
-                                // Game canvas with ambient glow
+                                // Game canvas
                                 <div style="position: relative; display: flex; justify-content: center;">
-                                    <div style="position: absolute; width: 400px; height: 200px; border-radius: 50%; filter: blur(80px); opacity: 0.2; background: linear-gradient(135deg, #7aa2ff, #fbbf24);"></div>
-                                    <div style="position: relative; padding: 3px; border-radius: 16px; background: linear-gradient(135deg, #7aa2ff, #5b7dc9);">
+                                    <div style="position: relative; padding: 3px; border-radius: 16px; border: 1px solid var(--border); background: rgba(0,0,0,0.25);">
                                         <canvas
                                             node_ref=pong_canvas_ref
                                             width="540"
                                             height="320"
-                                            style="border-radius: 13px; display: block;"
+                                            style="border-radius: 13px; background: #0a0f1a; display: block;"
                                         ></canvas>
                                     </div>
                                 </div>
@@ -3071,7 +3225,20 @@ fn App() -> impl IntoView {
 
                                     <div class="card">
                                         <h3 class="card-title">"🧪 Interactive Text Prediction (Inference)"</h3>
-                                        <p class="subtle">"This does not train; it runs on a cloned brain so it won’t perturb the running game."</p>
+                                        <p class="subtle">"Web-only inference (no daemon): this does not train; it runs on a cloned brain so it won’t perturb the running game. Predictions come from learned meaning/association memory."</p>
+
+                                        <div class="row end wrap">
+                                            <div class="subtle">"Examples:"</div>
+                                            <button class="btn sm" on:click=move |_| { set_text_prompt.set("hello worl".to_string()); set_text_prompt_regime.set(0); }>
+                                                "hello worl (r0)"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| { set_text_prompt.set("goodbye worl".to_string()); set_text_prompt_regime.set(1); }>
+                                                "goodbye worl (r1)"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| { set_text_prompt.set("hello w".to_string()); set_text_prompt_regime.set(0); }>
+                                                "hello w"
+                                            </button>
+                                        </div>
 
                                         <label class="label">
                                             <span>"Prompt"</span>
@@ -3186,6 +3353,18 @@ fn App() -> impl IntoView {
                                             >
                                                 "Predict next"
                                             </button>
+                                        </div>
+
+                                        <div class="subtle" style="margin-top: 10px;">
+                                            {move || {
+                                                let preds = text_preds.get();
+                                                if let Some((a, _s, p)) = preds.first() {
+                                                    let disp = display_token_from_action(a);
+                                                    format!("Top prediction: {}  ({:.1}% softmax)", disp, p * 100.0)
+                                                } else {
+                                                    "Top prediction: —".to_string()
+                                                }
+                                            }}
                                         </div>
 
                                         <div class="divider"></div>
@@ -3343,6 +3522,36 @@ fn App() -> impl IntoView {
                                         />
                                         <span>"Auto-save imports"</span>
                                     </label>
+                                    <label class="checkbox-row">
+                                        <input
+                                            type="checkbox"
+                                            prop:checked=move || idb_autosave.get()
+                                            on:change=move |ev| {
+                                                let v = event_target_checked(&ev);
+                                                set_idb_autosave.set(v);
+                                            }
+                                        />
+                                        <span>"Auto-save brain (every ~5s when changed)"</span>
+                                    </label>
+                                    <div class="subtle">
+                                        {move || {
+                                            if idb_loaded.get() {
+                                                "Source: IndexedDB (brain_image)".to_string()
+                                            } else {
+                                                "Source: fresh (not loaded from IndexedDB yet)".to_string()
+                                            }
+                                        }}
+                                    </div>
+                                    <div class="subtle">
+                                        {move || {
+                                            let ts = idb_last_save.get();
+                                            if ts.is_empty() {
+                                                "Last save: —".to_string()
+                                            } else {
+                                                format!("Last save: {ts}")
+                                            }
+                                        }}
+                                    </div>
                                     <input
                                         node_ref=import_input_ref
                                         type="file"
@@ -3594,6 +3803,19 @@ fn App() -> impl IntoView {
                                         <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
                                         <div class="callout">
                                             <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
+                                        </div>
+
+                                        <div class="subtle" style="margin-top: 8px;">
+                                            {move || {
+                                                let src = if idb_loaded.get() { "IndexedDB (brain_image)" } else { "fresh" };
+                                                let autosave = if idb_autosave.get() { "on" } else { "off" };
+                                                let ts = idb_last_save.get();
+                                                if ts.is_empty() {
+                                                    format!("Brain source: {src} • Autosave: {autosave} • Last save: —")
+                                                } else {
+                                                    format!("Brain source: {src} • Autosave: {autosave} • Last save: {ts}")
+                                                }
+                                            }}
                                         </div>
 
                                         <div class="row end wrap" style="margin-top: 10px;">
@@ -3864,6 +4086,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Adds N new units to the substrate (neurogenesis). This increases capacity without gradients/backprop."
                                                 min="1"
                                                 step="1"
                                                 prop:value=move || grow_units_n.get().to_string()
@@ -3891,6 +4114,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Integration timestep for the continuous dynamics. Smaller dt = more stable/slow updates; larger dt = faster but can destabilize."
                                                 min="0.001"
                                                 max="1"
                                                 step="0.001"
@@ -3907,6 +4131,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Base oscillator frequency for unit dynamics (sets the intrinsic rhythm)."
                                                 min="0"
                                                 max="10"
                                                 step="0.05"
@@ -3923,6 +4148,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Global inhibition strength. Higher values suppress overall activity and can increase selectivity."
                                                 min="0"
                                                 max="5"
                                                 step="0.01"
@@ -3942,6 +4168,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Amplitude of injected noise into dynamics. Useful for exploration; too high can destabilize."
                                                 min="0"
                                                 max="1"
                                                 step="0.001"
@@ -3958,6 +4185,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Phase noise / jitter applied to oscillators. Adds variability without changing amplitude."
                                                 min="0"
                                                 max="1"
                                                 step="0.001"
@@ -3974,6 +4202,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Decay rate for causal memory edges. Higher values forget causality faster."
                                                 min="0"
                                                 max="1"
                                                 step="0.001"
@@ -3993,6 +4222,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Hebbian learning rate (local plasticity strength). Higher = faster coupling updates."
                                                 min="0"
                                                 max="1"
                                                 step="0.01"
@@ -4009,6 +4239,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Forgetting rate applied to learned couplings. Higher values erase weights faster."
                                                 min="0"
                                                 max="1"
                                                 step="0.001"
@@ -4025,6 +4256,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Pruning threshold: connections with |w| below this may be pruned during maintenance."
                                                 min="0"
                                                 max="1"
                                                 step="0.001"
@@ -4044,6 +4276,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Co-activity threshold used for forming associations (how strongly two units must co-activate to be considered linked)."
                                                 min="0"
                                                 max="1"
                                                 step="0.01"
@@ -4060,6 +4293,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Threshold for considering oscillators phase-locked (used for binding / stable coupling decisions)."
                                                 min="0"
                                                 max="1"
                                                 step="0.01"
@@ -4076,6 +4310,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Imprinting rate for creating stable concepts/engrams. Higher = more aggressive one-shot binding."
                                                 min="0"
                                                 max="1"
                                                 step="0.01"
@@ -4095,6 +4330,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Decay rate for salience (how quickly attention/usage fades). Higher = faster fade."
                                                 min="0"
                                                 max="0.1"
                                                 step="0.0001"
@@ -4111,6 +4347,7 @@ fn App() -> impl IntoView {
                                             <input
                                                 class="input"
                                                 type="number"
+                                                title="Gain applied to salience updates (how quickly frequently used symbols/units become salient)."
                                                 min="0"
                                                 max="5"
                                                 step="0.01"
@@ -5816,96 +6053,84 @@ fn draw_pong(canvas: &web_sys::HtmlCanvasElement, s: &PongUiState) -> Result<(),
         y += grid_spacing;
     }
 
-    // Field border with glow
-    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.3)");
+    // Field (keep it crisp; no glow)
+    let field_inset = 12.0;
+    let field_left = field_inset;
+    let field_right = (w - field_inset).max(field_left + 1.0);
+    let field_top = field_inset;
+    let field_bottom = (h - field_inset).max(field_top + 1.0);
+    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.28)");
     ctx.set_line_width(2.0);
-    ctx.stroke_rect(8.0, 8.0, w - 16.0, h - 16.0);
+    ctx.stroke_rect(
+        field_left,
+        field_top,
+        field_right - field_left,
+        field_bottom - field_top,
+    );
 
-    // Top and bottom wall highlights
-    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.5)");
-    ctx.set_line_width(3.0);
-    ctx.begin_path();
-    ctx.move_to(8.0, 8.0);
-    ctx.line_to(w - 8.0, 8.0);
-    ctx.stroke();
-    ctx.begin_path();
-    ctx.move_to(8.0, h - 8.0);
-    ctx.line_to(w - 8.0, h - 8.0);
-    ctx.stroke();
+    // Map simulation coordinates to pixels.
+    // PongSim uses ball center positions: ball_x in [0,1], ball_y in [-1,1].
+    // To make collisions *look* correct, map x=0 to the paddle face, and y=±1 to the walls.
+    let ball_r = 6.0;
+    let paddle_w = 10.0;
+    let paddle_x = field_left; // paddle runs along the left wall
 
-    // Map coordinates:
-    // ball_x in [0,1] maps to [20, w-20]
-    // ball_y, paddle_y in [-1,1] map to [20, h-20] (y downwards)
-    let inner_w = (w - 40.0).max(1.0);
-    let inner_h = (h - 40.0).max(1.0);
-    let map_x = |x01: f32| 20.0 + (x01.clamp(0.0, 1.0) as f64) * inner_w;
-    let map_y = |ys: f32| 20.0 + (1.0 - ((ys.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5)) * inner_h;
+    let play_left = (paddle_x + paddle_w + ball_r).min(field_right - 1.0);
+    let play_right = (field_right - ball_r).max(play_left + 1.0);
+    let play_top = (field_top + ball_r).min(field_bottom - 1.0);
+    let play_bottom = (field_bottom - ball_r).max(play_top + 1.0);
 
-    // Paddle with glow effect
-    let paddle_x = 28.0;
-    let paddle_w = 12.0;
-    let paddle_y = map_y(s.paddle_y);
-    let paddle_h = (s.paddle_half_height.clamp(0.01, 1.0) as f64) * 0.5 * inner_h;
-    let paddle_height = (paddle_h * 2.0).min(inner_h);
-    let paddle_top = (paddle_y - paddle_h).clamp(20.0, 20.0 + inner_h - paddle_height);
+    let play_w = (play_right - play_left).max(1.0);
+    let play_h = (play_bottom - play_top).max(1.0);
 
-    // Paddle glow
-    ctx.set_fill_style_str("rgba(122, 162, 255, 0.3)");
-    ctx.begin_path();
-    ctx.round_rect_with_f64(
-        paddle_x - 4.0,
-        paddle_top - 4.0,
-        paddle_w + 8.0,
-        paddle_height + 8.0,
-        6.0,
-    )
-    .ok();
-    ctx.fill();
+    let map_x = |x01: f32| play_left + (x01.clamp(0.0, 1.0) as f64) * play_w;
+    let map_y = |ys: f32| {
+        // ys=+1 is top wall; ys=-1 is bottom wall
+        play_top + (1.0 - ((ys.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5)) * play_h
+    };
 
-    // Paddle body
+    // Paddle
+    let paddle_center_y = map_y(s.paddle_y);
+    let paddle_half_px = (s.paddle_half_height.clamp(0.01, 1.0) as f64) * (play_h * 0.5);
+    let paddle_height = (paddle_half_px * 2.0).min(play_h);
+    let paddle_top =
+        (paddle_center_y - paddle_half_px).clamp(play_top, play_bottom - paddle_height);
+
     ctx.set_fill_style_str("#7aa2ff");
-    ctx.begin_path();
-    ctx.round_rect_with_f64(paddle_x, paddle_top, paddle_w, paddle_height, 4.0)
-        .ok();
-    ctx.fill();
+    ctx.fill_rect(paddle_x, paddle_top, paddle_w, paddle_height);
+    ctx.set_fill_style_str("rgba(255, 255, 255, 0.25)");
+    ctx.fill_rect(
+        paddle_x + 1.5,
+        paddle_top + 2.0,
+        2.0,
+        (paddle_height - 4.0).max(0.0),
+    );
 
-    // Paddle highlight
-    ctx.set_fill_style_str("rgba(255, 255, 255, 0.4)");
-    ctx.fill_rect(paddle_x + 2.0, paddle_top + 2.0, 3.0, paddle_height - 4.0);
-
-    // Ball with trail and glow
+    // Ball (crisp; no glow)
     if s.ball_visible {
         let bx = map_x(s.ball_x);
         let by = map_y(s.ball_y);
 
-        // Ball glow (outer)
-        ctx.set_fill_style_str("rgba(251, 191, 36, 0.2)");
-        ctx.begin_path();
-        let _ = ctx.arc(bx, by, 16.0, 0.0, std::f64::consts::PI * 2.0);
-        ctx.fill();
-
-        // Ball glow (inner)
-        ctx.set_fill_style_str("rgba(251, 191, 36, 0.4)");
-        ctx.begin_path();
-        let _ = ctx.arc(bx, by, 10.0, 0.0, std::f64::consts::PI * 2.0);
-        ctx.fill();
-
-        // Ball body
         ctx.set_fill_style_str("#fbbf24");
         ctx.begin_path();
-        let _ = ctx.arc(bx, by, 7.0, 0.0, std::f64::consts::PI * 2.0);
+        let _ = ctx.arc(bx, by, ball_r, 0.0, std::f64::consts::PI * 2.0);
         ctx.fill();
 
-        // Ball highlight
-        ctx.set_fill_style_str("rgba(255, 255, 255, 0.6)");
+        ctx.set_fill_style_str("rgba(255, 255, 255, 0.55)");
         ctx.begin_path();
-        let _ = ctx.arc(bx - 2.0, by - 2.0, 3.0, 0.0, std::f64::consts::PI * 2.0);
+        let _ = ctx.arc(
+            bx - ball_r * 0.35,
+            by - ball_r * 0.35,
+            ball_r * 0.45,
+            0.0,
+            std::f64::consts::PI * 2.0,
+        );
         ctx.fill();
     }
 
     // Score zone indicator (right edge)
-    ctx.set_fill_style_str("rgba(239, 68, 68, 0.15)");
-    ctx.fill_rect(w - 20.0, 8.0, 12.0, h - 16.0);
+    ctx.set_fill_style_str("rgba(239, 68, 68, 0.12)");
+    ctx.fill_rect(field_right - 6.0, field_top, 6.0, field_bottom - field_top);
 
     Ok(())
 }

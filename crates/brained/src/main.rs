@@ -13,7 +13,7 @@
 
 use braine::substrate::Stimulus;
 use braine::substrate::{
-    ActionScoreBreakdown, Brain, BrainConfig, BrainDelta, RewardEdges, UnitPlotPoint,
+    ActionScoreBreakdown, Brain, BrainConfig, BrainDelta, OwnedStimulus, RewardEdges, UnitPlotPoint,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -295,6 +295,22 @@ enum Request {
         autosave: bool,
     },
 
+    // Inference (read-only)
+    /// Run a pure inference step on a cloned brain and return action score breakdowns.
+    ///
+    /// This applies `stimuli` (without imprinting), advances dynamics for `steps`
+    /// without learning/forgetting, then computes `action_scores` for `context_key`.
+    InferActionScores {
+        #[serde(default)]
+        context_key: Option<String>,
+        #[serde(default)]
+        stimuli: Vec<OwnedStimulus>,
+        #[serde(default = "default_infer_steps")]
+        steps: u32,
+        #[serde(default)]
+        meaning_alpha: Option<f32>,
+    },
+
     GetState,
     /// Fetch the tunable parameter schema for a game (UI uses this to render knobs).
     GetGameParams {
@@ -421,6 +437,11 @@ enum Response {
         #[serde(default)]
         save_error: Option<String>,
     },
+    InferActionScores {
+        context_key: String,
+        #[serde(default)]
+        action_scores: Vec<ActionScoreBreakdown>,
+    },
     State(Box<StateSnapshot>),
     GameParams {
         game: String,
@@ -441,6 +462,10 @@ fn default_true() -> bool {
 
 fn default_sync_delta_max() -> f32 {
     0.05
+}
+
+fn default_infer_steps() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2197,6 +2222,15 @@ async fn handle_client(
                         ],
                     },
                     ApiCategory {
+                        name: "Inference".to_string(),
+                        endpoints: vec![ApiEndpoint {
+                            request: "InferActionScores".to_string(),
+                            input: "{ context_key?, stimuli?, steps?, meaning_alpha? }".to_string(),
+                            output: "{ type: InferActionScores, context_key, action_scores: [...] }".to_string(),
+                            description: "Read-only inference on a cloned brain: apply stimuli (no imprint), advance dynamics (no learning/forget), return action score breakdowns.".to_string(),
+                        }],
+                    },
+                    ApiCategory {
                         name: "General".to_string(),
                         endpoints: vec![ApiEndpoint {
                             request: "GetState".to_string(),
@@ -2314,6 +2348,32 @@ async fn handle_client(
                             save_error,
                         }
                     }
+                }
+            }
+            Request::InferActionScores {
+                context_key,
+                stimuli,
+                steps,
+                meaning_alpha,
+            } => {
+                let s = state.read().await;
+                let context_key = context_key.unwrap_or_else(|| s.current_stimulus_key().into_owned());
+                let alpha = meaning_alpha.unwrap_or(s.meaning_alpha).clamp(0.0, 50.0);
+
+                let mut brain = s.view_brain_for_context(&context_key).clone();
+                for stim in &stimuli {
+                    brain.apply_stimulus_inference(stim.as_stimulus());
+                }
+                let steps = steps.clamp(1, 64);
+                for _ in 0..steps {
+                    brain.step_inference();
+                }
+
+                let action_scores = brain.action_score_breakdown(&context_key, alpha);
+
+                Response::InferActionScores {
+                    context_key,
+                    action_scores,
                 }
             }
             Request::GetState => {
