@@ -161,6 +161,8 @@ pub struct BrainVizRenderOptions {
     pub node_size_scale: f64,
     /// If true, nodes are tinted to indicate learning mode; if false, inference mode.
     pub learning_mode: bool,
+    /// Animation time (e.g., step count) for pulsing effects.
+    pub anim_time: f32,
 }
 
 impl Default for BrainVizRenderOptions {
@@ -172,6 +174,7 @@ impl Default for BrainVizRenderOptions {
             draw_outline: true,
             node_size_scale: 1.0,
             learning_mode: true,
+            anim_time: 0.0,
         }
     }
 }
@@ -277,9 +280,25 @@ pub fn draw_brain_connectivity_sphere(
         ctx.move_to(x1, y1);
         ctx.line_to(x2, y2);
         ctx.stroke();
+
+        // Draw "tension" glow for strong edges (strengthening effect)
+        if absw > 0.5 {
+            let tension_alpha = (absw - 0.5) * 0.4 * depth;
+            if w >= 0.0 {
+                ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", tension_alpha));
+            } else {
+                ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", tension_alpha));
+            }
+            ctx.set_line_width(3.0 + 2.0 * absw);
+            ctx.begin_path();
+            ctx.move_to(x1, y1);
+            ctx.line_to(x2, y2);
+            ctx.stroke();
+        }
     }
 
-    // Draw nodes on top.
+    // Draw nodes on top with pulsing based on amplitude and phase.
+    let anim_time = opts.anim_time as f64;
     let mut hit_nodes: Vec<BrainVizHitNode> = Vec::with_capacity(nodes.len());
     for node in nodes {
         let Some(&(x, y, z)) = pos.get(&node.id) else {
@@ -291,6 +310,13 @@ pub fn draw_brain_connectivity_sphere(
         let py = cy + y * p;
 
         let amp = (node.amp01 as f64).clamp(0.0, 1.0);
+        let phase = node.phase as f64;
+
+        // Pulsing effect: nodes pulse based on their phase and amplitude
+        // High amplitude nodes pulse more visibly
+        let pulse_freq = 0.15; // Pulse frequency (slower for better visibility)
+        let pulse = ((anim_time * pulse_freq + phase).sin() * 0.5 + 0.5) * amp;
+
         let base = if node.is_sensor_member {
             2.4
         } else if node.is_group_member {
@@ -298,10 +324,15 @@ pub fn draw_brain_connectivity_sphere(
         } else {
             1.7
         };
+
         // Scale down nodes (and a touch with zoom) to keep density readable.
-        let mut size = (base + 5.0 * amp) * opts.node_size_scale;
+        // Add pulsing to size for active nodes
+        let pulse_size_factor = 1.0 + pulse * 0.4; // Up to 40% size increase when pulsing
+        let mut size = (base + 5.0 * amp) * opts.node_size_scale * pulse_size_factor;
         size *= zoom.sqrt();
-        let alpha = 0.35 + 0.65 * amp;
+
+        // Alpha also pulses for active nodes
+        let alpha = (0.35 + 0.65 * amp) * (0.8 + 0.2 * pulse);
 
         // Color nodes based on type AND learning/inference mode
         // Learning mode: warmer tones (orange/amber accents)
@@ -329,6 +360,21 @@ pub fn draw_brain_connectivity_sphere(
                 format!("rgba(167, 139, 250, {:.3})", alpha) // Purple for regular units
             }
         };
+
+        // Draw glow for highly active nodes (pulsing glow)
+        if amp > 0.5 {
+            let glow_alpha = pulse * 0.3 * amp;
+            let glow_color = if opts.learning_mode {
+                format!("rgba(255, 200, 100, {:.3})", glow_alpha)
+            } else {
+                format!("rgba(122, 200, 255, {:.3})", glow_alpha)
+            };
+            ctx.set_fill_style_str(&glow_color);
+            ctx.begin_path();
+            ctx.arc(px, py, size * 1.8, 0.0, std::f64::consts::PI * 2.0)
+                .ok();
+            ctx.fill();
+        }
 
         ctx.set_fill_style_str(&color);
         ctx.begin_path();

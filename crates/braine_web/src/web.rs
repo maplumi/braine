@@ -1217,6 +1217,7 @@ fn App() -> impl IntoView {
                 });
 
                 let is_learning = learning_enabled.get();
+                let step = steps.get();
                 let opts = charts::BrainVizRenderOptions {
                     zoom,
                     pan_x,
@@ -1224,6 +1225,7 @@ fn App() -> impl IntoView {
                     draw_outline: false,
                     node_size_scale: 0.5,
                     learning_mode: is_learning,
+                    anim_time: step as f32,
                 };
                 if let Ok(hits) = charts::draw_brain_connectivity_sphere(
                     &canvas, &points, &edges, rot, "#0a0f1a", opts,

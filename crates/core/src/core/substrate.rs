@@ -294,6 +294,9 @@ pub struct UnitPlotPoint {
     /// Amplitude normalized to [0,1] relative to the sampled max.
     /// This makes the UI plot readable even when absolute activity is low.
     pub amp01: f32,
+    /// Unit's current oscillatory phase in [0, 2π).
+    /// Used for pulsing visualization effects.
+    pub phase: f32,
     /// Normalized relative age proxy in [0,1].
     /// Higher means "newer" (later unit IDs), which aligns with neurogenesis appends.
     pub rel_age: f32,
@@ -1883,10 +1886,12 @@ impl Brain {
             let id = (i * n) / take;
             let rel_age = (id as f32 / denom).clamp(0.0, 1.0);
             let amp = self.units[id].amp;
+            let phase = self.units[id].phase;
             out.push(UnitPlotPoint {
                 id: id as u32,
                 amp,
                 amp01: (amp * inv_max).clamp(0.0, 1.0),
+                phase,
                 rel_age,
                 is_reserved: self.reserved.get(id).copied().unwrap_or(false),
                 is_sensor_member: self.sensor_member.get(id).copied().unwrap_or(false),
