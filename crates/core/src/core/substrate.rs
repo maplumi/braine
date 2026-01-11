@@ -3,14 +3,14 @@
 extern crate alloc;
 
 #[cfg(feature = "std")]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(feature = "std")]
 use std::io::{self, Read, Write};
 
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, string::ToString, vec, vec::Vec};
 #[cfg(not(feature = "std"))]
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 use core::ops::Range;
 
@@ -924,16 +924,14 @@ impl Brain {
     /// - `edges`: Top M causal edges with from/to symbol IDs and strength
     #[must_use]
     pub fn causal_graph_viz(&self, max_nodes: usize, max_edges: usize) -> CausalGraphViz {
-        use std::collections::HashSet;
-
         let max_nodes = max_nodes.max(1);
 
         // Pick edges first; then ensure all edge endpoints are present as nodes.
         // Otherwise the renderer will skip edges whose endpoints aren't in the node set.
         let top_edges = self.causal.top_edges(max_edges);
 
-        let mut endpoint_ids: Vec<SymbolId> = Vec::new();
-        endpoint_ids.reserve(top_edges.len().saturating_mul(2));
+        let mut endpoint_ids: Vec<SymbolId> =
+            Vec::with_capacity(top_edges.len().saturating_mul(2));
         for (from, to, _strength) in &top_edges {
             endpoint_ids.push(*from);
             endpoint_ids.push(*to);

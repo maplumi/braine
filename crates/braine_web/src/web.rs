@@ -253,7 +253,7 @@ fn App() -> impl IntoView {
             if let Some(e) = err {
                 set_status.set(format!("Config error: {e}"));
             } else {
-                set_status.set("Brain config applied".to_string());
+                set_status.set("Braine config applied".to_string());
             }
         }
     };
@@ -1843,7 +1843,7 @@ fn App() -> impl IntoView {
 
                                                 // Brain box
                                                 <rect x="220" y="30" width="200" height="140" rx="8" fill="none" stroke="var(--accent)" stroke-width="2"/>
-                                                <text x="320" y="22" fill="var(--accent)" font-size="12" text-anchor="middle" font-weight="bold">"Brain"</text>
+                                                <text x="320" y="22" fill="var(--accent)" font-size="12" text-anchor="middle" font-weight="bold">"Braine"</text>
                                                 <text x="320" y="55" fill="var(--text)" font-size="11" text-anchor="middle">"Wave Dynamics"</text>
                                                 <text x="320" y="80" fill="var(--text)" font-size="11" text-anchor="middle">"Local Plasticity"</text>
                                                 <text x="320" y="105" fill="var(--text)" font-size="11" text-anchor="middle">"Causality Memory"</text>
@@ -2210,7 +2210,7 @@ fn App() -> impl IntoView {
                                     <div style=STYLE_CARD>
                                         <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Current Architecture"</h3>
                                         <p style="margin: 0 0 12px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                            "The web version hosts the Brain entirely in-memory within the browser (WASM). Desktop and CLI connect to a local daemon."
+                                            "The web version hosts Braine entirely in-memory within the browser (WASM). Desktop and CLI connect to a local daemon."
                                         </p>
                                         <div style="display: flex; justify-content: center; padding: 12px 0;">
                                             <svg viewBox="0 0 600 200" style="width: 100%; max-width: 600px; height: auto;">
@@ -2220,7 +2220,7 @@ fn App() -> impl IntoView {
                                                 // Daemon
                                                 <rect x="80" y="30" width="100" height="45" rx="6" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="2"/>
                                                 <text x="130" y="48" fill="var(--accent)" font-size="9" text-anchor="middle" font-weight="bold">"brained"</text>
-                                                <text x="130" y="62" fill="var(--muted)" font-size="8" text-anchor="middle">"Brain + TCP server"</text>
+                                                <text x="130" y="62" fill="var(--muted)" font-size="8" text-anchor="middle">"Substrate + TCP server"</text>
 
                                                 // Desktop client
                                                 <rect x="10" y="100" width="90" height="40" rx="5" fill="rgba(74, 222, 128, 0.15)" stroke="#4ade80" stroke-width="1.5"/>
@@ -2254,7 +2254,7 @@ fn App() -> impl IntoView {
                                                 // Web app with embedded brain
                                                 <rect x="370" y="30" width="160" height="70" rx="8" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="2"/>
                                                 <text x="450" y="50" fill="#f472b6" font-size="10" text-anchor="middle" font-weight="bold">"braine_web (WASM)"</text>
-                                                <text x="450" y="68" fill="var(--text)" font-size="8" text-anchor="middle">"Brain runs IN-MEMORY"</text>
+                                                <text x="450" y="68" fill="var(--text)" font-size="8" text-anchor="middle">"Braine runs IN-MEMORY"</text>
                                                 <text x="450" y="82" fill="var(--muted)" font-size="7" text-anchor="middle">"No daemon connection"</text>
 
                                                 // Browser storage
@@ -2690,7 +2690,7 @@ fn App() -> impl IntoView {
                                 </div>
                                 // Response indicator
                                 <div style="display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: rgba(0,0,0,0.2); border-radius: 8px;">
-                                    <span style="color: var(--muted); font-size: 0.85rem;">"Brain chose:"</span>
+                                    <span style="color: var(--muted); font-size: 0.85rem;">"Braine chose:"</span>
                                     <span style="font-size: 1.1rem; font-weight: 600; color: var(--accent);">
                                         {move || { let a = last_action.get(); if a.is_empty() { "—".to_string() } else { a.to_uppercase() } }}
                                     </span>
@@ -3799,7 +3799,7 @@ fn App() -> impl IntoView {
 
                                 <Show when=move || analytics_panel.get() == AnalyticsPanel::BrainViz>
                                     <div class="card">
-                                        <h3 class="card-title">"🧠 Internal Brain Visualization"</h3>
+                                        <h3 class="card-title">"🧠 Braine Visualization"</h3>
                                         <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
                                         <div class="callout">
                                             <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
@@ -3811,9 +3811,9 @@ fn App() -> impl IntoView {
                                                 let autosave = if idb_autosave.get() { "on" } else { "off" };
                                                 let ts = idb_last_save.get();
                                                 if ts.is_empty() {
-                                                    format!("Brain source: {src} • Autosave: {autosave} • Last save: —")
+                                                    format!("BBI source: {src} • Autosave: {autosave} • Last save: —")
                                                 } else {
-                                                    format!("Brain source: {src} • Autosave: {autosave} • Last save: {ts}")
+                                                    format!("BBI source: {src} • Autosave: {autosave} • Last save: {ts}")
                                                 }
                                             }}
                                         </div>
@@ -4568,7 +4568,7 @@ impl AnalyticsPanel {
             AnalyticsPanel::Reward => "Reward",
             AnalyticsPanel::Choices => "Choices",
             AnalyticsPanel::UnitPlot => "Unit Plot",
-            AnalyticsPanel::BrainViz => "Brain Viz",
+            AnalyticsPanel::BrainViz => "Braine Viz",
         }
     }
     fn all() -> &'static [AnalyticsPanel] {
