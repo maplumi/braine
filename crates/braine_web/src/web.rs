@@ -101,6 +101,7 @@ fn App() -> impl IntoView {
     let (dashboard_tab, set_dashboard_tab) = signal(DashboardTab::GameDetails);
     let (analytics_panel, set_analytics_panel) = signal(AnalyticsPanel::Performance);
     let (trial_period_ms, set_trial_period_ms) = signal(500u32);
+    let (run_interval_ms, set_run_interval_ms) = signal(33u32);
     let (exploration_eps, set_exploration_eps) = signal(0.08f32);
     let (meaning_alpha, set_meaning_alpha) = signal(6.0f32);
     let (reward_scale, set_reward_scale) = signal(1.0f32);
@@ -129,6 +130,9 @@ fn App() -> impl IntoView {
 
     let (sequence_state, set_sequence_state) = signal::<Option<SequenceUiState>>(None);
     let (text_state, set_text_state) = signal::<Option<TextUiState>>(None);
+
+    // Spot/SpotReversal stimulus (left/right) for UI highlighting.
+    let (spot_is_left, set_spot_is_left) = signal::<Option<bool>>(None);
 
     // Text prediction "lab" (inference-only on a cloned brain)
     let (text_prompt, set_text_prompt) = signal(String::from("hello worl"));
@@ -173,6 +177,7 @@ fn App() -> impl IntoView {
     
     // Learning milestone tracking
     let (learning_milestone, set_learning_milestone) = signal("Starting...".to_string());
+    let (learning_milestone_tone, set_learning_milestone_tone) = signal("starting".to_string());
     let (learned_at_trial, set_learned_at_trial) = signal::<Option<u32>>(None);
     let (mastered_at_trial, set_mastered_at_trial) = signal::<Option<u32>>(None);
     
@@ -182,6 +187,19 @@ fn App() -> impl IntoView {
     
     // Unit plot data for Graph page
     let (unit_plot, set_unit_plot) = signal::<Vec<UnitPlotPoint>>(Vec::new());
+
+    // BrainViz uses its own sampling so it can be tuned independently.
+    let (brainviz_points, set_brainviz_points) = signal::<Vec<UnitPlotPoint>>(Vec::new());
+    let (brainviz_node_sample, set_brainviz_node_sample) = signal(128u32);
+    let (brainviz_edges_per_node, set_brainviz_edges_per_node) = signal(4u32);
+    let (brainviz_zoom, set_brainviz_zoom) = signal(1.0f32);
+    let (brainviz_pan_x, set_brainviz_pan_x) = signal(0.0f32);
+    let (brainviz_pan_y, set_brainviz_pan_y) = signal(0.0f32);
+    let (brainviz_auto_rotate, set_brainviz_auto_rotate) = signal(true);
+    let (brainviz_hover, set_brainviz_hover) = signal::<Option<(u32, f64, f64)>>(None);
+    let brainviz_dragging = StoredValue::new(false);
+    let brainviz_last_drag_xy = StoredValue::new((0.0f64, 0.0f64));
+    let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
     
     // Per-game accuracy persistence (loaded from IDB)
     let (game_accuracies, set_game_accuracies) = signal::<std::collections::HashMap<String, f32>>(std::collections::HashMap::new());
@@ -219,7 +237,7 @@ fn App() -> impl IntoView {
             // Update unit plot data for Graph page (sample 128 units)
             let plot_points = runtime.with_value(|r| r.brain.unit_plot_points(128));
             set_unit_plot.set(plot_points);
-            
+
             // Update game accuracy in memory (will be persisted on game switch or save)
             let game_label = game_kind.get_untracked().label().to_string();
             set_game_accuracies.update(|accs| {
@@ -233,14 +251,19 @@ fn App() -> impl IntoView {
             // Update learning milestones
             if rate >= 0.95 {
                 set_learning_milestone.set("🏆 MASTERED".to_string());
+                set_learning_milestone_tone.set("mastered".to_string());
             } else if rate >= 0.85 {
                 set_learning_milestone.set("✓ LEARNED".to_string());
+                set_learning_milestone_tone.set("learned".to_string());
             } else if rate >= 0.70 {
                 set_learning_milestone.set("📈 Learning...".to_string());
+                set_learning_milestone_tone.set("learning".to_string());
             } else if stats.trials < 20 {
                 set_learning_milestone.set("⏳ Starting...".to_string());
+                set_learning_milestone_tone.set("starting".to_string());
             } else {
                 set_learning_milestone.set("🔄 Training".to_string());
+                set_learning_milestone_tone.set("training".to_string());
             }
 
             let snap = runtime.with_value(|r| r.game_ui_snapshot());
@@ -258,6 +281,7 @@ fn App() -> impl IntoView {
             set_pong_ball_speed.set(snap.pong_ball_speed);
             set_sequence_state.set(snap.sequence_state);
             set_text_state.set(snap.text_state);
+            set_spot_is_left.set(snap.spot_is_left);
 
             // Persist per-game stats + chart history so refresh restores the current state.
             let kind = game_kind.get_untracked();
@@ -334,6 +358,15 @@ fn App() -> impl IntoView {
         move |kind: GameKind| {
             let old_kind = game_kind.get_untracked();
             (persist_stats_state)(old_kind);
+
+            // Match daemon semantics: stop first before switching tasks.
+            if let Some(id) = interval_id.get_untracked() {
+                if let Some(w) = web_sys::window() {
+                    w.clear_interval_with_handle(id);
+                }
+                set_interval_id.set(None);
+                set_is_running.set(false);
+            }
 
             // Save current game's accuracy before switching
             let current_accs = game_accuracies.get_untracked();
@@ -416,6 +449,7 @@ fn App() -> impl IntoView {
         set_learned_at_trial.set(None);
         set_mastered_at_trial.set(None);
         set_learning_milestone.set("Starting...".to_string());
+        set_learning_milestone_tone.set("starting".to_string());
         perf_history.update_value(|h| h.clear());
         neuromod_history.update_value(|h| h.clear());
         choice_events.update_value(|v| v.clear());
@@ -456,9 +490,11 @@ fn App() -> impl IntoView {
                 do_tick();
             }) as Box<dyn FnMut()>);
 
+            let interval_ms = run_interval_ms.get_untracked().clamp(8, 500) as i32;
+
             match window.set_interval_with_callback_and_timeout_and_arguments_0(
                 cb.as_ref().unchecked_ref(),
-                33,
+                interval_ms,
             ) {
                 Ok(id) => {
                     cb.forget();
@@ -485,6 +521,9 @@ fn App() -> impl IntoView {
         }
         }
     };
+
+    let do_start_sv = StoredValue::new(do_start.clone());
+    let do_stop_sv = StoredValue::new(do_stop.clone());
 
     let do_text_apply_corpora: Arc<dyn Fn() + Send + Sync> = Arc::new({
         let runtime = runtime.clone();
@@ -513,6 +552,7 @@ fn App() -> impl IntoView {
             set_learned_at_trial.set(None);
             set_mastered_at_trial.set(None);
             set_learning_milestone.set("Starting...".to_string());
+            set_learning_milestone_tone.set("starting".to_string());
             perf_history.update_value(|h| h.clear());
             neuromod_history.update_value(|h| h.clear());
             choice_events.update_value(|v| v.clear());
@@ -852,7 +892,7 @@ fn App() -> impl IntoView {
             return;
         };
 
-        let grid_n = spotxy_grid_n.get().max(1);
+    let grid_n = spotxy_grid_n.get();
         let accent = if spotxy_eval.get() { "#22c55e" } else { "#7aa2ff" };
 
         match pos {
@@ -905,6 +945,9 @@ fn App() -> impl IntoView {
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
+            if analytics_panel.get() != AnalyticsPanel::Choices {
+                return;
+            }
             let _ = choices_version.get();
             let _ = choice_window.get();
             let Some(canvas) = choices_chart_ref.get() else { return; };
@@ -961,14 +1004,38 @@ fn App() -> impl IntoView {
         let _ = charts::draw_unit_plot_3d(&canvas, &points, "#0a0f1a");
     });
 
+    // BrainViz: sample plot points based on UI settings (does not affect learning/perf history).
+    Effect::new({
+        let runtime = runtime.clone();
+        move |_| {
+            if analytics_panel.get() != AnalyticsPanel::BrainViz {
+                return;
+            }
+
+            let n = brainviz_node_sample.get().clamp(16, 1024) as usize;
+            let pts = runtime.with_value(|r| r.brain.unit_plot_points(n));
+            set_brainviz_points.set(pts);
+        }
+    });
+
     // BrainViz: rotating sphere + sampled connectivity
     let brain_viz_ref = NodeRef::<leptos::html::Canvas>::new();
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
+            if analytics_panel.get() != AnalyticsPanel::BrainViz {
+                return;
+            }
+
             let steps = steps.get();
-            let points = unit_plot.get();
+            let points = brainviz_points.get();
             let Some(canvas) = brain_viz_ref.get() else { return; };
+
+            let edges_per_node = brainviz_edges_per_node.get().clamp(1, 32) as usize;
+            let zoom = brainviz_zoom.get();
+            let pan_x = brainviz_pan_x.get();
+            let pan_y = brainviz_pan_y.get();
+            let auto_rotate = brainviz_auto_rotate.get();
 
             let mut sampled: std::collections::HashSet<usize> = std::collections::HashSet::new();
             sampled.extend(points.iter().map(|p| p.id as usize));
@@ -983,15 +1050,31 @@ fn App() -> impl IntoView {
                         .filter(|(t, _w)| sampled.contains(t))
                         .collect();
                     candidates.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
-                    for (t, w) in candidates.into_iter().take(4) {
+                    for (t, w) in candidates.into_iter().take(edges_per_node) {
                         edges.push((p.id, t as u32, w));
                     }
                 }
                 edges
             });
 
-            let rot = (steps as f32) * 0.02;
-            let _ = charts::draw_brain_connectivity_sphere(&canvas, &points, &edges, rot, "#0a0f1a");
+            let rot = if auto_rotate { (steps as f32) * 0.02 } else { 0.0 };
+            let opts = charts::BrainVizRenderOptions {
+                zoom,
+                pan_x,
+                pan_y,
+                draw_outline: false,
+                node_size_scale: 0.5,
+            };
+            if let Ok(hits) = charts::draw_brain_connectivity_sphere(
+                &canvas,
+                &points,
+                &edges,
+                rot,
+                "#0a0f1a",
+                opts,
+            ) {
+                brainviz_hit_nodes.set_value(hits);
+            }
         }
     });
     
@@ -1029,6 +1112,8 @@ fn App() -> impl IntoView {
             set_reward_scale.set(s.reward_scale);
             set_reward_bias.set(s.reward_bias);
             set_learning_enabled.set(s.learning_enabled);
+            set_run_interval_ms.set(s.run_interval_ms.clamp(8, 500));
+            set_trial_period_ms.set(s.trial_period_ms.clamp(10, 60_000));
         }
     });
     Effect::new(move |_| {
@@ -1036,6 +1121,8 @@ fn App() -> impl IntoView {
             reward_scale: reward_scale.get(),
             reward_bias: reward_bias.get(),
             learning_enabled: learning_enabled.get(),
+            run_interval_ms: run_interval_ms.get(),
+            trial_period_ms: trial_period_ms.get(),
         };
         save_persisted_settings(&s);
     });
@@ -1172,16 +1259,26 @@ fn App() -> impl IntoView {
                                 </div>
                                 // Visual arena
                                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%;">
-                                    <div style=move || format!("display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};", 
-                                        if runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.contains("left") || r.game_ui_snapshot().spotxy_stimulus_key.is_empty()) { "var(--accent)" } else { "var(--border)" },
-                                        if runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.contains("left") || r.game_ui_snapshot().spotxy_stimulus_key.is_empty()) { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" })>
+                                    <div style=move || {
+                                        let active = matches!(spot_is_left.get(), Some(true));
+                                        format!(
+                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                            if active { "var(--accent)" } else { "var(--border)" },
+                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                        )
+                                    }>
                                         <span style="font-size: 3rem;">"⬅️"</span>
                                         <span style="margin-top: 8px; font-size: 0.9rem; font-weight: 600; color: var(--text);">"LEFT"</span>
                                         <span style="font-size: 0.75rem; color: var(--muted);">"Press A"</span>
                                     </div>
-                                    <div style=move || format!("display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};",
-                                        if runtime.with_value(|r| !r.game_ui_snapshot().spotxy_stimulus_key.contains("left") && !r.game_ui_snapshot().spotxy_stimulus_key.is_empty()) { "var(--accent)" } else { "var(--border)" },
-                                        if runtime.with_value(|r| !r.game_ui_snapshot().spotxy_stimulus_key.contains("left") && !r.game_ui_snapshot().spotxy_stimulus_key.is_empty()) { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" })>
+                                    <div style=move || {
+                                        let active = matches!(spot_is_left.get(), Some(false));
+                                        format!(
+                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                            if active { "var(--accent)" } else { "var(--border)" },
+                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                        )
+                                    }>
                                         <span style="font-size: 3rem;">"➡️"</span>
                                         <span style="margin-top: 8px; font-size: 0.9rem; font-weight: 600; color: var(--text);">"RIGHT"</span>
                                         <span style="font-size: 0.75rem; color: var(--muted);">"Press D"</span>
@@ -1260,15 +1357,25 @@ fn App() -> impl IntoView {
                                 </div>
                                 // Arena (same as Spot but with reversal indicator)
                                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%;">
-                                    <div style=move || format!("display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
-                                        if runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.contains("left")) { "var(--accent)" } else { "var(--border)" },
-                                        if runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.contains("left")) { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" })>
+                                    <div style=move || {
+                                        let active = matches!(spot_is_left.get(), Some(true));
+                                        format!(
+                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                            if active { "var(--accent)" } else { "var(--border)" },
+                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                        )
+                                    }>
                                         <span style="font-size: 2.5rem;">"⬅️"</span>
                                         <span style="margin-top: 8px; font-weight: 600; color: var(--text);">"LEFT"</span>
                                     </div>
-                                    <div style=move || format!("display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
-                                        if !runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.contains("left")) && !runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.is_empty()) { "var(--accent)" } else { "var(--border)" },
-                                        if !runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.contains("left")) && !runtime.with_value(|r| r.game_ui_snapshot().spotxy_stimulus_key.is_empty()) { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" })>
+                                    <div style=move || {
+                                        let active = matches!(spot_is_left.get(), Some(false));
+                                        format!(
+                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                            if active { "var(--accent)" } else { "var(--border)" },
+                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                        )
+                                    }>
                                         <span style="font-size: 2.5rem;">"➡️"</span>
                                         <span style="margin-top: 8px; font-weight: 600; color: var(--text);">"RIGHT"</span>
                                     </div>
@@ -1317,7 +1424,14 @@ fn App() -> impl IntoView {
                                         <button style="padding: 10px 16px; border: none; background: rgba(122, 162, 255, 0.15); color: var(--accent); border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: all 0.15s;"
                                             on:click=move |_| do_spotxy_grid_minus()>"−"</button>
                                         <div style="padding: 10px 16px; color: var(--text); font-size: 0.9rem; font-weight: 600; min-width: 60px; text-align: center;">
-                                            {move || format!("{}×{}", spotxy_grid_n.get(), spotxy_grid_n.get())}
+                                            {move || {
+                                                let n = spotxy_grid_n.get();
+                                                if n == 0 {
+                                                    "1×1".to_string()
+                                                } else {
+                                                    format!("{n}×{n}")
+                                                }
+                                            }}
                                         </div>
                                         <button style="padding: 10px 16px; border: none; background: rgba(122, 162, 255, 0.15); color: var(--accent); border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: all 0.15s;"
                                             on:click=move |_| do_spotxy_grid_plus()>"+"</button>
@@ -2002,7 +2116,7 @@ fn App() -> impl IntoView {
                                         </div>
                                     </div>
 
-                                    <div class="callout">
+                                    <div class=move || format!("callout tone-{}", learning_milestone_tone.get())>
                                         <p><strong>{move || learning_milestone.get()}</strong></p>
                                         <p>
                                             {move || {
@@ -2069,9 +2183,178 @@ fn App() -> impl IntoView {
                                         <h3 class="card-title">"🧠 Internal Brain Visualization"</h3>
                                         <p class="subtle">"Sampled nodes on a rotating sphere; edges show connection strength."</p>
                                         <div class="callout">
-                                            <p>"This is a lightweight web approximation of the desktop graph view."</p>
+                                            <p>"Drag to pan • Scroll to zoom • Hover for details"</p>
                                         </div>
-                                        <canvas node_ref=brain_viz_ref width="900" height="520" class="canvas brainviz"></canvas>
+
+                                        <div class="row end wrap" style="margin-top: 10px;">
+                                            <label class="label">
+                                                <span>"Nodes"</span>
+                                                <input
+                                                    class="input"
+                                                    type="number"
+                                                    min="16"
+                                                    max="1024"
+                                                    step="16"
+                                                    prop:value=move || brainviz_node_sample.get().to_string()
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                            set_brainviz_node_sample.set(v.clamp(16, 1024));
+                                                        }
+                                                    }
+                                                />
+                                            </label>
+                                            <label class="label">
+                                                <span>"Edges/node"</span>
+                                                <input
+                                                    class="input"
+                                                    type="number"
+                                                    min="1"
+                                                    max="32"
+                                                    step="1"
+                                                    prop:value=move || brainviz_edges_per_node.get().to_string()
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                            set_brainviz_edges_per_node.set(v.clamp(1, 32));
+                                                        }
+                                                    }
+                                                />
+                                            </label>
+                                            <label class="label" style="flex-direction: row; align-items: center; gap: 10px;">
+                                                <input
+                                                    type="checkbox"
+                                                    prop:checked=move || brainviz_auto_rotate.get()
+                                                    on:change=move |ev| {
+                                                        set_brainviz_auto_rotate.set(event_target_checked(&ev));
+                                                    }
+                                                />
+                                                <span>"Auto-rotate"</span>
+                                            </label>
+                                            <button
+                                                class="btn sm"
+                                                on:click=move |_| {
+                                                    set_brainviz_zoom.set(1.0);
+                                                    set_brainviz_pan_x.set(0.0);
+                                                    set_brainviz_pan_y.set(0.0);
+                                                }
+                                            >
+                                                "Reset view"
+                                            </button>
+                                        </div>
+
+                                        <div style="position: relative;">
+                                            <canvas
+                                                node_ref=brain_viz_ref
+                                                width="900"
+                                                height="520"
+                                                class="canvas brainviz"
+                                                style="touch-action: none;"
+                                                on:wheel=move |ev| {
+                                                    ev.prevent_default();
+                                                    let dy = ev.delta_y() as f32;
+                                                    let factor = (1.0 + (-dy * 0.001)).clamp(0.85, 1.18);
+                                                    set_brainviz_zoom.update(|z| {
+                                                        *z = (*z * factor).clamp(0.5, 4.0);
+                                                    });
+                                                }
+                                                on:mousedown=move |ev| {
+                                                    let Some(canvas) = brain_viz_ref.get() else { return; };
+                                                    let rect = canvas.get_bounding_client_rect();
+                                                    let css_x = (ev.client_x() as f64) - rect.left();
+                                                    let css_y = (ev.client_y() as f64) - rect.top();
+                                                    brainviz_dragging.set_value(true);
+                                                    brainviz_last_drag_xy.set_value((css_x, css_y));
+                                                }
+                                                on:mouseup=move |_| {
+                                                    brainviz_dragging.set_value(false);
+                                                }
+                                                on:mouseleave=move |_| {
+                                                    brainviz_dragging.set_value(false);
+                                                    set_brainviz_hover.set(None);
+                                                }
+                                                on:mousemove=move |ev| {
+                                                    let Some(canvas) = brain_viz_ref.get() else { return; };
+                                                    let rect = canvas.get_bounding_client_rect();
+                                                    let css_x = (ev.client_x() as f64) - rect.left();
+                                                    let css_y = (ev.client_y() as f64) - rect.top();
+
+                                                    let rw = rect.width().max(1.0);
+                                                    let rh = rect.height().max(1.0);
+                                                    if css_x < 0.0 || css_y < 0.0 || css_x > rw || css_y > rh {
+                                                        set_brainviz_hover.set(None);
+                                                        return;
+                                                    }
+
+                                                    let sx = (canvas.width() as f64) / rw;
+                                                    let sy = (canvas.height() as f64) / rh;
+                                                    let x = css_x * sx;
+                                                    let y = css_y * sy;
+
+                                                    if brainviz_dragging.get_value() {
+                                                        let (lx, ly) = brainviz_last_drag_xy.get_value();
+                                                        let dx = (css_x - lx) * sx;
+                                                        let dy = (css_y - ly) * sy;
+                                                        set_brainviz_pan_x.update(|v| *v += dx as f32);
+                                                        set_brainviz_pan_y.update(|v| *v += dy as f32);
+                                                        brainviz_last_drag_xy.set_value((css_x, css_y));
+                                                        return;
+                                                    }
+
+                                                    let mut best: Option<(u32, f64, f64)> = None; // (id, css_x, css_y)
+                                                    brainviz_hit_nodes.with_value(|hits| {
+                                                        let mut best_d2: f64 = f64::INFINITY;
+                                                        for hn in hits {
+                                                            let dx = hn.x - x;
+                                                            let dy = hn.y - y;
+                                                            let d2 = dx * dx + dy * dy;
+                                                            let r = hn.r + 4.0;
+                                                            if d2 <= r * r && d2 < best_d2 {
+                                                                best_d2 = d2;
+                                                                best = Some((
+                                                                    hn.id,
+                                                                    hn.x / sx,
+                                                                    hn.y / sy,
+                                                                ));
+                                                            }
+                                                        }
+                                                    });
+
+                                                    set_brainviz_hover.set(best);
+                                                }
+                                            ></canvas>
+
+                                            <Show when=move || brainviz_hover.get().is_some()>
+                                                <div style=move || {
+                                                    let Some((_id, x, y)) = brainviz_hover.get() else { return "display: none;".to_string(); };
+                                                    format!(
+                                                        "position: absolute; left: {:.0}px; top: {:.0}px; transform: translate(10px, -10px); padding: 8px 10px; background: rgba(10,15,26,0.92); border: 1px solid rgba(122,162,255,0.25); border-radius: 10px; font-size: 12px; color: rgba(232,236,255,0.95); pointer-events: none; max-width: 260px;",
+                                                        x,
+                                                        y
+                                                    )
+                                                }>
+                                                    {move || {
+                                                        let Some((id, _x, _y)) = brainviz_hover.get() else { return "".to_string(); };
+                                                        let p = brainviz_points
+                                                            .get()
+                                                            .into_iter()
+                                                            .find(|p| p.id == id);
+                                                        if let Some(p) = p {
+                                                            let kind = if p.is_sensor_member {
+                                                                "sensor"
+                                                            } else if p.is_group_member {
+                                                                "group"
+                                                            } else if p.is_reserved {
+                                                                "reserved"
+                                                            } else {
+                                                                "unit"
+                                                            };
+                                                            format!("id={}  kind={}  amp01={:.2}  age={:.2}", p.id, kind, p.amp01, p.rel_age)
+                                                        } else {
+                                                            format!("id={}", id)
+                                                        }
+                                                    }}
+                                                </div>
+                                            </Show>
+                                        </div>
                                     </div>
                                 </Show>
                             </div>
@@ -2082,24 +2365,6 @@ fn App() -> impl IntoView {
                                 <div class="card">
                                     <h3 class="card-title">"⚙️ Braine Settings"</h3>
                                     <p class="subtle">"Adjust substrate size and how scalar reward is delivered."</p>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"🧪 Learning Writes"</h3>
-                                    <div class="row end wrap">
-                                        <label class="label" style="flex-direction: row; align-items: center; gap: 10px;">
-                                            <input
-                                                type="checkbox"
-                                                prop:checked=move || learning_enabled.get()
-                                                on:change=move |ev| {
-                                                    let v = event_target_checked(&ev);
-                                                    set_learning_enabled.set(v);
-                                                }
-                                            />
-                                            <span>"Enable learning (reinforce + commit_observation)"</span>
-                                        </label>
-                                    </div>
-                                    <p class="subtle">"Disable this to run inference-only without updating causal/meaning memory."</p>
                                 </div>
 
                                 <div class="card">
@@ -2125,6 +2390,74 @@ fn App() -> impl IntoView {
                                         </button>
                                     </div>
                                     <p class="subtle">"Adds new units to the substrate without gradients/backprop."</p>
+                                </div>
+                            </div>
+                        </Show>
+
+                        <Show when=move || dashboard_tab.get() == DashboardTab::Learning>
+                            <div class="stack">
+                                <div class="card">
+                                    <h3 class="card-title">"🧪 Learning"</h3>
+                                    <p class="subtle">"Controls for learning writes, reward shaping, and simulation cadence."</p>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"🧪 Learning Writes"</h3>
+                                    <div class="row end wrap">
+                                        <label class="label" style="flex-direction: row; align-items: center; gap: 10px;">
+                                            <input
+                                                type="checkbox"
+                                                prop:checked=move || learning_enabled.get()
+                                                on:change=move |ev| {
+                                                    let v = event_target_checked(&ev);
+                                                    set_learning_enabled.set(v);
+                                                }
+                                            />
+                                            <span>"Enable learning (reinforce + commit_observation)"</span>
+                                        </label>
+                                    </div>
+                                    <p class="subtle">"Disable this to run inference-only without updating causal/meaning memory."</p>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"⏱ Simulation Speed"</h3>
+                                    <div class="row end wrap">
+                                        <label class="label">
+                                            <span>"Run interval (ms)"</span>
+                                            <input
+                                                class="input"
+                                                type="number"
+                                                min="8"
+                                                max="500"
+                                                step="1"
+                                                prop:value=move || run_interval_ms.get().to_string()
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                        let v = v.clamp(8, 500);
+                                                        set_run_interval_ms.set(v);
+                                                        if is_running.get_untracked() {
+                                                            let do_stop = do_stop_sv.get_value();
+                                                            let do_start = do_start_sv.get_value();
+                                                            do_stop();
+                                                            do_start();
+                                                        }
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <button class="btn" on:click=move |_| {
+                                            set_run_interval_ms.set(33);
+                                            if is_running.get_untracked() {
+                                                let do_stop = do_stop_sv.get_value();
+                                                let do_start = do_start_sv.get_value();
+                                                do_stop();
+                                                do_start();
+                                            }
+                                        }>
+                                            "Reset"
+                                        </button>
+                                    </div>
+                                    <p class="subtle">"If changed while running, the interval restarts."</p>
                                 </div>
 
                                 <div class="card">
@@ -2219,7 +2552,12 @@ fn App() -> impl IntoView {
 
                                 <div style=STYLE_CARD>
                                     <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Storage mechanisms"</h3>
-                                    <pre class="codeblock">{"Web (this app)\n- IndexedDB (db: 'braine', store: 'kv')\n  - key 'brain_image': raw BBI bytes (Brain::save_image_bytes / load_image_bytes)\n  - key 'game_accuracy': JSON map {game -> accuracy}\n- localStorage\n  - 'braine_theme': UI theme\n  - 'braine_settings_v1': JSON {reward_scale, reward_bias, learning_enabled}\n  - 'braine_game_stats_v1.<Game>': JSON (stats + chart history + choices history)\n- Export/Import\n  - Export downloads the current brain image as a .bbi snapshot\n  - Import loads a .bbi (optionally autosave to IndexedDB)\n\nDaemon mode (brained)\n- Persists to OS data directories (brain.bbi)\n  - Linux: ~/.local/share/braine/brain.bbi\n  - Windows: %APPDATA%\\Braine\\brain.bbi\n  - macOS: ~/Library/Application Support/Braine/brain.bbi\n- Uses newline-delimited JSON over TCP (127.0.0.1:9876) between daemon and clients."}</pre>
+                                    <pre class="codeblock">{"Web (this app)\n- IndexedDB (db: 'braine', store: 'kv')\n  - key 'brain_image': raw BBI bytes (Brain::save_image_bytes / load_image_bytes)\n  - key 'game_accuracy': JSON map {game -> accuracy}\n- localStorage\n  - 'braine_theme': UI theme\n  - 'braine_settings_v1': JSON {reward_scale, reward_bias, learning_enabled, run_interval_ms, trial_period_ms}\n  - 'braine_game_stats_v1.<Game>': JSON (stats + chart history + choices history)\n- Export/Import\n  - Export downloads the current brain image as a .bbi snapshot\n  - Import loads a .bbi (optionally autosave to IndexedDB)\n\nDaemon mode (brained)\n- Persists to OS data directories (brain.bbi)\n  - Linux: ~/.local/share/braine/brain.bbi\n  - Windows: %APPDATA%\\Braine\\brain.bbi\n  - macOS: ~/Library/Application Support/Braine/brain.bbi\n- Uses newline-delimited JSON over TCP (127.0.0.1:9876) between daemon and clients."}</pre>
+                                </div>
+
+                                <div style=STYLE_CARD>
+                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Configuration parameters"</h3>
+                                    <pre class="codeblock">{"BrainConfig (core defaults)\n- unit_count: 256\n- connectivity_per_unit: 12\n- dt: 0.05\n- base_freq: 1.0\n- noise_amp: 0.02\n- noise_phase: 0.01\n- global_inhibition: 0.2\n- hebb_rate: 0.08\n- forget_rate: 0.0005\n- prune_below: 0.01\n- coactive_threshold: 0.3\n- phase_lock_threshold: 0.7\n- imprint_rate: 0.5\n- seed: None\n- causal_decay: 0.002\n\nWeb lab defaults\n- seed override: 2026 (make_default_brain)\n- trial_period_ms: 500\n- run_interval_ms: 33 (≈30Hz)\n- exploration_eps (ε): 0.08\n- meaning_alpha (α): 6.0\n\nGame seeds\n- PongSim seed: 0xB0A7_F00D\n- Web runtime RNG seed: 0xC0FF_EE12"}</pre>
                                 </div>
 
                                 <div style=STYLE_CARD>
@@ -2247,6 +2585,7 @@ fn App() -> impl IntoView {
 enum DashboardTab {
     #[default]
     GameDetails,
+    Learning,
     Stats,
     Analytics,
     Settings,
@@ -2257,6 +2596,7 @@ impl DashboardTab {
     fn label(self) -> &'static str {
         match self {
             DashboardTab::GameDetails => "Game Details",
+            DashboardTab::Learning => "Learning",
             DashboardTab::Stats => "Stats",
             DashboardTab::Analytics => "Analytics",
             DashboardTab::Settings => "Settings",
@@ -2266,6 +2606,7 @@ impl DashboardTab {
     fn icon(self) -> &'static str {
         match self {
             DashboardTab::GameDetails => "🧩",
+            DashboardTab::Learning => "🧠",
             DashboardTab::Stats => "📊",
             DashboardTab::Analytics => "📈",
             DashboardTab::Settings => "⚙️",
@@ -2274,11 +2615,12 @@ impl DashboardTab {
     }
     fn all() -> &'static [DashboardTab] {
         &[
+            DashboardTab::About,
+            DashboardTab::Learning,
             DashboardTab::GameDetails,
             DashboardTab::Stats,
             DashboardTab::Analytics,
             DashboardTab::Settings,
-            DashboardTab::About,
         ]
     }
 }
@@ -2367,8 +2709,8 @@ impl GameKind {
             GameKind::Spot => "Binary discrimination with two stimuli (spot_left/spot_right) and two actions (left/right). One response per trial; reward is +1 for correct, −1 for wrong.",
             GameKind::Bandit => "Two-armed bandit with a constant context stimulus (bandit). Choose left/right once per trial; reward is stochastic with prob_left=0.8 and prob_right=0.2.",
             GameKind::SpotReversal => "Like Spot, but the correct mapping flips once after flip_after_trials=200. Tests adaptation to a distributional shift in reward dynamics.",
-            GameKind::SpotXY => "Population-coded 2D position. In BinaryX mode, classify sign(x) into left/right. In Grid mode (2..8), choose the correct spotxy_cell_{n}_{ix}_{iy} among n² actions.",
-            GameKind::Pong => "Discrete-sensor Pong: ball/paddle position and velocity are binned into named sensors; actions are up/down/stay. Reward is small per-step plus sparse event rewards.",
+            GameKind::SpotXY => "Population-coded 2D position. In BinaryX mode, classify sign(x) into left/right. In Grid mode, choose the correct spotxy_cell_{n}_{ix}_{iy} among n² actions (web control doubles: 2×2 → 4×4 → 8×8).",
+            GameKind::Pong => "Discrete-sensor Pong: ball/paddle position and velocity are binned into named sensors; actions are up/down/stay. The sim uses continuous collision detection against the arena walls and is deterministic given a fixed seed (randomness only on post-score serve).",
             GameKind::Sequence => "Next-token prediction over a small alphabet {A,B,C} with a regime shift between two fixed patterns every 60 outcomes.",
             GameKind::Text => "Next-token prediction over a byte vocabulary built from two small corpora (default: 'hello world\\n' vs 'goodbye world\\n') with a regime shift every 80 outcomes.",
         }
@@ -2404,7 +2746,7 @@ impl GameKind {
             GameKind::Bandit => "+1.0: Bernoulli reward (win)\n−1.0: No win\nProbabilities: left=0.8, right=0.2 (default)",
             GameKind::SpotReversal => "+1.0: Correct under current mapping\n−1.0: Incorrect\nFlip: once after flip_after_trials=200",
             GameKind::SpotXY => "+1.0: Correct classification\n−1.0: Incorrect\nEval mode: runs dynamics and action selection, but suppresses learning writes",
-            GameKind::Pong => "+0.05: Action matches a simple tracking heuristic\n−0.05: Action mismatches heuristic\nPlus sparse event reward from the sim (hits/misses), clamped to [−1, +1]",
+            GameKind::Pong => "+0.05: Action matches a simple tracking heuristic\n−0.05: Action mismatches heuristic\nEvent reward: +1 on paddle hit, −1 on miss (when the ball reaches the left boundary at x=0)\nAll rewards are clamped to [−1, +1]",
             GameKind::Sequence => "+1.0: Correct next-token prediction\n−1.0: Incorrect\nRegime flips every shift_every_outcomes=60",
             GameKind::Text => "+1.0: Correct next-token prediction\n−1.0: Incorrect\nRegime flips every shift_every_outcomes=80",
         }
@@ -2563,7 +2905,26 @@ impl AppRuntime {
 
     fn spotxy_increase_grid(&mut self) {
         let actions = if let WebGame::SpotXY(g) = &mut self.game {
-            g.increase_grid();
+            let cur = g.grid_n();
+            let target = if cur == 0 {
+                2
+            } else if cur.is_power_of_two() {
+                (cur.saturating_mul(2)).min(8)
+            } else {
+                cur.next_power_of_two().min(8)
+            };
+
+            // Use the underlying stepwise API, but jump to the next power-of-two size.
+            let mut guard = 0u32;
+            while g.grid_n() < target && guard < 16 {
+                let before = g.grid_n();
+                g.increase_grid();
+                if g.grid_n() == before {
+                    break;
+                }
+                guard += 1;
+            }
+
             Some(g.allowed_actions().to_vec())
         } else {
             None
@@ -2580,7 +2941,26 @@ impl AppRuntime {
 
     fn spotxy_decrease_grid(&mut self) {
         let actions = if let WebGame::SpotXY(g) = &mut self.game {
-            g.decrease_grid();
+            let cur = g.grid_n();
+            let target = if cur <= 2 {
+                0
+            } else if cur.is_power_of_two() {
+                cur / 2
+            } else {
+                // Snap down to the closest lower power-of-two.
+                1u32 << (31 - cur.leading_zeros())
+            };
+
+            let mut guard = 0u32;
+            while g.grid_n() > target && guard < 16 {
+                let before = g.grid_n();
+                g.decrease_grid();
+                if g.grid_n() == before {
+                    break;
+                }
+                guard += 1;
+            }
+
             Some(g.allowed_actions().to_vec())
         } else {
             None
@@ -2938,8 +3318,13 @@ impl WebGame {
 
     fn ui_snapshot(&self) -> GameUiSnapshot {
         match self {
-            WebGame::Spot(_) | WebGame::Bandit(_) => GameUiSnapshot::default(),
+            WebGame::Spot(g) => GameUiSnapshot {
+                spot_is_left: Some(g.spot_is_left),
+                ..GameUiSnapshot::default()
+            },
+            WebGame::Bandit(_) => GameUiSnapshot::default(),
             WebGame::SpotReversal(g) => GameUiSnapshot {
+                spot_is_left: Some(g.spot_is_left),
                 reversal_active: g.reversal_active,
                 reversal_flip_after_trials: g.flip_after_trials,
                 ..GameUiSnapshot::default()
@@ -2993,6 +3378,8 @@ impl WebGame {
 
 #[derive(Default, Clone)]
 struct GameUiSnapshot {
+    spot_is_left: Option<bool>,
+
     spotxy_pos: Option<(f32, f32)>,
     spotxy_stimulus_key: String,
     spotxy_eval: bool,
@@ -3161,10 +3548,22 @@ struct PersistedSettings {
     reward_bias: f32,
     #[serde(default = "default_true")]
     learning_enabled: bool,
+    #[serde(default = "default_run_interval_ms")]
+    run_interval_ms: u32,
+    #[serde(default = "default_trial_period_ms")]
+    trial_period_ms: u32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_run_interval_ms() -> u32 {
+    33
+}
+
+fn default_trial_period_ms() -> u32 {
+    500
 }
 
 fn load_persisted_settings() -> Option<PersistedSettings> {
@@ -3559,47 +3958,39 @@ fn draw_spotxy(
     let w = canvas.width() as f64;
     let h = canvas.height() as f64;
 
-    let grid_n = grid_n.max(1) as f64;
+    let eff_grid = grid_n.max(1) as f64;
 
     // Background
     ctx.set_fill_style(&JsValue::from_str("#0a0f1a"));
     ctx.fill_rect(0.0, 0.0, w, h);
 
-    // Grid
-    ctx.set_stroke_style(&JsValue::from_str("rgba(122, 162, 255, 0.20)"));
-    ctx.set_line_width(1.0);
-    let cell_w = w / grid_n;
-    let cell_h = h / grid_n;
-    for i in 1..(grid_n as u32) {
-        let xf = (i as f64) * cell_w;
-        let yf = (i as f64) * cell_h;
-        ctx.begin_path();
-        ctx.move_to(xf, 0.0);
-        ctx.line_to(xf, h);
-        ctx.stroke();
-        ctx.begin_path();
-        ctx.move_to(0.0, yf);
-        ctx.line_to(w, yf);
-        ctx.stroke();
+    // Grid (draw only in Grid mode; BinaryX draws no divider)
+    let cell_w = w / eff_grid;
+    let cell_h = h / eff_grid;
+    if grid_n >= 2 {
+        ctx.set_stroke_style(&JsValue::from_str("rgba(122, 162, 255, 0.20)"));
+        ctx.set_line_width(1.0);
+        for i in 1..grid_n {
+            let xf = (i as f64) * cell_w;
+            let yf = (i as f64) * cell_h;
+            ctx.begin_path();
+            ctx.move_to(xf, 0.0);
+            ctx.line_to(xf, h);
+            ctx.stroke();
+            ctx.begin_path();
+            ctx.move_to(0.0, yf);
+            ctx.line_to(w, yf);
+            ctx.stroke();
+        }
     }
-
-    // Axes
-    ctx.set_stroke_style(&JsValue::from_str("rgba(255,255,255,0.20)"));
-    ctx.set_line_width(1.5);
-    ctx.begin_path();
-    ctx.move_to(w / 2.0, 0.0);
-    ctx.line_to(w / 2.0, h);
-    ctx.move_to(0.0, h / 2.0);
-    ctx.line_to(w, h / 2.0);
-    ctx.stroke();
 
     // Map x,y in [-1,1] to canvas coords.
     let px = ((x.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * w;
     let py = (1.0 - (y.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * h;
 
     // Highlight the active cell
-    let cx = ((px / cell_w).floor()).clamp(0.0, grid_n - 1.0);
-    let cy = ((py / cell_h).floor()).clamp(0.0, grid_n - 1.0);
+    let cx = ((px / cell_w).floor()).clamp(0.0, eff_grid - 1.0);
+    let cy = ((py / cell_h).floor()).clamp(0.0, eff_grid - 1.0);
     let cell_highlight = if accent == "#22c55e" {
         "rgba(34, 197, 94, 0.10)"
     } else {
@@ -3683,8 +4074,8 @@ fn draw_pong(canvas: &web_sys::HtmlCanvasElement, s: &PongUiState) -> Result<(),
     let paddle_w = 12.0;
     let paddle_y = map_y(s.paddle_y);
     let paddle_h = (s.paddle_half_height.clamp(0.01, 1.0) as f64) * 0.5 * inner_h;
-    let paddle_top = (paddle_y - paddle_h).clamp(20.0, h - 20.0);
     let paddle_height = (paddle_h * 2.0).min(inner_h);
+    let paddle_top = (paddle_y - paddle_h).clamp(20.0, 20.0 + inner_h - paddle_height);
     
     // Paddle glow
     ctx.set_fill_style_str("rgba(122, 162, 255, 0.3)");

@@ -143,13 +143,43 @@ pub fn draw_brain_activity(
 
 /// Draw a compact connectivity visualization: sampled nodes on a rotating sphere and
 /// edges between sampled nodes colored/thickened by connection strength.
+#[derive(Clone, Copy, Debug)]
+pub struct BrainVizHitNode {
+    pub id: u32,
+    pub x: f64,
+    pub y: f64,
+    pub r: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BrainVizRenderOptions {
+    pub zoom: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub draw_outline: bool,
+    pub node_size_scale: f64,
+}
+
+impl Default for BrainVizRenderOptions {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            draw_outline: true,
+            node_size_scale: 1.0,
+        }
+    }
+}
+
 pub fn draw_brain_connectivity_sphere(
     canvas: &HtmlCanvasElement,
     nodes: &[braine::substrate::UnitPlotPoint],
     edges: &[(u32, u32, f32)],
     rotation: f32,
     bg_color: &str,
-) -> Result<(), String> {
+    opts: BrainVizRenderOptions,
+) -> Result<Vec<BrainVizHitNode>, String> {
     let ctx = canvas
         .get_context("2d")
         .map_err(|_| "get_context failed")?
@@ -159,22 +189,25 @@ pub fn draw_brain_connectivity_sphere(
 
     let w = canvas.width() as f64;
     let h = canvas.height() as f64;
-    let cx = w / 2.0;
-    let cy = h / 2.0;
-    let radius = (w.min(h) / 2.0) - 22.0;
+    let zoom = (opts.zoom as f64).clamp(0.25, 8.0);
+    let cx = (w / 2.0) + (opts.pan_x as f64);
+    let cy = (h / 2.0) + (opts.pan_y as f64);
+    let radius = ((w.min(h) / 2.0) - 22.0) * zoom;
 
     ctx.set_fill_style_str(bg_color);
     ctx.fill_rect(0.0, 0.0, w, h);
 
-    // Sphere outline
-    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.20)");
-    ctx.set_line_width(1.0);
-    ctx.begin_path();
-    ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0).ok();
-    ctx.stroke();
+    // Sphere outline (optional)
+    if opts.draw_outline {
+        ctx.set_stroke_style_str("rgba(122, 162, 255, 0.20)");
+        ctx.set_line_width(1.0);
+        ctx.begin_path();
+        ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0).ok();
+        ctx.stroke();
+    }
 
     if nodes.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Golden spiral distribution on sphere
@@ -238,6 +271,7 @@ pub fn draw_brain_connectivity_sphere(
     }
 
     // Draw nodes on top.
+    let mut hit_nodes: Vec<BrainVizHitNode> = Vec::with_capacity(nodes.len());
     for node in nodes {
         let Some(&(x, y, z)) = pos.get(&node.id) else { continue; };
         let dist = 2.8;
@@ -253,26 +287,35 @@ pub fn draw_brain_connectivity_sphere(
         } else {
             1.7
         };
-        let size = base + 5.0 * amp;
+        // Scale down nodes (and a touch with zoom) to keep density readable.
+        let mut size = (base + 5.0 * amp) * opts.node_size_scale;
+        size *= zoom.sqrt();
         let alpha = 0.35 + 0.65 * amp;
 
-        let color = if node.is_reserved {
-            format!("rgba(148, 163, 184, {:.3})", alpha)
-        } else if node.is_sensor_member {
-            format!("rgba(74, 222, 128, {:.3})", alpha)
-        } else if node.is_group_member {
-            format!("rgba(251, 191, 36, {:.3})", alpha)
-        } else {
+        let color = if node.is_sensor_member {
             format!("rgba(122, 162, 255, {:.3})", alpha)
+        } else if node.is_group_member {
+            format!("rgba(74, 222, 128, {:.3})", alpha)
+        } else if node.is_reserved {
+            format!("rgba(148, 163, 184, {:.3})", alpha)
+        } else {
+            format!("rgba(251, 191, 36, {:.3})", alpha)
         };
 
         ctx.set_fill_style_str(&color);
         ctx.begin_path();
         ctx.arc(px, py, size, 0.0, std::f64::consts::PI * 2.0).ok();
         ctx.fill();
+
+        hit_nodes.push(BrainVizHitNode {
+            id: node.id,
+            x: px,
+            y: py,
+            r: size.max(2.0),
+        });
     }
 
-    Ok(())
+    Ok(hit_nodes)
 }
 
 /// Draw a gauge/meter visualization
@@ -775,12 +818,12 @@ pub fn draw_unit_plot_3d(
         };
         
         // Color based on unit type
-        let (color, glow_color) = if point.is_reserved {
-            ("rgba(136, 136, 136, 0.6)", "rgba(136, 136, 136, 0.2)")
-        } else if point.is_sensor_member {
+        let (color, glow_color) = if point.is_sensor_member {
             ("rgba(122, 162, 255, 0.9)", "rgba(122, 162, 255, 0.4)")
         } else if point.is_group_member {
             ("rgba(74, 222, 128, 0.85)", "rgba(74, 222, 128, 0.3)")
+        } else if point.is_reserved {
+            ("rgba(136, 136, 136, 0.6)", "rgba(136, 136, 136, 0.2)")
         } else {
             ("rgba(251, 191, 36, 0.75)", "rgba(251, 191, 36, 0.25)")
         };
@@ -801,12 +844,12 @@ pub fn draw_unit_plot_3d(
         ctx.fill();
         
         // Inner highlight for 3D effect
-        let highlight_color = if point.is_reserved {
-            "rgba(180, 180, 180, 0.5)"
-        } else if point.is_sensor_member {
+        let highlight_color = if point.is_sensor_member {
             "rgba(180, 200, 255, 0.6)"
         } else if point.is_group_member {
             "rgba(140, 255, 180, 0.5)"
+        } else if point.is_reserved {
+            "rgba(180, 180, 180, 0.5)"
         } else {
             "rgba(255, 220, 140, 0.5)"
         };
