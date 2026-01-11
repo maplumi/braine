@@ -227,7 +227,7 @@ pub fn draw_brain_connectivity_sphere(
     // Golden spiral distribution on sphere
     let n = nodes.len() as f64;
     let golden = 2.39996322972865332_f64; // ~pi*(3-sqrt(5))
-    
+
     // Use rotation from opts (supports both X and Y axes)
     let rot_y = opts.rotation_y as f64;
     let rot_x = opts.rotation_x as f64;
@@ -245,7 +245,7 @@ pub fn draw_brain_connectivity_sphere(
         // Rotate around Y axis (horizontal drag)
         let xr = x * rot_y.cos() + z * rot_y.sin();
         let zr = -x * rot_y.sin() + z * rot_y.cos();
-        
+
         // Rotate around X axis (vertical drag)
         let yr = y * rot_x.cos() - zr * rot_x.sin();
         let zr2 = y * rot_x.sin() + zr * rot_x.cos();
@@ -267,42 +267,59 @@ pub fn draw_brain_connectivity_sphere(
             continue;
         };
 
-        let depth = ((sz + tz) * 0.5 + 1.0) * 0.5; // 0..1 approx
+        let _depth = ((sz + tz) * 0.5 + 1.0) * 0.5; // 0..1 approx (1=front, 0=back)
         let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
         if absw < 0.12 {
             continue;
         }
 
-        // Simple perspective.
-        let dist = 2.8;
-        let sp = radius / (sz + dist);
-        let tp = radius / (tz + dist);
+        // Connection strength determines "closeness" via perspective pull.
+        // Stronger connections appear closer (pulled toward viewer), weaker ones stay back.
+        // Both closeness and width share the same source (absw) but scale differently.
+        let strength_closeness = absw * 0.4; // Pull strong edges forward (0 to 0.4 offset)
+        let dist_base = 2.8;
+        let sz_adj = sz - strength_closeness; // Stronger = closer to viewer
+        let tz_adj = tz - strength_closeness;
+
+        // Perspective projection with strength-adjusted depth
+        let sp = radius / (sz_adj + dist_base);
+        let tp = radius / (tz_adj + dist_base);
         let x1 = cx + sx * sp;
         let y1 = cy + sy * sp;
         let x2 = cx + tx * tp;
         let y2 = cy + ty * tp;
 
-        let alpha = (0.06 + 0.32 * absw) * (0.35 + 0.65 * depth);
+        // Recalculate depth after adjustment for alpha/width effects
+        let adj_depth = ((sz_adj + tz_adj) * 0.5 + 1.0) * 0.5;
+
+        // Width is primarily based on connection strength, with slight depth influence
+        // Strong connections = thick lines, weak connections = thin lines
+        let strength_width = 0.5 + 2.5 * absw; // Range: 0.5 to 3.0 (strong emphasis)
+        let depth_factor = 0.7 + 0.3 * adj_depth; // Slight boost for front edges
+        let edge_width = strength_width * depth_factor;
+
+        // Alpha combines strength (strong = more visible) and depth (front = more visible)
+        let alpha = (0.10 + 0.45 * absw) * (0.30 + 0.70 * adj_depth);
         if w >= 0.0 {
             ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", alpha));
         } else {
             ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
         }
-        ctx.set_line_width(0.5 + 1.6 * absw);
+        ctx.set_line_width(edge_width);
         ctx.begin_path();
         ctx.move_to(x1, y1);
         ctx.line_to(x2, y2);
         ctx.stroke();
 
-        // Draw "tension" glow for strong edges (strengthening effect)
-        if absw > 0.5 {
-            let tension_alpha = (absw - 0.5) * 0.4 * depth;
+        // Draw glow for very strong edges (they're already pulled forward)
+        if absw > 0.6 {
+            let tension_alpha = (absw - 0.6) * 0.4 * adj_depth;
             if w >= 0.0 {
                 ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", tension_alpha));
             } else {
                 ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", tension_alpha));
             }
-            ctx.set_line_width(3.0 + 2.0 * absw);
+            ctx.set_line_width(edge_width * 1.8);
             ctx.begin_path();
             ctx.move_to(x1, y1);
             ctx.line_to(x2, y2);
@@ -326,10 +343,11 @@ pub fn draw_brain_connectivity_sphere(
         let phase = node.phase as f64;
         let salience = (node.salience01 as f64).clamp(0.0, 1.0);
 
-        // Pulsing effect: ONLY active nodes pulse (amp > 0.3 threshold)
-        // Static/inactive nodes remain still for visual clarity
-        let is_active = amp > 0.3;
+        // Pulsing effect: ONLY truly active nodes pulse (amp > 0.5 threshold)
+        // Higher threshold ensures only genuinely active nodes animate
+        let is_active = amp > 0.5;
         let pulse_freq = 0.15; // Pulse frequency (slower for better visibility)
+                               // Per-node local animation: each node pulses independently based on phase
         let pulse = if is_active {
             ((anim_time * pulse_freq + phase).sin() * 0.5 + 0.5) * amp
         } else {
@@ -401,9 +419,10 @@ pub fn draw_brain_connectivity_sphere(
             }
         };
 
-        // Draw glow for highly active nodes (pulsing glow)
-        if amp > 0.5 {
-            let glow_alpha = pulse * 0.3 * amp;
+        // Draw glow for highly active nodes only (amp > 0.65 threshold)
+        // Only nodes with strong activity get the pulsing glow effect
+        if amp > 0.65 {
+            let glow_alpha = pulse * 0.35 * amp;
             let glow_color = if opts.learning_mode {
                 format!("rgba(255, 200, 100, {:.3})", glow_alpha)
             } else {
@@ -437,8 +456,9 @@ pub struct CausalVizRenderOptions {
     pub zoom: f32,
     pub pan_x: f32,
     pub pan_y: f32,
-    pub rotation: f32,    // Y-axis rotation (horizontal drag)
-    pub rotation_x: f32,  // X-axis rotation (vertical drag)
+    pub rotation: f32,   // Y-axis rotation (horizontal drag)
+    pub rotation_x: f32, // X-axis rotation (vertical drag)
+    #[allow(dead_code)]
     pub draw_outline: bool,
     pub anim_time: f32,
 }
@@ -486,15 +506,8 @@ pub fn draw_causal_graph(
     ctx.set_fill_style_str(bg_color);
     ctx.fill_rect(0.0, 0.0, w, h);
 
-    // Sphere outline (same as substrate view)
-    if opts.draw_outline {
-        ctx.set_stroke_style_str("rgba(34, 211, 238, 0.20)"); // Cyan tint for causal
-        ctx.set_line_width(1.0);
-        ctx.begin_path();
-        ctx.arc(cx, cy, radius, 0.0, std::f64::consts::PI * 2.0)
-            .ok();
-        ctx.stroke();
-    }
+    // Outline removed for cleaner causal view - nodes and edges speak for themselves
+    // The outline is hidden by default in causal mode for a more immersive visualization
 
     if nodes.is_empty() {
         // Draw placeholder text

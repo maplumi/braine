@@ -281,9 +281,11 @@ fn child_environment_step(_spec: &ChildSpec, remaining: usize) -> (Stimulus<'sta
     //
     // The point is not realism; it's to let the child build a causal link
     // stimulus -> action -> reward in its sandbox.
+    #[allow(clippy::manual_is_multiple_of)]
     let strength = if remaining % 17 == 0 { 0.35 } else { 1.0 };
 
     // Leak a tiny negative reward sometimes so meaning isn't trivial.
+    #[allow(clippy::manual_is_multiple_of)]
     let reward = if remaining % 41 == 0 { -0.4 } else { 0.7 };
 
     // We need a 'static str for the demo; this is fine because the spec strings are owned.
@@ -345,11 +347,13 @@ fn step_one_child(child: &mut ChildBrain) {
     }
 
     // Occasionally ask for parent guidance.
+    #[allow(clippy::manual_is_multiple_of)]
     if child.remaining % 120 == 0 {
         child.requests.push(ChildRequest::Guidance);
     }
 
     // If stuck for a long time, request spawning a grandchild explorer.
+    #[allow(clippy::manual_is_multiple_of)]
     if child.remaining % 300 == 0
         && child
             .brain

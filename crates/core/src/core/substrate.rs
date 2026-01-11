@@ -4227,6 +4227,9 @@ impl Brain {
         }
 
         // Compact periodically to reclaim tombstones.
+        // NOTE: scripts/dev.sh --web-only builds with Rust 1.84; unsigned `.is_multiple_of()`
+        // is unstable there, so we keep the modulo form and silence the clippy lint.
+        #[allow(clippy::manual_is_multiple_of)]
         if self.age_steps % 1000 == 0 {
             self.compact_connections();
         }
@@ -4438,6 +4441,179 @@ impl Brain {
 
         // Create associations.
         self.force_associate(&active_sensors, &targets, strength);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Idle Dreaming & Sync API (for background processing when inactive)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Check if any units are currently active (amplitude above threshold).
+    ///
+    /// Returns `true` if active units are detected, `false` if the brain is idle.
+    /// Use this to determine if dreaming/sync operations are safe to run.
+    ///
+    /// # Arguments
+    /// * `threshold` - Amplitude threshold for "active" (default: 0.3)
+    pub fn is_active(&self, threshold: f32) -> bool {
+        self.units.iter().any(|u| u.amp.abs() > threshold)
+    }
+
+    /// Get the count of active units above the threshold.
+    pub fn active_unit_count(&self, threshold: f32) -> usize {
+        self.units
+            .iter()
+            .filter(|u| u.amp.abs() > threshold)
+            .count()
+    }
+
+    /// Idle dream: run lightweight consolidation on inactive unit clusters.
+    ///
+    /// Unlike full `dream()`, this targets only units that have been inactive
+    /// for a while (low amplitude), allowing consolidation to run in the background
+    /// without disrupting active processing.
+    ///
+    /// # Arguments
+    /// * `steps` - Number of micro-dream steps to run (1-10 recommended for idle)
+    /// * `activity_threshold` - Units below this amplitude are eligible for dreaming
+    ///
+    /// # Returns
+    /// The number of units that participated in the idle dream.
+    ///
+    /// # Example
+    /// ```
+    /// # use braine::substrate::{Brain, BrainConfig};
+    /// let mut brain = Brain::new(BrainConfig::default());
+    /// // When idle, run micro-dreams on inactive clusters
+    /// if !brain.is_active(0.3) {
+    ///     brain.idle_dream(3, 0.2);
+    /// }
+    /// ```
+    pub fn idle_dream(&mut self, steps: usize, activity_threshold: f32) -> usize {
+        let steps = steps.clamp(1, 20);
+        let activity_threshold = activity_threshold.clamp(0.05, 0.5);
+
+        // Find inactive (but not reserved) units.
+        let inactive_ids: Vec<usize> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(i, u)| !self.reserved[*i] && u.amp.abs() < activity_threshold)
+            .map(|(i, _)| i)
+            .collect();
+
+        if inactive_ids.is_empty() {
+            return 0;
+        }
+
+        // Save original settings.
+        let orig_hebb = self.cfg.hebb_rate;
+        let orig_neuromod = self.neuromod;
+
+        // Gentle boost for idle consolidation (less aggressive than full dream).
+        self.cfg.hebb_rate = (orig_hebb * 1.5).min(0.2);
+        self.neuromod = 0.5; // Moderate neuromodulator for gentle consolidation
+
+        // Run micro-dream steps, injecting noise only into inactive units.
+        for _ in 0..steps {
+            // Inject small activations into a subset of inactive units.
+            let inject_count = (inactive_ids.len() / 10).clamp(1, 10);
+            for _ in 0..inject_count {
+                let idx = self.rng.gen_range_usize(0, inactive_ids.len());
+                let id = inactive_ids[idx];
+                self.pending_input[id] = self.rng.gen_range_f32(0.1, 0.3);
+            }
+
+            // Single step with reduced dynamics.
+            self.step();
+        }
+
+        // Restore original settings.
+        self.cfg.hebb_rate = orig_hebb;
+        self.neuromod = orig_neuromod;
+
+        inactive_ids.len()
+    }
+
+    /// One-shot global synchronization: align all unit phases for coherence.
+    ///
+    /// This is a "reset" operation that brings all oscillators into phase alignment.
+    /// Unlike `force_synchronize_sensors()` which only affects sensor groups, this
+    /// aligns the entire substrate. Use sparingly as it disrupts learned phase
+    /// relationships.
+    ///
+    /// Should only be called once when entering idle state, not repeatedly.
+    ///
+    /// # Returns
+    /// The number of units synchronized.
+    pub fn global_sync(&mut self) -> usize {
+        let target_phase = 0.0;
+        let mut count = 0;
+
+        for i in 0..self.units.len() {
+            // Sync all units (including reserved) to a common phase.
+            // But only if they have some amplitude (skip completely silent units).
+            if self.units[i].amp.abs() > 0.01 {
+                self.units[i].phase = target_phase;
+                count += 1;
+            }
+        }
+
+        // Also sync sensor groups with a small amplitude boost.
+        for group in &self.sensor_groups {
+            for &unit_id in &group.units {
+                if unit_id < self.units.len() {
+                    self.units[unit_id].phase = target_phase;
+                }
+            }
+        }
+
+        count
+    }
+
+    /// Check if the brain is in learning mode (high neuromodulator).
+    ///
+    /// Returns `true` if neuromodulator is above 0.3 (learning is active).
+    pub fn is_learning_mode(&self) -> bool {
+        self.neuromod > 0.3
+    }
+
+    /// Check if the brain is in inference/reference mode (low neuromodulator).
+    ///
+    /// Returns `true` if neuromodulator is low, indicating read-only behavior.
+    pub fn is_inference_mode(&self) -> bool {
+        self.neuromod <= 0.3
+    }
+
+    /// Run scheduled idle maintenance: dreaming for inactive clusters.
+    ///
+    /// This is the main entry point for background consolidation. It checks
+    /// if the brain is idle enough for maintenance, and if so, runs micro-dreams.
+    ///
+    /// # Arguments
+    /// * `force` - If true, run regardless of activity level
+    ///
+    /// # Returns
+    /// `Some(units_processed)` if dreaming was performed, `None` if skipped.
+    pub fn idle_maintenance(&mut self, force: bool) -> Option<usize> {
+        // Only run maintenance if:
+        // 1. Brain is not actively processing (or force is true)
+        // 2. Brain is not in high-learning mode (would interfere)
+        if !force && self.is_active(0.4) {
+            return None;
+        }
+
+        if self.is_learning_mode() && !force {
+            return None;
+        }
+
+        // Run a micro-dream cycle on inactive clusters.
+        let processed = self.idle_dream(3, 0.25);
+
+        if processed > 0 {
+            Some(processed)
+        } else {
+            None
+        }
     }
 }
 

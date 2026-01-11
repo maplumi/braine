@@ -88,6 +88,7 @@ enum AboutSubTab {
     Learning,
     Memory,
     Architecture,
+    Applications,
 }
 
 impl AboutSubTab {
@@ -98,6 +99,7 @@ impl AboutSubTab {
             AboutSubTab::Learning => "Learning",
             AboutSubTab::Memory => "Memory",
             AboutSubTab::Architecture => "Architecture",
+            AboutSubTab::Applications => "Applications",
         }
     }
 
@@ -108,6 +110,7 @@ impl AboutSubTab {
             AboutSubTab::Learning,
             AboutSubTab::Memory,
             AboutSubTab::Architecture,
+            AboutSubTab::Applications,
         ]
     }
 }
@@ -249,7 +252,8 @@ fn App() -> impl IntoView {
     let (_brainviz_auto_rotate, _set_brainviz_auto_rotate) = signal(false); // Disabled by default
     let (brainviz_manual_rotation, set_brainviz_manual_rotation) = signal(0.0f32); // Y-axis rotation (horizontal drag)
     let (brainviz_rotation_x, set_brainviz_rotation_x) = signal(0.0f32); // X-axis rotation (vertical drag)
-    let (brainviz_vibration, set_brainviz_vibration) = signal(0.0f32); // Activity-based vibration
+    let (brainviz_vibration, _set_brainviz_vibration) = signal(0.0f32); // Activity-based vibration
+    let (brainviz_idle_time, set_brainviz_idle_time) = signal(0.0f32); // Idle animation time (dreaming mode)
     let (brainviz_hover, set_brainviz_hover) = signal::<Option<(u32, f64, f64)>>(None);
     let (brainviz_view_mode, set_brainviz_view_mode) = signal::<&'static str>("substrate"); // "substrate" or "causal"
     let (brainviz_causal_graph, set_brainviz_causal_graph) =
@@ -257,6 +261,75 @@ fn App() -> impl IntoView {
     let brainviz_dragging = StoredValue::new(false);
     let brainviz_last_drag_xy = StoredValue::new((0.0f64, 0.0f64));
     let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
+
+    // Idle state tracking for actual dreaming/sync operations
+    let (idle_sync_done, set_idle_sync_done) = signal(false); // Has sync been performed this idle period?
+    let (idle_dream_counter, set_idle_dream_counter) = signal(0u32); // Counts idle ticks for dream scheduling
+    #[allow(unused_variables)]
+    let (idle_status, set_idle_status) = signal("".to_string()); // Status message for idle operations
+
+    // Idle animation and maintenance timer
+    // - Increments idle time for visual animation
+    // - Runs ACTUAL dreaming/sync on the brain when not running
+    // - Sync runs once when entering idle, dreaming runs periodically
+    {
+        let runtime = runtime.clone();
+        let set_idle = set_brainviz_idle_time;
+        if let Some(window) = web_sys::window() {
+            let cb = Closure::wrap(Box::new(move || {
+                // Visual animation: always increment idle time
+                set_idle.update(|t| *t += 0.033);
+
+                // Check if brain is running (game loop active)
+                let running = is_running.get_untracked();
+                let learning = learning_enabled.get_untracked();
+
+                if running {
+                    // Brain is running: reset idle state
+                    set_idle_sync_done.set(false);
+                    set_idle_dream_counter.set(0);
+                    set_idle_status.set("".to_string());
+                } else {
+                    // Brain is idle: perform actual maintenance operations
+
+                    // 1. One-time sync when entering idle (only if not in learning mode)
+                    if !idle_sync_done.get_untracked() {
+                        let mut synced: Option<usize> = None;
+                        runtime.update_value(|r| {
+                            // Only sync if not in high-learning state.
+                            if !r.brain.is_learning_mode() {
+                                synced = Some(r.brain.global_sync());
+                            }
+                        });
+                        set_idle_sync_done.set(true);
+                        if synced.is_some() {
+                            set_idle_status.set("sync: phases aligned".to_string());
+                        }
+                    }
+
+                    // 2. Periodic dreaming while idle (every ~3 seconds, 90 ticks)
+                    set_idle_dream_counter.update(|c| *c += 1);
+                    let counter = idle_dream_counter.get_untracked();
+
+                    if counter >= 90 && !learning {
+                        // Run idle maintenance (micro-dream on inactive clusters)
+                        runtime.update_value(|r| {
+                            if let Some(processed) = r.brain.idle_maintenance(false) {
+                                set_idle_status
+                                    .set(format!("dreaming: {} units consolidated", processed));
+                            }
+                        });
+                        set_idle_dream_counter.set(0);
+                    }
+                }
+            }) as Box<dyn FnMut()>);
+            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                33, // ~30fps
+            );
+            cb.forget(); // Leak the closure to keep it alive
+        }
+    }
 
     // Per-game accuracy persistence (loaded from IDB)
     let (game_accuracies, set_game_accuracies) =
@@ -1184,18 +1257,7 @@ fn App() -> impl IntoView {
             } else {
                 // Fetch substrate unit points
                 let pts = runtime.with_value(|r| r.brain.unit_plot_points(n));
-
-                // Calculate vibration based on average amplitude of sampled units
-                let avg_amp = if pts.is_empty() {
-                    0.0
-                } else {
-                    pts.iter().map(|p| p.amp.abs()).sum::<f32>() / pts.len() as f32
-                };
-                // Apply vibration based on amplitude and current step (for oscillation)
-                let step = steps.get();
-                let vibration = avg_amp * 0.1 * ((step as f32 * 0.3).sin() * 0.5 + 0.5);
-                set_brainviz_vibration.set(vibration);
-
+                // Global vibration removed - nodes now have local per-node animation
                 set_brainviz_points.set(pts);
             }
         }
@@ -1211,7 +1273,9 @@ fn App() -> impl IntoView {
                 return;
             }
 
-            let _steps = steps.get(); // Still track for reactivity
+            let step = steps.get(); // Track for reactivity
+            let running = is_running.get();
+            let idle_time = brainviz_idle_time.get(); // Idle animation time
             let view_mode = brainviz_view_mode.get();
             let Some(canvas) = brain_viz_ref.get() else {
                 return;
@@ -1222,8 +1286,19 @@ fn App() -> impl IntoView {
             let pan_y = brainviz_pan_y.get();
             let manual_rot = brainviz_manual_rotation.get();
             let rot_x = brainviz_rotation_x.get();
-            let vibration = brainviz_vibration.get();
-            let rot_y = manual_rot + vibration;
+            let _vibration = brainviz_vibration.get(); // Deprecated: vibration is now per-node
+
+            // When idle (not running), add slow "dreaming" rotation and use idle_time for animation.
+            // This creates a visual effect of the brain being alive but in a resting/sync state.
+            let idle_rot = if running { 0.0 } else { idle_time * 0.05 }; // Slow idle rotation
+            let rot_y = manual_rot + idle_rot;
+
+            // Use step-based time when running, idle_time when not running (for dreaming animation)
+            let anim_time = if running {
+                step as f32
+            } else {
+                idle_time * 30.0 // Scale up for visible animation speed
+            };
 
             if view_mode == "causal" {
                 // Render causal graph with same 3D sphere layout as substrate view
@@ -1235,7 +1310,7 @@ fn App() -> impl IntoView {
                     rotation: rot_y,
                     rotation_x: rot_x,
                     draw_outline: true,
-                    anim_time: steps.get() as f32,
+                    anim_time,
                 };
                 if let Ok(hits) = charts::draw_causal_graph(
                     &canvas,
@@ -1273,7 +1348,6 @@ fn App() -> impl IntoView {
                 });
 
                 let is_learning = learning_enabled.get();
-                let step = steps.get();
                 let opts = charts::BrainVizRenderOptions {
                     zoom,
                     pan_x,
@@ -1281,7 +1355,7 @@ fn App() -> impl IntoView {
                     draw_outline: false,
                     node_size_scale: 0.5,
                     learning_mode: is_learning,
-                    anim_time: step as f32,
+                    anim_time, // Uses step-based time when running, idle_time when dreaming
                     rotation_y: rot_y,
                     rotation_x: rot_x,
                 };
@@ -1883,7 +1957,7 @@ fn App() -> impl IntoView {
                                             <svg viewBox="0 0 600 200" style="width: 100%; max-width: 600px; height: auto;">
                                                 // DAEMON SIDE (left)
                                                 <text x="130" y="18" fill="var(--muted)" font-size="10" text-anchor="middle" font-weight="bold">"DAEMON-BASED"</text>
-                                                
+
                                                 // Daemon
                                                 <rect x="80" y="30" width="100" height="45" rx="6" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="2"/>
                                                 <text x="130" y="48" fill="var(--accent)" font-size="9" text-anchor="middle" font-weight="bold">"brained"</text>
@@ -1914,10 +1988,10 @@ fn App() -> impl IntoView {
 
                                                 // SEPARATOR
                                                 <line x1="295" y1="20" x2="295" y2="180" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,4"/>
-                                                
+
                                                 // WEB SIDE (right) - STANDALONE
                                                 <text x="450" y="18" fill="var(--muted)" font-size="10" text-anchor="middle" font-weight="bold">"STANDALONE (THIS APP)"</text>
-                                                
+
                                                 // Web app with embedded brain
                                                 <rect x="370" y="30" width="160" height="70" rx="8" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="2"/>
                                                 <text x="450" y="50" fill="#f472b6" font-size="10" text-anchor="middle" font-weight="bold">"braine_web (WASM)"</text>
@@ -1979,6 +2053,193 @@ fn App() -> impl IntoView {
                                                 // Label
                                                 <text x="275" y="85" fill="var(--muted)" font-size="8" text-anchor="middle">"↕ Real-time sync"</text>
                                             </svg>
+                                        </div>
+                                    </div>
+                                </Show>
+
+                                // Applications sub-tab - real-world use cases
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Applications>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🤖 Embodied Robotics"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Real-time sensorimotor control for robots and drones:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                <li>"Adaptive locomotion (terrain adaptation)"</li>
+                                                <li>"Object manipulation and grasping"</li>
+                                                <li>"Navigation with obstacle avoidance"</li>
+                                                <li>"Multi-sensor fusion (vision, touch, IMU)"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🏠 Smart Home & IoT"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Edge intelligence for connected devices:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                <li>"Personalized automation (learns your patterns)"</li>
+                                                <li>"Energy optimization based on behavior"</li>
+                                                <li>"Anomaly detection (security, maintenance)"</li>
+                                                <li>"Voice-free intent recognition"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🎮 Game AI & NPCs"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Believable, adaptive game characters:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                <li>"NPCs that learn from player interactions"</li>
+                                                <li>"Adaptive difficulty (genuine skill matching)"</li>
+                                                <li>"Emergent behaviors from simple rules"</li>
+                                                <li>"Persistent memory across sessions"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🧠 Cognitive Prosthetics"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Assistive technologies with learning:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                <li>"Adaptive prosthetic limb control"</li>
+                                                <li>"Brain-computer interfaces"</li>
+                                                <li>"Personalized sensory substitution"</li>
+                                                <li>"Rehabilitation assistance"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"📊 Time-Series Control"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Industrial and process control:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                <li>"Manufacturing process optimization"</li>
+                                                <li>"HVAC and climate control"</li>
+                                                <li>"Traffic signal adaptation"</li>
+                                                <li>"Agricultural automation"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🔬 Research Platform"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Scientific exploration of intelligence:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                <li>"Neuromorphic computing testbed"</li>
+                                                <li>"Embodied cognition experiments"</li>
+                                                <li>"Emergence and self-organization studies"</li>
+                                                <li>"Educational tool for AI concepts"</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    // Web-based Edge Computing Applications
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 12px 0; font-size: 1.1rem; color: var(--accent);">"🌐 Web-Based Edge Intelligence"</h3>
+                                        <p style="margin: 0 0 12px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                            "Braine runs natively in the browser via WebAssembly, enabling intelligent applications at the edge without server round-trips:"
+                                        </p>
+                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px;">
+                                            <div style="padding: 12px; background: rgba(122, 162, 255, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"📝 Smart Form Assistants"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Learn user input patterns to auto-complete, validate, and suggest corrections—all client-side with no data leaving the browser."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(74, 222, 128, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🛒 Personalized E-commerce"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Real-time product recommendations that adapt to browsing behavior without tracking servers or cookies."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(251, 191, 36, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🎨 Adaptive UI/UX"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Interfaces that learn user preferences—button placements, color schemes, information density—and adapt in real-time."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(244, 114, 182, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🔐 Behavioral Authentication"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Continuous authentication via typing rhythm, mouse patterns, and interaction cadence—private and local."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(34, 211, 238, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"💬 Offline-First Chat Bots"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Conversational agents that work without network—perfect for kiosks, field devices, or privacy-sensitive contexts."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(167, 139, 250, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"📊 Real-Time Analytics"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Stream processing in the browser—anomaly detection, trend prediction, and alerts without backend latency."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(251, 113, 133, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🎮 Browser-Based Games"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "NPCs and opponents that learn player strategies in-session, creating personalized challenge without cloud sync."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(100, 116, 139, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"📱 Progressive Web Apps"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "PWAs with embedded intelligence—fitness coaches, language tutors, task managers that learn and work offline."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🏥 Medical Triage Assistants"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Symptom checkers that run entirely on-device, ensuring patient data never leaves their control."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(163, 230, 53, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🌍 Offline Education"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "Adaptive learning platforms for regions with unreliable connectivity—personalized tutoring without cloud."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(232, 121, 249, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🔧 Industrial Dashboards"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "HMI panels that predict equipment issues locally, reducing latency for time-critical alerts."
+                                                </p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(248, 113, 113, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🚗 Fleet Management"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                                    "In-browser driver behavior analysis for logistics—route optimization and safety scoring without cloud upload."
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Why Braine for These Applications?"</h3>
+                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 12px;">
+                                            <div style="padding: 12px; background: rgba(122, 162, 255, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"⚡ Real-time"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"O(1) step complexity, no batching needed"</p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(74, 222, 128, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"💾 Edge-friendly"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Runs on MCUs, no cloud dependency"</p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(251, 191, 36, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🔄 Online learning"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Adapts continuously, no retraining"</p>
+                                            </div>
+                                            <div style="padding: 12px; background: rgba(244, 114, 182, 0.08); border-radius: 8px;">
+                                                <strong style="color: var(--text);">"🔍 Interpretable"</strong>
+                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Inspect dynamics, not black box"</p>
+                                            </div>
                                         </div>
                                     </div>
                                 </Show>
@@ -3221,9 +3482,6 @@ fn App() -> impl IntoView {
                                                     }>"+5"</button>
                                                 </div>
                                             </div>
-                                            <span style="color: rgba(178,186,210,0.6); font-size: 12px; margin-left: 8px;">
-                                                "Drag to rotate | Shift+drag to pan | Scroll to zoom"
-                                            </span>
                                             <button
                                                 class="btn sm"
                                                 on:click=move |_| {

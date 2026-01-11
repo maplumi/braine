@@ -170,6 +170,8 @@ impl SequenceGame {
         self.stats.record_trial(is_correct);
 
         self.outcomes = self.outcomes.wrapping_add(1);
+        // NOTE: wasm build pins Rust 1.84; unsigned `.is_multiple_of()` is unstable there.
+        #[allow(clippy::manual_is_multiple_of)]
         if self.shift_every_outcomes != 0 && self.outcomes % self.shift_every_outcomes == 0 {
             self.use_pattern1 = !self.use_pattern1;
         }

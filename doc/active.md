@@ -1,5 +1,69 @@
 # Active Development Notes
 
+## Idle Dreaming & Sync System (January 2026) ✅
+
+### Overview
+
+Implemented actual (not just visual) dreaming and synchronization operations that run when the brain is idle. This enables background memory consolidation and phase alignment for improved learning outcomes.
+
+### Core API Additions (`crates/core/src/core/substrate.rs`)
+
+```rust
+// Activity detection
+pub fn is_active(&self, threshold: f32) -> bool;
+pub fn active_unit_count(&self, threshold: f32) -> usize;
+pub fn is_learning_mode(&self) -> bool;  // neuromod > 0.3
+pub fn is_inference_mode(&self) -> bool; // neuromod <= 0.3
+
+// Idle operations
+pub fn idle_dream(&mut self, steps: usize, activity_threshold: f32) -> usize;
+pub fn global_sync(&mut self) -> usize;
+pub fn idle_maintenance(&mut self, force: bool) -> Option<usize>;
+```
+
+### Behavior
+
+**Global Sync** (one-time when entering idle):
+- Aligns all unit phases to a common reference (phase = 0)
+- Only runs once per idle period
+- Skipped if brain is in high-learning mode (neuromod > 0.3)
+- Creates coherent oscillation for clean restart
+
+**Idle Dreaming** (periodic while idle):
+- Runs every ~3 seconds while brain is not running
+- Targets only inactive unit clusters (amplitude < 0.25)
+- Gentle learning boost (1.5x) with moderate neuromodulator (0.5)
+- Injects small noise to trigger memory reactivation
+- Consolidates synaptic weights in unused areas
+- Skipped if learning mode is enabled
+
+### Web App Integration (`crates/braine_web/src/web.rs`)
+
+The idle maintenance loop runs at ~30fps and:
+1. Increments visual animation time (always)
+2. When running: resets idle state
+3. When idle + not learning:
+   - Runs `global_sync()` once on entering idle
+   - Runs `idle_maintenance()` every 90 ticks (~3 sec)
+4. Tracks status: "sync: phases aligned" or "dreaming: N units consolidated"
+
+### Signals Added
+
+```rust
+let (idle_sync_done, set_idle_sync_done) = signal(false);
+let (idle_dream_counter, set_idle_dream_counter) = signal(0u32);
+let (idle_status, set_idle_status) = signal("".to_string());
+```
+
+### Design Rationale
+
+- **Sync once**: Prevents phase drift during idle, but too-frequent sync would erase learned phase relationships
+- **Dream continuously**: Inactive clusters benefit from ongoing consolidation; active learning areas are protected
+- **Learning mode gate**: High neuromodulator indicates active learning in progress; dreaming would interfere
+- **Inference mode safe**: Low neuromodulator means read-only behavior; safe to consolidate inactive regions
+
+---
+
 ## Node-Edge Dynamics Enhancement Plan (January 2026)
 
 ### Overview

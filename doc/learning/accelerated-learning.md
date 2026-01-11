@@ -20,8 +20,9 @@ implemented features to speculative research directions.
 | 11 | Meta-Learning | 📋 Proposed | - |
 | 12 | Predictive Shortcut | 📋 Proposed | - |
 | 13 | Forced Sync | ✅ Implemented | `force_associate()` |
+| 14 | Idle Dreaming & Sync | ✅ Implemented | `idle_maintenance()`, `idle_dream()`, `global_sync()` |
 
-**Summary**: 9 of 13 mechanisms implemented (69%)
+**Summary**: 10 of 14 mechanisms implemented (71%)
 
 ---
 
