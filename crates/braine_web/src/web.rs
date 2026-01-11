@@ -2834,6 +2834,112 @@ fn App() -> impl IntoView {
                                             }}
                                         </p>
                                     </div>
+
+                                    // Learning milestones explanation
+                                    <div style="margin-top: 12px; padding: 12px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px; font-size: 0.8rem;">
+                                        <div style="font-weight: 600; color: var(--accent); margin-bottom: 8px;">"📊 Learning Milestones"</div>
+                                        <div style="display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; color: var(--text);">
+                                            <span style="color: var(--muted);">"⏳ Starting"</span>
+                                            <span>"First 20 trials — brain is exploring and imprinting"</span>
+                                            <span style="color: var(--muted);">"🔄 Training"</span>
+                                            <span>"Accuracy < 70% — brain is building associations"</span>
+                                            <span style="color: var(--muted);">"📈 Learning"</span>
+                                            <span>"Accuracy ≥ 70% — causal links forming, above chance"</span>
+                                            <span style="color: #4ade80;">"✓ Learned"</span>
+                                            <span>"Accuracy ≥ 85% — reliable performance achieved"</span>
+                                            <span style="color: #fbbf24;">"🏆 Mastered"</span>
+                                            <span>"Accuracy ≥ 95% — near-optimal behavior"</span>
+                                        </div>
+                                    </div>
+
+                                    // Game-specific info
+                                    <div style="margin-top: 12px; padding: 12px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px; font-size: 0.8rem;">
+                                        <div style="font-weight: 600; color: var(--accent); margin-bottom: 8px;">"🎮 Game Information"</div>
+                                        {move || {
+                                            let kind = game_kind.get();
+                                            match kind {
+                                                GameKind::Spot => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"Spot"</strong>" — Simple left/right discrimination"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Stimulus: 'spot_left' or 'spot_right'"</li>
+                                                            <li>"Goal: Match action to stimulus (left→left, right→right)"</li>
+                                                            <li>"Chance: 50% — Random guessing baseline"</li>
+                                                            <li>"Expected to learn: 20-50 trials"</li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
+                                                GameKind::SpotReversal => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"Spot Reversal"</strong>" — Adaptation test"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Stimulus flips periodically (left↔right mapping inverts)"</li>
+                                                            <li>"Goal: Quickly adapt to rule changes"</li>
+                                                            <li>"Tests: Cognitive flexibility and unlearning"</li>
+                                                            <li>"Flip interval configurable via settings"</li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
+                                                GameKind::Bandit => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"Bandit"</strong>" — Multi-armed bandit exploration"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Multiple arms with different reward probabilities"</li>
+                                                            <li>"Goal: Discover and exploit the best arm"</li>
+                                                            <li>"Explore vs exploit trade-off (ε controls exploration)"</li>
+                                                            <li>"Expected: Gradual convergence to optimal arm"</li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
+                                                GameKind::SpotXY => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"SpotXY"</strong>" — Spatial localization"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Target appears in one of N×N grid cells"</li>
+                                                            <li>"BinaryX mode: left/right only (N=1)"</li>
+                                                            <li>"Grid mode: select specific cell (N≥2)"</li>
+                                                            <li>"Chance: 50% (BinaryX) or 1/N² (Grid)"</li>
+                                                            <li>"Tests: Spatial encoding and multi-action learning"</li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
+                                                GameKind::Pong => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"Pong"</strong>" — Continuous tracking"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Track ball and move paddle to intercept"</li>
+                                                            <li>"Actions: up, down, stay"</li>
+                                                            <li>"Reward: +1 hit, -1 miss"</li>
+                                                            <li>"Tests: Temporal prediction and motor control"</li>
+                                                            <li>"Harder than discrete games — requires coordination"</li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
+                                                GameKind::Sequence => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"Sequence"</strong>" — Pattern prediction"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Predict next token in repeating sequence"</li>
+                                                            <li>"Tests: Temporal memory and pattern recognition"</li>
+                                                            <li>"Shift: Pattern can flip to test relearning"</li>
+                                                            <li>"Chance: 1/vocab_size"</li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
+                                                GameKind::Text => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"Text"</strong>" — Character prediction"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Predict next character in text corpus"</li>
+                                                            <li>"Dual corpus with periodic switching"</li>
+                                                            <li>"Tests: Language-like sequence learning"</li>
+                                                            <li>"Harder: Large action space (vocab size)"</li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
+                                            }
+                                        }}
+                                    </div>
                                 </Show>
 
                                 <Show when=move || analytics_panel.get() == AnalyticsPanel::Reward>
