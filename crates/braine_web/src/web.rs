@@ -89,6 +89,7 @@ enum AboutSubTab {
     Memory,
     Architecture,
     Applications,
+    Apis,
 }
 
 impl AboutSubTab {
@@ -100,6 +101,7 @@ impl AboutSubTab {
             AboutSubTab::Memory => "Memory",
             AboutSubTab::Architecture => "Architecture",
             AboutSubTab::Applications => "Applications",
+            AboutSubTab::Apis => "Braine APIs",
         }
     }
 
@@ -111,6 +113,7 @@ impl AboutSubTab {
             AboutSubTab::Memory,
             AboutSubTab::Architecture,
             AboutSubTab::Applications,
+            AboutSubTab::Apis,
         ]
     }
 }
@@ -2241,6 +2244,77 @@ fn App() -> impl IntoView {
                                                 <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Inspect dynamics, not black box"</p>
                                             </div>
                                         </div>
+                                    </div>
+                                </Show>
+
+                                // Braine APIs sub-tab (high-level, categorized)
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Apis>
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Braine APIs (By Category)"</h3>
+                                        <p style="margin: 0; color: var(--muted); font-size: 0.9rem; line-height: 1.7;">
+                                            "Braine’s long-lived state is owned by a central daemon (brained). Clients (desktop/web/edge) talk to it over newline-delimited JSON on TCP 127.0.0.1:9876. "
+                                            "This section lists the core API categories and the most important request/response shapes."
+                                        </p>
+                                    </div>
+
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"General"</h3>
+                                            <div style="font-family: monospace; font-size: 0.82rem; line-height: 1.7; background: var(--bg); padding: 12px; border-radius: 8px;">
+                                                <div><strong>"GetState"</strong>" → StateSnapshot (UI snapshot)"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"GetState\" }"</div>
+                                                <div style="color: var(--muted);">"output: { type: \"State\", running, game, brain_stats, ... }"</div>
+                                                <div style="margin-top: 8px;"><strong>"Start/Stop"</strong>" → Success/Error"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"Start\" } / { type: \"Stop\" }"</div>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Diagnostics"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Read-only endpoints intended for dashboards/monitoring."</p>
+                                            <div style="font-family: monospace; font-size: 0.82rem; line-height: 1.7; background: var(--bg); padding: 12px; border-radius: 8px;">
+                                                <div><strong>"DiagGet"</strong>" → Diagnostics"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"DiagGet\" }"</div>
+                                                <div style="color: var(--muted);">"output: { type: \"Diagnostics\", brain_stats, storage, frame, running }"</div>
+                                                <div style="margin-top: 8px;"><strong>"GetGraph"</strong>" → Graph (causal/meaning graphs)"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"GetGraph\", kind, max_nodes, max_edges }"</div>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Configuration"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Write endpoints that change runtime knobs (separated so we can later add auth/rate-limits)."</p>
+                                            <div style="font-family: monospace; font-size: 0.82rem; line-height: 1.7; background: var(--bg); padding: 12px; border-radius: 8px;">
+                                                <div><strong>"CfgGet"</strong>" → Config"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"CfgGet\" }"</div>
+                                                <div style="color: var(--muted);">"output: { type: \"Config\", exploration_eps, meaning_alpha, target_fps, trial_period_ms, max_units_limit }"</div>
+                                                <div style="margin-top: 8px;"><strong>"CfgSet"</strong>" → Success/Error"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"CfgSet\", exploration_eps?, target_fps?, trial_period_ms?, max_units? }"</div>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Sync (Master ↔ Edge/Child)"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Edge/child brains can propose structural updates back to the master. Today this is a bounded sparse delta over connection weights (top-K)."</p>
+                                            <div style="font-family: monospace; font-size: 0.82rem; line-height: 1.7; background: var(--bg); padding: 12px; border-radius: 8px;">
+                                                <div><strong>"SyncGetInfo"</strong>" → SyncInfo"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"SyncGetInfo\" }"</div>
+                                                <div style="color: var(--muted);">"output: { type: \"SyncInfo\", fingerprint, weights_len, unit_count, age_steps }"</div>
+                                                <div style="margin-top: 8px;"><strong>"SyncApplyDelta"</strong>" → SyncApplied/Error"</div>
+                                                <div style="color: var(--muted);">"input: { type: \"SyncApplyDelta\", delta, expected_weights_len, expected_fingerprint, delta_max?, autosave? }"</div>
+                                                <div style="color: var(--muted);">"output: { type: \"SyncApplied\", applied_edges, saved }"</div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div style="padding: 14px; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 12px;">
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: #fbbf24;">"Security (Future)"</h3>
+                                        <p style="margin: 0; color: var(--text); font-size: 0.85rem; line-height: 1.7;">
+                                            "Planned: authentication, per-category ACLs, request budgets, and audit logs for all Config/Sync endpoints."
+                                        </p>
                                     </div>
                                 </Show>
                             </div>

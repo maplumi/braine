@@ -12,7 +12,9 @@
 //! - MacOS: ~/Library/Application Support/Braine/
 
 use braine::substrate::Stimulus;
-use braine::substrate::{ActionScoreBreakdown, Brain, BrainConfig, RewardEdges, UnitPlotPoint};
+use braine::substrate::{
+    ActionScoreBreakdown, Brain, BrainConfig, BrainDelta, RewardEdges, UnitPlotPoint,
+};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -260,6 +262,39 @@ impl ActiveGame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum Request {
+    /// Introspect the daemon API surface (grouped by category).
+    ApiCatalog,
+
+    // Diagnostics (read-only)
+    DiagGet,
+
+    // Configuration (read/write)
+    CfgGet,
+    CfgSet {
+        #[serde(default)]
+        exploration_eps: Option<f32>,
+        #[serde(default)]
+        meaning_alpha: Option<f32>,
+        #[serde(default)]
+        target_fps: Option<u32>,
+        #[serde(default)]
+        trial_period_ms: Option<u32>,
+        #[serde(default)]
+        max_units: Option<u32>,
+    },
+
+    // Synchronization (edge/child -> master)
+    SyncGetInfo,
+    SyncApplyDelta {
+        delta: BrainDelta,
+        #[serde(default = "default_sync_delta_max")]
+        delta_max: f32,
+        expected_weights_len: u32,
+        expected_fingerprint: u64,
+        #[serde(default = "default_true")]
+        autosave: bool,
+    },
+
     GetState,
     /// Fetch the tunable parameter schema for a game (UI uses this to render knobs).
     GetGameParams {
@@ -354,7 +389,38 @@ enum Request {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 enum Response {
+    ApiCatalog {
+        categories: Vec<ApiCategory>,
+    },
+    Diagnostics {
+        running: bool,
+        frame: u64,
+        brain_stats: BrainStats,
+        #[serde(default)]
+        storage: StorageInfo,
+    },
+    Config {
+        exploration_eps: f32,
+        meaning_alpha: f32,
+        target_fps: u32,
+        trial_period_ms: u32,
+        max_units_limit: u32,
+    },
+    SyncInfo {
+        age_steps: u64,
+        unit_count: u32,
+        weights_len: u32,
+        fingerprint: u64,
+    },
+    SyncApplied {
+        applied_edges: u32,
+        #[serde(default)]
+        saved: bool,
+        #[serde(default)]
+        save_error: Option<String>,
+    },
     State(Box<StateSnapshot>),
     GameParams {
         game: String,
@@ -367,6 +433,32 @@ enum Response {
     Error {
         message: String,
     },
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_sync_delta_max() -> f32 {
+    0.05
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ApiCategory {
+    name: String,
+    #[serde(default)]
+    endpoints: Vec<ApiEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ApiEndpoint {
+    request: String,
+    #[serde(default)]
+    input: String,
+    #[serde(default)]
+    output: String,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2053,6 +2145,177 @@ async fn handle_client(
         };
 
         let response = match request {
+            Request::ApiCatalog => Response::ApiCatalog {
+                categories: vec![
+                    ApiCategory {
+                        name: "Diagnostics".to_string(),
+                        endpoints: vec![ApiEndpoint {
+                            request: "DiagGet".to_string(),
+                            input: "{}".to_string(),
+                            output: "{ type: Diagnostics, ... }".to_string(),
+                            description: "Read-only daemon/brain diagnostics snapshot.".to_string(),
+                        }],
+                    },
+                    ApiCategory {
+                        name: "Configuration".to_string(),
+                        endpoints: vec![
+                            ApiEndpoint {
+                                request: "CfgGet".to_string(),
+                                input: "{}".to_string(),
+                                output: "{ type: Config, ... }".to_string(),
+                                description: "Read current runtime configuration knobs.".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "CfgSet".to_string(),
+                                input: "{ exploration_eps?, meaning_alpha?, target_fps?, trial_period_ms?, max_units? }"
+                                    .to_string(),
+                                output: "{ type: Success|Error }".to_string(),
+                                description: "Update runtime knobs (safe clamped).".to_string(),
+                            },
+                        ],
+                    },
+                    ApiCategory {
+                        name: "Synchronization".to_string(),
+                        endpoints: vec![
+                            ApiEndpoint {
+                                request: "SyncGetInfo".to_string(),
+                                input: "{}".to_string(),
+                                output: "{ type: SyncInfo, ... }".to_string(),
+                                description:
+                                    "Get sync metadata for edge/child brains (fingerprint + sizes)."
+                                        .to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "SyncApplyDelta".to_string(),
+                                input: "{ delta, delta_max, expected_weights_len, expected_fingerprint, autosave }"
+                                    .to_string(),
+                                output: "{ type: SyncApplied|Error }".to_string(),
+                                description:
+                                    "Apply a sparse BrainDelta (top-K edge weight deltas) from an edge/child brain and optionally persist immediately."
+                                        .to_string(),
+                            },
+                        ],
+                    },
+                    ApiCategory {
+                        name: "General".to_string(),
+                        endpoints: vec![ApiEndpoint {
+                            request: "GetState".to_string(),
+                            input: "{}".to_string(),
+                            output: "{ type: State, ... }".to_string(),
+                            description: "Full UI snapshot (stats, HUD, plots, experts, storage)."
+                                .to_string(),
+                        }],
+                    },
+                ],
+            },
+            Request::DiagGet => {
+                let s = state.read().await;
+                let snap = s.get_snapshot();
+                Response::Diagnostics {
+                    running: snap.running,
+                    frame: snap.frame,
+                    brain_stats: snap.brain_stats,
+                    storage: snap.storage,
+                }
+            }
+            Request::CfgGet => {
+                let s = state.read().await;
+                Response::Config {
+                    exploration_eps: s.exploration_eps,
+                    meaning_alpha: s.meaning_alpha,
+                    target_fps: s.target_fps,
+                    trial_period_ms: s.trial_period_ms,
+                    max_units_limit: s.max_units_limit as u32,
+                }
+            }
+            Request::CfgSet {
+                exploration_eps,
+                meaning_alpha,
+                target_fps,
+                trial_period_ms,
+                max_units,
+            } => {
+                let mut s = state.write().await;
+
+                if let Some(v) = exploration_eps {
+                    s.exploration_eps = v.clamp(0.0, 1.0);
+                }
+                if let Some(v) = meaning_alpha {
+                    s.meaning_alpha = v.clamp(0.0, 50.0);
+                }
+                if let Some(v) = target_fps {
+                    s.target_fps = v.clamp(1, 240);
+                }
+                if let Some(v) = trial_period_ms {
+                    let ms = v.clamp(10, 10_000);
+                    s.trial_period_ms = ms;
+                    s.game.update_timing(ms);
+                }
+                if let Some(max_units) = max_units {
+                    let requested = max_units as usize;
+                    let current_units = s.brain.diagnostics().unit_count;
+                    s.max_units_limit = requested.clamp(current_units, 4096);
+                }
+
+                Response::Success {
+                    message: "Config updated".to_string(),
+                }
+            }
+            Request::SyncGetInfo => {
+                let s = state.read().await;
+                Response::SyncInfo {
+                    age_steps: s.brain.age_steps(),
+                    unit_count: s.brain.diagnostics().unit_count as u32,
+                    weights_len: s.brain.weights_len() as u32,
+                    fingerprint: s.brain.connections_fingerprint(),
+                }
+            }
+            Request::SyncApplyDelta {
+                delta,
+                delta_max,
+                expected_weights_len,
+                expected_fingerprint,
+                autosave,
+            } => {
+                let mut s = state.write().await;
+
+                let weights_len = s.brain.weights_len() as u32;
+                if weights_len != expected_weights_len {
+                    Response::Error {
+                        message: format!(
+                            "Sync rejected: weights_len mismatch (local={weights_len}, expected={expected_weights_len})"
+                        ),
+                    }
+                } else {
+                    let fp = s.brain.connections_fingerprint();
+                    if fp != expected_fingerprint {
+                        Response::Error {
+                            message: "Sync rejected: fingerprint mismatch (topology differs)".to_string(),
+                        }
+                    } else {
+                        let applied_edges = delta.weight_deltas.len() as u32;
+                        let dm = delta_max.clamp(1.0e-6, 0.5);
+                        s.brain.apply_weight_delta(&delta, dm);
+
+                        let mut saved = false;
+                        let mut save_error: Option<String> = None;
+                        if autosave {
+                            match s.save_brain() {
+                                Ok(()) => saved = true,
+                                Err(e) => {
+                                    save_error = Some(e);
+                                }
+                            }
+                        }
+
+                        Response::SyncApplied {
+                            applied_edges,
+                            saved,
+                            save_error,
+                        }
+                    }
+                }
+            }
             Request::GetState => {
                 let s = state.read().await;
                 Response::State(Box::new(s.get_snapshot()))

@@ -511,6 +511,7 @@ pub struct Brain {
 /// This is intentionally minimal for the initial expert/child-brain mechanism:
 /// it only carries top-K connection weight deltas.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BrainDelta {
     pub weight_deltas: Vec<(usize, Weight)>,
 }
@@ -526,6 +527,27 @@ struct Telemetry {
 }
 
 impl Brain {
+    /// A coarse fingerprint of the current connection topology.
+    ///
+    /// Used for safe-ish synchronization between a master brain and edge/child brains.
+    /// If this value differs, applying deltas by edge-index is unsafe.
+    #[must_use]
+    pub fn connections_fingerprint(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.units.len().hash(&mut hasher);
+        self.connections.weights.len().hash(&mut hasher);
+        self.connections.targets.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Number of connection weights (equals number of edges).
+    #[must_use]
+    pub fn weights_len(&self) -> usize {
+        self.connections.weights.len()
+    }
+
     /// Compute a sparse delta from `base` to `self` by taking the top-K
     /// absolute connection weight changes.
     ///
