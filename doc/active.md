@@ -1,5 +1,69 @@
 # Active Development Notes
 
+## Node-Edge Dynamics Enhancement Plan (January 2026)
+
+### Overview
+
+Implement visual and core enhancements for node/edge dynamics based on the analysis in [node-edge-dynamics-analysis.md](node-edge-dynamics-analysis.md).
+
+### Phase 1: Visualization Enhancements ✅ (Completed)
+
+1. ✅ Manual rotation for BrainViz (drag to rotate)
+2. ✅ Activity-based vibration from amplitude
+3. ✅ Dynamic node coloring (learning=warm, inference=cool palette)
+4. ✅ Causal graph visualization with directed edges
+5. ✅ Controls hint: "Drag to rotate | Shift+drag to pan | Scroll to zoom"
+
+### Phase 2: Visual Enhancements (Planned)
+
+1. **Force-directed layout for causal view**
+   - Use causal_strength for edge attraction
+   - Simple damped spring simulation
+   - No core changes required
+   - Priority: HIGH
+
+2. **Node size based on activity/frequency**
+   - In substrate view: size based on amplitude
+   - In causal view: already done (base_count)
+   - Priority: MEDIUM
+
+3. **Edge opacity gradient**
+   - Stronger edges more opaque
+   - Already partially done
+   - Priority: LOW
+
+### Phase 3: Core Enhancements (Research)
+
+1. **Add `salience` field to Unit struct**
+   ```rust
+   pub struct Unit {
+       // ... existing fields ...
+       pub salience: f32,  // Accumulated importance [0, 1]
+   }
+   ```
+   - Update: `salience = α * salience + (1-α) * (amp * |neuromod|)`
+   - α = 0.99 for slow accumulation
+   - Priority: MEDIUM
+   - Impact: +4 bytes per unit, BBI format version bump
+
+2. **Track last_active_step per unit**
+   - Enables recency-based visualization
+   - Low overhead (one write per activation)
+   - Priority: LOW
+
+3. **Age-dependent decay curves**
+   - `decay_rate = base_decay / (1 + log(edge_age))`
+   - Makes older memories more resistant (consolidation)
+   - Priority: RESEARCH
+
+### Implementation Notes
+
+- Phase 2 changes are visualization-only (no core modifications)
+- Phase 3 requires BBI format version bump (currently v2)
+- All enhancements should follow existing patterns in substrate.rs
+
+---
+
 ## Recent Web UI Improvements (January 2026)
 
 ### Unit Plot & BrainViz Interactivity
@@ -14,21 +78,28 @@
 
 ### BrainViz View Switching
 
-**Status: UI toggle implemented, causal view rendering pending**
+**Status: Fully implemented**
 
-- Added substrate/causal dropdown toggle in BrainViz panel
-- Default view: Substrate (shows unit nodes and connection edges)
-- Causal view: Shows "coming soon" message; would visualize symbol-to-symbol temporal edges from causal memory
-- Reference: Desktop Slint implementation uses `graph-kind` toggle between "substrate" and "causal" in main.slint
+- Substrate/Causal dropdown toggle in BrainViz panel
+- **Substrate view**: Shows unit nodes and sparse connection edges
+  - Node color indicates learning mode (warm) vs inference mode (cool)
+  - Edge thickness based on connection weight
+- **Causal view**: Shows symbol-to-symbol temporal edges
+  - Node size based on base_count (frequency)
+  - Edge color: green=positive causal, red=negative
+  - Directed edges with arrowheads
+  - Symbol name labels below nodes
 
-### Vibrational Frequency Visualization
+### BrainViz Interaction
 
-**Status: Not explicitly visualized**
+**Status: Implemented**
 
-- Desktop doesn't have explicit frequency visualization
-- Phase/amplitude information is shown via the sphere visualization in BrainViz
-- Units have oscillating phase values; amplitude determines visibility/size
-- Could potentially add frequency spectrum or phase coherence visualization in future
+- **Drag**: Rotate the visualization (Y-axis rotation)
+- **Shift+Drag**: Pan the view
+- **Scroll**: Zoom in/out
+- **Hover**: Show node details tooltip
+- Activity-based vibration from average amplitude of sampled units
+- Reset View button resets zoom, pan, and rotation
 
 ### Statistics Tab Improvements
 

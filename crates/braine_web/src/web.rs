@@ -81,6 +81,39 @@ impl Theme {
     }
 }
 
+/// Sub-tabs for the About page
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum AboutSubTab {
+    #[default]
+    Overview,
+    Dynamics,
+    Learning,
+    Memory,
+    Architecture,
+}
+
+impl AboutSubTab {
+    fn label(self) -> &'static str {
+        match self {
+            AboutSubTab::Overview => "Overview",
+            AboutSubTab::Dynamics => "Dynamics",
+            AboutSubTab::Learning => "Learning",
+            AboutSubTab::Memory => "Memory",
+            AboutSubTab::Architecture => "Architecture",
+        }
+    }
+
+    fn all() -> &'static [AboutSubTab] {
+        &[
+            AboutSubTab::Overview,
+            AboutSubTab::Dynamics,
+            AboutSubTab::Learning,
+            AboutSubTab::Memory,
+            AboutSubTab::Architecture,
+        ]
+    }
+}
+
 pub fn start() {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -205,6 +238,8 @@ fn App() -> impl IntoView {
 
     // Left panel mode: show About or show Game
     let (show_about_page, set_show_about_page) = signal(true);
+    // About page sub-tab
+    let (about_sub_tab, set_about_sub_tab) = signal(AboutSubTab::Overview);
 
     // BrainViz uses its own sampling so it can be tuned independently.
     let (brainviz_points, set_brainviz_points) = signal::<Vec<UnitPlotPoint>>(Vec::new());
@@ -935,6 +970,7 @@ fn App() -> impl IntoView {
         let _ = spotxy_grid_n.get();
         let _ = spotxy_eval.get();
         let pos = spotxy_pos.get();
+        let action = last_action.get();
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
@@ -946,12 +982,18 @@ fn App() -> impl IntoView {
             "#7aa2ff"
         };
 
+        let selected = if action.is_empty() {
+            None
+        } else {
+            Some(action.as_str())
+        };
+
         match pos {
             Some((x, y)) => {
-                let _ = draw_spotxy(&canvas, x, y, grid_n, accent);
+                let _ = draw_spotxy(&canvas, x, y, grid_n, accent, selected);
             }
             None => {
-                let _ = draw_spotxy(&canvas, 0.0, 0.0, grid_n, accent);
+                let _ = draw_spotxy(&canvas, 0.0, 0.0, grid_n, accent, selected);
             }
         }
     });
@@ -1313,72 +1355,501 @@ fn App() -> impl IntoView {
                 // Game area (left) - shows About page or game controls/canvas
                 <div class="game-area">
                     <Show when=move || show_about_page.get()>
-                        // Left-panel About page
-                        <div style="padding: 20px; max-width: 700px; margin: 0 auto; overflow-y: auto; height: 100%;">
+                        // Full-width About page with sub-tabs
+                        <div style="padding: 16px 24px; overflow-y: auto; height: 100%;">
+                            // Header
+                            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
+                                <div style="font-size: 2.5rem;">"🧠"</div>
+                                <div>
+                                    <h1 style="margin: 0; font-size: 1.4rem; font-weight: 700; color: var(--accent);">"Braine"</h1>
+                                    <p style="margin: 2px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Closed-loop learning substrate • v"{VERSION_BRAINE}</p>
+                                </div>
+                                <div style="flex: 1;"></div>
+                                <button class="btn primary" style="padding: 8px 16px;" on:click=move |_| set_show_about_page.set(false)>"🎮 Start Playing"</button>
+                            </div>
+
+                            // Sub-tab navigation
+                            <div style="display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap;">
+                                {AboutSubTab::all().iter().map(|&tab| {
+                                    view! {
+                                        <button
+                                            style=move || if about_sub_tab.get() == tab {
+                                                "padding: 8px 14px; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600;"
+                                            } else {
+                                                "padding: 8px 14px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 0.85rem;"
+                                            }
+                                            on:click=move |_| set_about_sub_tab.set(tab)
+                                        >
+                                            {tab.label()}
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+
+                            // Sub-tab content
                             <div style="display: flex; flex-direction: column; gap: 16px;">
-                                <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.15), rgba(0,0,0,0.2)); border: 1px solid var(--border); border-radius: 16px;">
-                                    <div style="font-size: 3rem;">"🧠"</div>
-                                    <h1 style="margin: 8px 0 4px 0; font-size: 1.6rem; font-weight: 700; color: var(--accent);">"Braine"</h1>
-                                    <p style="margin: 0; color: var(--text); font-size: 0.95rem;">"Closed-loop learning substrate"</p>
-                                    <p style="margin: 8px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Sparse recurrent dynamics • Local plasticity • Scalar reward • No backprop"</p>
-                                </div>
+                                // Overview tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Overview>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"What is Braine?"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Braine is a "<strong>"closed-loop learning substrate"</strong>" — a continuously-running dynamical system with local plasticity and scalar reward. Unlike LLMs, it:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"Uses no backpropagation or gradients"</li>
+                                                <li>"Learns online from experience"</li>
+                                                <li>"Has bounded memory (forgetting + pruning)"</li>
+                                                <li>"Runs on edge devices"</li>
+                                            </ul>
+                                        </div>
 
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Version Info"</h3>
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem;">
-                                        <span style="color: var(--muted);">"Braine Core:"</span>
-                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE}</span>
-                                        <span style="color: var(--muted);">"Brain Image (BBI):"</span>
-                                        <span style="color: var(--text); font-weight: 600;">{format!("v{}", VERSION_BBI_FORMAT)}</span>
-                                        <span style="color: var(--muted);">"Braine Web:"</span>
-                                        <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE_WEB}</span>
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Version Info"</h3>
+                                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
+                                                <span style="color: var(--muted);">"Braine Core:"</span>
+                                                <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE}</span>
+                                                <span style="color: var(--muted);">"Brain Image (BBI):"</span>
+                                                <span style="color: var(--text); font-weight: 600;">{format!("v{}", VERSION_BBI_FORMAT)}</span>
+                                                <span style="color: var(--muted);">"Braine Web:"</span>
+                                                <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE_WEB}</span>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Quick Start"</h3>
+                                            <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.8;">
+                                                <li>"Select a game tab above (e.g., Spot, Bandit)"</li>
+                                                <li>"Click "<strong>"▶ Run"</strong>" to start the learning loop"</li>
+                                                <li>"Watch the Stats and Analytics panels on the right"</li>
+                                                <li>"Observe accuracy climb as the brain learns"</li>
+                                            </ol>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Key Principles"</h3>
+                                            <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.9rem;">
+                                                <div><strong style="color: var(--text);">"Learning modifies state"</strong><span style="color: var(--muted);">" — plasticity + reward updates couplings"</span></div>
+                                                <div><strong style="color: var(--text);">"Inference uses state"</strong><span style="color: var(--muted);">" — actions emerge from dynamics"</span></div>
+                                                <div><strong style="color: var(--text);">"Closed loop"</strong><span style="color: var(--muted);">" — stimulus → action → reward → repeat"</span></div>
+                                            </div>
+                                        </div>
                                     </div>
-                                </div>
 
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"What is this?"</h3>
-                                    <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                        "This web lab runs interactive games (Spot, Bandit, Pong, etc.) while you watch learning signals, indicators, and graphs in real-time. The goal is interpretability while learning happens — not offline training."
-                                    </p>
-                                </div>
+                                    // Architecture diagram
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"System Architecture"</h3>
+                                        <div style="display: flex; justify-content: center; padding: 16px 0;">
+                                            <svg viewBox="0 0 600 200" style="width: 100%; max-width: 600px; height: auto;">
+                                                // Frame box
+                                                <rect x="10" y="30" width="150" height="140" rx="8" fill="none" stroke="var(--border)" stroke-width="2"/>
+                                                <text x="85" y="22" fill="var(--muted)" font-size="12" text-anchor="middle">"Frame"</text>
+                                                <text x="85" y="60" fill="var(--text)" font-size="11" text-anchor="middle">"Sensors"</text>
+                                                <text x="85" y="100" fill="var(--text)" font-size="11" text-anchor="middle">"Stimulus Encoder"</text>
+                                                <text x="85" y="140" fill="var(--text)" font-size="11" text-anchor="middle">"Actuators"</text>
 
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Key Principles"</h3>
-                                    <div style="display: flex; flex-direction: column; gap: 10px;">
-                                        <div>
-                                            <strong style="color: var(--text);">"Learning modifies state"</strong>
-                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Plasticity + reward updates internal couplings and causal memory."</div>
-                                        </div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Inference uses state"</strong>
-                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Action selection is a readout from the learned dynamics."</div>
-                                        </div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Closed loop"</strong>
-                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6;">"Stimulus → dynamics → action → reward, repeated online."</div>
+                                                // Brain box
+                                                <rect x="220" y="30" width="200" height="140" rx="8" fill="none" stroke="var(--accent)" stroke-width="2"/>
+                                                <text x="320" y="22" fill="var(--accent)" font-size="12" text-anchor="middle" font-weight="bold">"Brain"</text>
+                                                <text x="320" y="55" fill="var(--text)" font-size="11" text-anchor="middle">"Wave Dynamics"</text>
+                                                <text x="320" y="80" fill="var(--text)" font-size="11" text-anchor="middle">"Local Plasticity"</text>
+                                                <text x="320" y="105" fill="var(--text)" font-size="11" text-anchor="middle">"Causality Memory"</text>
+                                                <text x="320" y="130" fill="var(--text)" font-size="11" text-anchor="middle">"Action Readout"</text>
+
+                                                // Neuromodulator
+                                                <rect x="480" y="60" width="110" height="60" rx="8" fill="none" stroke="#4ade80" stroke-width="2"/>
+                                                <text x="535" y="85" fill="#4ade80" font-size="11" text-anchor="middle">"Neuromodulator"</text>
+                                                <text x="535" y="102" fill="var(--muted)" font-size="10" text-anchor="middle">"(reward signal)"</text>
+
+                                                // Arrows
+                                                <line x1="160" y1="70" x2="220" y2="70" stroke="var(--text)" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                                                <line x1="420" y1="100" x2="480" y2="90" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+                                                <line x1="220" y1="130" x2="160" y2="130" stroke="var(--text)" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+                                                // Feedback loop
+                                                <path d="M535 120 L535 170 L320 170 L320 170" stroke="var(--accent)" stroke-width="1.5" fill="none" stroke-dasharray="4,2" marker-end="url(#arrowhead)"/>
+
+                                                <defs>
+                                                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                                        <polygon points="0 0, 10 3.5, 0 7" fill="var(--text)"/>
+                                                    </marker>
+                                                </defs>
+                                            </svg>
                                         </div>
                                     </div>
-                                </div>
+                                </Show>
 
-                                <div style=STYLE_CARD>
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--accent);">"Quick Start"</h3>
-                                    <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.8;">
-                                        <li>"Select a game tab above (e.g., Spot, Bandit)"</li>
-                                        <li>"Click "<strong>"▶ Run"</strong>" to start the learning loop"</li>
-                                        <li>"Watch the Stats and Analytics panels on the right"</li>
-                                        <li>"Observe accuracy climb as the brain learns associations"</li>
-                                    </ol>
-                                </div>
+                                // Dynamics tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Dynamics>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Unit State"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Each unit holds only scalars — no vectors or matrices:"
+                                            </p>
+                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
+                                                "struct Unit {"<br/>
+                                                "  amp: f32,   "<span style="color: var(--muted);">"// activation amplitude"</span><br/>
+                                                "  phase: f32, "<span style="color: var(--muted);">"// oscillatory phase [0, 2π)"</span><br/>
+                                                "  bias: f32,  "<span style="color: var(--muted);">"// resting potential"</span><br/>
+                                                "  decay: f32, "<span style="color: var(--muted);">"// amplitude decay rate"</span><br/>
+                                                "}"
+                                            </div>
+                                        </div>
 
-                                <div style="text-align: center; padding: 12px;">
-                                    <button
-                                        class="btn primary"
-                                        style="padding: 12px 24px; font-size: 1rem;"
-                                        on:click=move |_| set_show_about_page.set(false)
-                                    >
-                                        "🎮 Start Playing"
-                                    </button>
-                                </div>
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Update Rule"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "At each tick, each unit updates from:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.6;">
+                                                <li>"Neighbor influence (sparse couplings)"</li>
+                                                <li>"External stimulus injection"</li>
+                                                <li>"Global inhibition (competition)"</li>
+                                                <li>"Decay (forgetting at state level)"</li>
+                                                <li>"Bounded noise (exploration)"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Mathematical Model"</h3>
+                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-size: 0.9rem; line-height: 1.8; color: var(--text);">
+                                                <div style="margin-bottom: 8px;">
+                                                    <strong>"Amplitude update:"</strong>
+                                                </div>
+                                                <div style="font-family: serif; font-style: italic; padding-left: 12px; margin-bottom: 12px;">
+                                                    "amp"<sub>"i"</sub>"(t+1) = amp"<sub>"i"</sub>"(t) · (1 - decay) + input"<sub>"i"</sub>" + Σ"<sub>"j"</sub>" w"<sub>"ij"</sub>" · amp"<sub>"j"</sub>" · cos(Δφ)"
+                                                </div>
+                                                <div style="margin-bottom: 8px;">
+                                                    <strong>"Phase coupling:"</strong>
+                                                </div>
+                                                <div style="font-family: serif; font-style: italic; padding-left: 12px;">
+                                                    "Δφ"<sub>"ij"</sub>" = phase"<sub>"i"</sub>" - phase"<sub>"j"</sub>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Emergent Behavior"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li><strong>"Stable attractors"</strong>" — habits, identity patterns"</li>
+                                                <li><strong>"Context-dependent recall"</strong>" — partial cues trigger full patterns"</li>
+                                                <li><strong>"Deterministic far from threshold"</strong>" — reliable actions"</li>
+                                                <li><strong>"Stochastic near threshold"</strong>" — exploration"</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    // Sparse storage diagram
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Sparse Connection Storage (CSR Format)"</h3>
+                                        <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                            "Connections are stored in Compressed Sparse Row (CSR) format for cache efficiency:"
+                                        </p>
+                                        <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
+                                            "offsets: Vec<usize>  "<span style="color: var(--muted);">"// index into targets/weights for each unit"</span><br/>
+                                            "targets: Vec<UnitId> "<span style="color: var(--muted);">"// target unit IDs"</span><br/>
+                                            "weights: Vec<f32>    "<span style="color: var(--muted);">"// connection weights"</span>
+                                        </div>
+                                    </div>
+                                </Show>
+
+                                // Learning tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Learning>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Three-Factor Hebbian Learning"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Learning is local and event-based. Weight changes require:"
+                                            </p>
+                                            <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li><strong style="color: var(--accent);">"Pre-synaptic activity"</strong>" — source unit active"</li>
+                                                <li><strong style="color: var(--accent);">"Post-synaptic activity"</strong>" — target unit active"</li>
+                                                <li><strong style="color: var(--accent);">"Neuromodulator"</strong>" — reward/salience signal"</li>
+                                            </ol>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Learning Rule"</h3>
+                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-size: 0.9rem; line-height: 1.8; color: var(--text);">
+                                                <div style="margin-bottom: 8px;">
+                                                    <strong>"Weight update:"</strong>
+                                                </div>
+                                                <div style="font-family: serif; font-style: italic; padding-left: 12px; margin-bottom: 12px;">
+                                                    "Δw"<sub>"ij"</sub>" = η · neuromod · amp"<sub>"i"</sub>" · amp"<sub>"j"</sub>" · cos(Δφ"<sub>"ij"</sub>")"
+                                                </div>
+                                                <div style="color: var(--muted); font-size: 0.85rem;">
+                                                    "• Phase-aligned → strengthen (LTP)"<br/>
+                                                    "• Phase-misaligned → weaken (LTD)"<br/>
+                                                    "• High neuromodulator → faster learning"
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Forgetting & Pruning"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Connections decay continuously. This enforces:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"Bounded memory usage"</li>
+                                                <li>"Relevance to recent experience"</li>
+                                                <li>"Energy efficiency (fewer couplings)"</li>
+                                            </ul>
+                                            <div style="margin-top: 10px; background: var(--bg); padding: 8px; border-radius: 6px; font-size: 0.85rem; color: var(--muted);">
+                                                "Tiny weights (|w| < threshold) are pruned to zero."
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Learning Mechanisms"</h3>
+                                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 0.85rem;">
+                                                <span style="color: #4ade80;">"✓"</span><span style="color: var(--text);">"Three-Factor Hebbian"</span>
+                                                <span style="color: #4ade80;">"✓"</span><span style="color: var(--text);">"One-Shot Imprinting"</span>
+                                                <span style="color: #4ade80;">"✓"</span><span style="color: var(--text);">"Neurogenesis"</span>
+                                                <span style="color: #4ade80;">"✓"</span><span style="color: var(--text);">"Structural Pruning"</span>
+                                                <span style="color: #4ade80;">"✓"</span><span style="color: var(--text);">"Dream Replay"</span>
+                                                <span style="color: #4ade80;">"✓"</span><span style="color: var(--text);">"Attention Gating"</span>
+                                                <span style="color: #4ade80;">"✓"</span><span style="color: var(--text);">"Burst-Mode Learning"</span>
+                                                <span style="color: var(--muted);">"○"</span><span style="color: var(--muted);">"STDP (proposed)"</span>
+                                                <span style="color: var(--muted);">"○"</span><span style="color: var(--muted);">"Meta-Learning (proposed)"</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    // Learning hierarchy diagram
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Learning Hierarchy"</h3>
+                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
+                                            <svg viewBox="0 0 500 180" style="width: 100%; max-width: 500px; height: auto;">
+                                                // Macro level
+                                                <rect x="10" y="10" width="120" height="35" rx="6" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="1.5"/>
+                                                <text x="70" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Child Brains"</text>
+
+                                                // Meso level
+                                                <rect x="140" y="10" width="120" height="35" rx="6" fill="rgba(74, 222, 128, 0.2)" stroke="#4ade80" stroke-width="1.5"/>
+                                                <text x="200" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Neurogenesis"</text>
+
+                                                // Micro level
+                                                <rect x="270" y="10" width="120" height="35" rx="6" fill="rgba(251, 191, 36, 0.2)" stroke="#fbbf24" stroke-width="1.5"/>
+                                                <text x="330" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Hebbian"</text>
+
+                                                // Nano level
+                                                <rect x="400" y="10" width="90" height="35" rx="6" fill="rgba(244, 114, 182, 0.2)" stroke="#f472b6" stroke-width="1.5"/>
+                                                <text x="445" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Imprinting"</text>
+
+                                                // Labels
+                                                <text x="70" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"sec-hours"</text>
+                                                <text x="200" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"steps-min"</text>
+                                                <text x="330" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"per-step"</text>
+                                                <text x="445" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"one-shot"</text>
+
+                                                // Descriptions
+                                                <text x="70" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Behavioral"</text>
+                                                <text x="70" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"strategies"</text>
+                                                <text x="200" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Fresh capacity"</text>
+                                                <text x="200" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"for concepts"</text>
+                                                <text x="330" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Connection"</text>
+                                                <text x="330" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"weights"</text>
+                                                <text x="445" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Stimulus-"</text>
+                                                <text x="445" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"concept links"</text>
+
+                                                // Arrow connecting them
+                                                <line x1="125" y1="27" x2="140" y2="27" stroke="var(--border)" stroke-width="1"/>
+                                                <line x1="260" y1="27" x2="270" y2="27" stroke="var(--border)" stroke-width="1"/>
+                                                <line x1="390" y1="27" x2="400" y2="27" stroke="var(--border)" stroke-width="1"/>
+                                            </svg>
+                                        </div>
+                                    </div>
+                                </Show>
+
+                                // Memory tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Memory>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Causal Memory"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "\"Meaning\" is learned links between:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"What was perceived (stimulus symbol)"</li>
+                                                <li>"What the system did (action symbol)"</li>
+                                                <li>"What happened next (reward/outcome)"</li>
+                                            </ul>
+                                            <div style="margin-top: 10px; background: var(--bg); padding: 8px; border-radius: 6px; font-size: 0.85rem; color: var(--muted);">
+                                                "Cheap temporal causal memory: A → B transition counts"
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Symbol Recording"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "During each observation, symbols are recorded:"
+                                            </p>
+                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
+                                                "note_action(\"left\");"<br/>
+                                                "note_pair(\"spot\", \"left\");"<br/>
+                                                "note_compound_symbol([\"ctx\", \"action\"]);"
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Bounded Context"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "For long-running deployments, causal memory is kept bounded:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"Symbol and edge counts decay continuously"</li>
+                                                <li>"Near-zero entries are periodically pruned"</li>
+                                                <li>"Prevents unbounded hashmap growth"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Muscle Memory / Savings"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Previously-seen stimuli are re-learned faster:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"Weak non-zero trace for sensor↔concept links"</li>
+                                                <li>"Links decay but aren't pruned to zero"</li>
+                                                <li>"On re-exposure, associations \"snap back\" faster"</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    // Memory structure diagram
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Memory Structure"</h3>
+                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
+                                            <svg viewBox="0 0 500 140" style="width: 100%; max-width: 500px; height: auto;">
+                                                // Structural state box
+                                                <rect x="10" y="20" width="220" height="100" rx="8" fill="rgba(122, 162, 255, 0.1)" stroke="var(--accent)" stroke-width="1.5"/>
+                                                <text x="120" y="40" fill="var(--accent)" font-size="11" text-anchor="middle" font-weight="bold">"Structural State (persisted)"</text>
+                                                <text x="30" y="60" fill="var(--text)" font-size="10">"• Units + sparse connections"</text>
+                                                <text x="30" y="75" fill="var(--text)" font-size="10">"• Sensor/action groups"</text>
+                                                <text x="30" y="90" fill="var(--text)" font-size="10">"• Symbol table"</text>
+                                                <text x="30" y="105" fill="var(--text)" font-size="10">"• Causal memory edges"</text>
+
+                                                // Runtime state box
+                                                <rect x="270" y="20" width="220" height="100" rx="8" fill="rgba(251, 191, 36, 0.1)" stroke="#fbbf24" stroke-width="1.5"/>
+                                                <text x="380" y="40" fill="#fbbf24" font-size="11" text-anchor="middle" font-weight="bold">"Runtime State (transient)"</text>
+                                                <text x="290" y="60" fill="var(--text)" font-size="10">"• Pending input current"</text>
+                                                <text x="290" y="75" fill="var(--text)" font-size="10">"• Telemetry buffers"</text>
+                                                <text x="290" y="90" fill="var(--text)" font-size="10">"• Transient vectors"</text>
+                                                <text x="290" y="105" fill="var(--muted)" font-size="10">"(can be reset on load)"</text>
+                                            </svg>
+                                        </div>
+                                    </div>
+                                </Show>
+
+                                // Architecture tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Architecture>
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Brain Image Format (BBI)"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Custom, versioned binary format for persistence:"
+                                            </p>
+                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
+                                                "Header: BRAINE01 (8 bytes)"<br/>
+                                                "Version: u32 (currently 2)"<br/><br/>
+                                                "Chunks (LZ4 compressed):"<br/>
+                                                "  CFG0 - BrainConfig"<br/>
+                                                "  PRNG - RNG state"<br/>
+                                                "  STAT - age_steps, neuromod"<br/>
+                                                "  UNIT - units + connections"<br/>
+                                                "  GRPS - sensor/action groups"<br/>
+                                                "  SYMB - symbol table"<br/>
+                                                "  CAUS - causal memory"
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Design Goals"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li><strong>"Versioned"</strong>" — new chunks can be added"</li>
+                                                <li><strong>"Capacity-aware"</strong>" — can enforce byte budgets"</li>
+                                                <li><strong>"Compact"</strong>" — LZ4 compression"</li>
+                                                <li><strong>"Forward-compatible"</strong>" — unknown chunks skipped"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Research Landscape"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Braine draws from several established areas:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.6;">
+                                                <li>"Attractor networks"</li>
+                                                <li>"Continuous Hopfield dynamics"</li>
+                                                <li>"Reservoir computing / LSMs"</li>
+                                                <li>"Coupled oscillator models"</li>
+                                                <li>"Local plasticity (Hebb/STDP)"</li>
+                                                <li>"Embodied cognition"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"How We Differ from LLMs"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"No token prediction objective"</li>
+                                                <li>"No gradient training on corpora"</li>
+                                                <li>"No dense embeddings/matrices"</li>
+                                                <li>"Online, local, scalar updates"</li>
+                                                <li>"Edge-first (bounded compute/memory)"</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    // Component diagram
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Component Architecture"</h3>
+                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
+                                            <svg viewBox="0 0 550 160" style="width: 100%; max-width: 550px; height: auto;">
+                                                // Daemon
+                                                <rect x="200" y="10" width="150" height="50" rx="8" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="2"/>
+                                                <text x="275" y="30" fill="var(--accent)" font-size="11" text-anchor="middle" font-weight="bold">"brained (daemon)"</text>
+                                                <text x="275" y="48" fill="var(--muted)" font-size="9" text-anchor="middle">"Brain state + learning loop"</text>
+
+                                                // Desktop client
+                                                <rect x="10" y="90" width="120" height="50" rx="6" fill="rgba(74, 222, 128, 0.15)" stroke="#4ade80" stroke-width="1.5"/>
+                                                <text x="70" y="112" fill="var(--text)" font-size="10" text-anchor="middle">"braine_desktop"</text>
+                                                <text x="70" y="126" fill="var(--muted)" font-size="8" text-anchor="middle">"(Slint UI)"</text>
+
+                                                // CLI client
+                                                <rect x="140" y="90" width="100" height="50" rx="6" fill="rgba(251, 191, 36, 0.15)" stroke="#fbbf24" stroke-width="1.5"/>
+                                                <text x="190" y="112" fill="var(--text)" font-size="10" text-anchor="middle">"braine-cli"</text>
+                                                <text x="190" y="126" fill="var(--muted)" font-size="8" text-anchor="middle">"(commands)"</text>
+
+                                                // Web client
+                                                <rect x="250" y="90" width="100" height="50" rx="6" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="1.5"/>
+                                                <text x="300" y="112" fill="var(--text)" font-size="10" text-anchor="middle">"braine_web"</text>
+                                                <text x="300" y="126" fill="var(--muted)" font-size="8" text-anchor="middle">"(WASM/Leptos)"</text>
+
+                                                // Storage
+                                                <rect x="420" y="10" width="120" height="50" rx="6" fill="rgba(100, 116, 139, 0.15)" stroke="var(--muted)" stroke-width="1.5"/>
+                                                <text x="480" y="30" fill="var(--text)" font-size="10" text-anchor="middle">"brain.bbi"</text>
+                                                <text x="480" y="48" fill="var(--muted)" font-size="9" text-anchor="middle">"(persistence)"</text>
+
+                                                // Protocol label
+                                                <text x="130" y="78" fill="var(--muted)" font-size="9">"TCP 9876 (JSON)"</text>
+
+                                                // Arrows to daemon
+                                                <line x1="70" y1="90" x2="220" y2="60" stroke="var(--border)" stroke-width="1"/>
+                                                <line x1="190" y1="90" x2="260" y2="60" stroke="var(--border)" stroke-width="1"/>
+                                                <line x1="300" y1="90" x2="290" y2="60" stroke="var(--border)" stroke-width="1"/>
+                                                <line x1="350" y1="35" x2="420" y2="35" stroke="var(--border)" stroke-width="1" marker-end="url(#arrowhead2)"/>
+
+                                                <defs>
+                                                    <marker id="arrowhead2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                                                        <polygon points="0 0, 8 3, 0 6" fill="var(--border)"/>
+                                                    </marker>
+                                                </defs>
+                                            </svg>
+                                        </div>
+                                    </div>
+                                </Show>
                             </div>
                         </div>
                     </Show>
@@ -4121,6 +4592,7 @@ fn draw_spotxy(
     y: f32,
     grid_n: u32,
     accent: &str,
+    selected_action: Option<&str>,
 ) -> Result<(), String> {
     let ctx = canvas
         .get_context("2d")
@@ -4132,17 +4604,22 @@ fn draw_spotxy(
     let w = canvas.width() as f64;
     let h = canvas.height() as f64;
 
-    let eff_grid = grid_n.max(1) as f64;
-
     // Background
     ctx.set_fill_style(&JsValue::from_str("#0a0f1a"));
     ctx.fill_rect(0.0, 0.0, w, h);
 
-    // Grid (draw only in Grid mode; BinaryX draws no divider)
-    let cell_w = w / eff_grid;
-    let cell_h = h / eff_grid;
+    // Map x,y in [-1,1] to canvas coords.
+    let px = ((x.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * w;
+    let py = (1.0 - (y.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * h;
+
     if grid_n >= 2 {
-        ctx.set_stroke_style(&JsValue::from_str("rgba(122, 162, 255, 0.20)"));
+        // Grid mode: N×N cells
+        let eff_grid = grid_n as f64;
+        let cell_w = w / eff_grid;
+        let cell_h = h / eff_grid;
+
+        // Draw grid lines
+        ctx.set_stroke_style(&JsValue::from_str("rgba(122, 162, 255, 0.25)"));
         ctx.set_line_width(1.0);
         for i in 1..grid_n {
             let xf = (i as f64) * cell_w;
@@ -4156,22 +4633,87 @@ fn draw_spotxy(
             ctx.line_to(w, yf);
             ctx.stroke();
         }
-    }
 
-    // Map x,y in [-1,1] to canvas coords.
-    let px = ((x.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * w;
-    let py = (1.0 - (y.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * h;
+        // Highlight the correct cell (where dot is)
+        let cx = ((px / cell_w).floor()).clamp(0.0, eff_grid - 1.0);
+        let cy = ((py / cell_h).floor()).clamp(0.0, eff_grid - 1.0);
+        let cell_highlight = if accent == "#22c55e" {
+            "rgba(34, 197, 94, 0.12)"
+        } else {
+            "rgba(122, 162, 255, 0.12)"
+        };
+        ctx.set_fill_style(&JsValue::from_str(cell_highlight));
+        ctx.fill_rect(cx * cell_w, cy * cell_h, cell_w, cell_h);
 
-    // Highlight the active cell
-    let cx = ((px / cell_w).floor()).clamp(0.0, eff_grid - 1.0);
-    let cy = ((py / cell_h).floor()).clamp(0.0, eff_grid - 1.0);
-    let cell_highlight = if accent == "#22c55e" {
-        "rgba(34, 197, 94, 0.10)"
+        // Highlight brain's selected cell if different from correct
+        if let Some(action) = selected_action {
+            // Parse action: spotxy_cell_{n:02}_{ix:02}_{iy:02}
+            if let Some(coords) = parse_spotxy_cell_action(action, grid_n) {
+                let (sel_ix, sel_iy) = coords;
+                // Invert y for canvas (0,0 is top-left in canvas, but (0,0) in grid should be bottom-left)
+                let sel_cy = (grid_n - 1 - sel_iy) as f64;
+                let sel_cx = sel_ix as f64;
+
+                // Only draw selection highlight if different from correct cell
+                if sel_cx != cx || sel_cy != cy {
+                    ctx.set_stroke_style(&JsValue::from_str("rgba(251, 191, 36, 0.8)"));
+                    ctx.set_line_width(2.0);
+                    ctx.stroke_rect(
+                        sel_cx * cell_w + 1.0,
+                        sel_cy * cell_h + 1.0,
+                        cell_w - 2.0,
+                        cell_h - 2.0,
+                    );
+                }
+            }
+        }
     } else {
-        "rgba(122, 162, 255, 0.10)"
-    };
-    ctx.set_fill_style(&JsValue::from_str(cell_highlight));
-    ctx.fill_rect(cx * cell_w, cy * cell_h, cell_w, cell_h);
+        // BinaryX mode: left/right split
+        // Draw center divider line
+        ctx.set_stroke_style(&JsValue::from_str("rgba(122, 162, 255, 0.35)"));
+        ctx.set_line_width(2.0);
+        ctx.begin_path();
+        ctx.move_to(w / 2.0, 0.0);
+        ctx.line_to(w / 2.0, h);
+        ctx.stroke();
+
+        // Highlight the correct half (where dot is)
+        let is_left = px < w / 2.0;
+        let correct_highlight = if accent == "#22c55e" {
+            "rgba(34, 197, 94, 0.10)"
+        } else {
+            "rgba(122, 162, 255, 0.10)"
+        };
+        ctx.set_fill_style(&JsValue::from_str(correct_highlight));
+        if is_left {
+            ctx.fill_rect(0.0, 0.0, w / 2.0, h);
+        } else {
+            ctx.fill_rect(w / 2.0, 0.0, w / 2.0, h);
+        }
+
+        // Highlight brain's selected side if different
+        if let Some(action) = selected_action {
+            let brain_is_left = action == "left";
+            if brain_is_left != is_left {
+                // Brain selected wrong side - show orange border
+                ctx.set_stroke_style(&JsValue::from_str("rgba(251, 191, 36, 0.8)"));
+                ctx.set_line_width(3.0);
+                if brain_is_left {
+                    ctx.stroke_rect(2.0, 2.0, w / 2.0 - 4.0, h - 4.0);
+                } else {
+                    ctx.stroke_rect(w / 2.0 + 2.0, 2.0, w / 2.0 - 4.0, h - 4.0);
+                }
+            }
+        }
+
+        // Add "L" and "R" labels
+        ctx.set_fill_style(&JsValue::from_str("rgba(178, 186, 210, 0.3)"));
+        ctx.set_font("bold 24px sans-serif");
+        ctx.set_text_align("center");
+        ctx.set_text_baseline("middle");
+        let _ = ctx.fill_text("L", w / 4.0, h / 2.0);
+        let _ = ctx.fill_text("R", 3.0 * w / 4.0, h / 2.0);
+    }
 
     // Dot
     ctx.set_fill_style(&JsValue::from_str(accent));
@@ -4179,6 +4721,22 @@ fn draw_spotxy(
     let _ = ctx.arc(px, py, 6.0, 0.0, std::f64::consts::PI * 2.0);
     ctx.fill();
     Ok(())
+}
+
+/// Parse a grid cell action like "spotxy_cell_02_01_00" into (ix, iy)
+fn parse_spotxy_cell_action(action: &str, expected_n: u32) -> Option<(u32, u32)> {
+    // Format: spotxy_cell_{n:02}_{ix:02}_{iy:02}
+    let parts: Vec<&str> = action.split('_').collect();
+    if parts.len() != 5 || parts[0] != "spotxy" || parts[1] != "cell" {
+        return None;
+    }
+    let n: u32 = parts[2].parse().ok()?;
+    if n != expected_n {
+        return None;
+    }
+    let ix: u32 = parts[3].parse().ok()?;
+    let iy: u32 = parts[4].parse().ok()?;
+    Some((ix, iy))
 }
 
 #[allow(deprecated)]

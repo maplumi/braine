@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
 #[cfg(not(feature = "std"))]
-use alloc::{format, string::String, string::ToString, vec, vec::Vec};
+use alloc::{string::String, string::ToString, vec, vec::Vec};
 #[cfg(not(feature = "std"))]
 use hashbrown::HashMap;
 
@@ -658,6 +658,7 @@ impl Brain {
         }
     }
 
+    #[allow(dead_code)]
     fn rebuild_sensor_group_index(&mut self) {
         self.sensor_group_index.clear();
         for (idx, g) in self.sensor_groups.iter().enumerate() {
@@ -665,6 +666,7 @@ impl Brain {
         }
     }
 
+    #[allow(dead_code)]
     fn rebuild_group_membership(&mut self) {
         self.sensor_member.fill(false);
         self.group_member.fill(false);
