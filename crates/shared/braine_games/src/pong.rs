@@ -72,41 +72,6 @@ pub struct PongSim {
     pending_event_reward: f32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn miss_hides_ball_and_respawns_from_right() {
-        let mut sim = PongSim::new(123);
-
-        // Force a miss at the left boundary on the next update.
-        sim.state.ball_x = 0.01;
-        sim.state.ball_y = 0.0;
-        sim.state.ball_vx = -1.0;
-        sim.state.ball_vy = 0.0;
-        sim.state.paddle_y = 1.0; // far from ball_y
-        sim.params.paddle_half_height = 0.05;
-        sim.params.respawn_delay_s = 0.02;
-
-        let ev = sim.update(0.05);
-        assert_eq!(ev, PongEvent::Miss);
-        assert!(!sim.ball_visible());
-
-        // Ball should already be staged at the right edge for the next serve.
-        assert!((sim.state.ball_x - 1.0).abs() < 1.0e-6);
-        assert!(sim.state.ball_vx < 0.0);
-
-        // After enough time passes, it becomes visible and starts moving left.
-        let _ = sim.update(sim.params.respawn_delay_s);
-        assert!(sim.ball_visible());
-
-        let x_before = sim.state.ball_x;
-        let _ = sim.update(0.01);
-        assert!(sim.state.ball_x < x_before);
-    }
-}
-
 impl PongSim {
     pub fn new(seed: u64) -> Self {
         let mut sim = Self {
@@ -337,5 +302,40 @@ impl PongSim {
         let u = self.rng_next_u32();
         let mantissa = u >> 8; // 24 bits
         (mantissa as f32) / ((1u32 << 24) as f32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn miss_hides_ball_and_respawns_from_right() {
+        let mut sim = PongSim::new(123);
+
+        // Force a miss at the left boundary on the next update.
+        sim.state.ball_x = 0.01;
+        sim.state.ball_y = 0.0;
+        sim.state.ball_vx = -1.0;
+        sim.state.ball_vy = 0.0;
+        sim.state.paddle_y = 1.0; // far from ball_y
+        sim.params.paddle_half_height = 0.05;
+        sim.params.respawn_delay_s = 0.02;
+
+        let ev = sim.update(0.05);
+        assert_eq!(ev, PongEvent::Miss);
+        assert!(!sim.ball_visible());
+
+        // Ball should already be staged at the right edge for the next serve.
+        assert!((sim.state.ball_x - 1.0).abs() < 1.0e-6);
+        assert!(sim.state.ball_vx < 0.0);
+
+        // After enough time passes, it becomes visible and starts moving left.
+        let _ = sim.update(sim.params.respawn_delay_s);
+        assert!(sim.ball_visible());
+
+        let x_before = sim.state.ball_x;
+        let _ = sim.update(0.01);
+        assert!(sim.state.ball_x < x_before);
     }
 }
