@@ -1857,6 +1857,13 @@ fn App() -> impl IntoView {
                                                 <li>"Has bounded memory (forgetting + pruning)"</li>
                                                 <li>"Runs on edge devices"</li>
                                             </ul>
+
+                                            <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Looking for the LLM boundary docs?"</span>
+                                                <button class="btn sm" on:click=move |_| set_about_sub_tab.set(AboutSubTab::LlmIntegration)>
+                                                    "LLM Integration →"
+                                                </button>
+                                            </div>
                                         </div>
 
                                         <div style=STYLE_CARD>

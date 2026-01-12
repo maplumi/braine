@@ -86,10 +86,6 @@ impl PongWebGame {
         self.sim.ball_visible()
     }
 
-    pub fn ball2_visible(&self) -> bool {
-        self.sim.ball2_visible()
-    }
-
     pub fn set_param(&mut self, key: &str, value: f32) -> Result<(), String> {
         match key {
             "paddle_speed" => {
