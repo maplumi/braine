@@ -1,7 +1,7 @@
 // Braine Desktop - Main Window (Modular)
 // Imports components from separate files for maintainability
 
-import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox, ScrollView } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox, ScrollView, LineEdit } from "std-widgets.slint";
 
 // Import modular components
 import { Theme } from "theme.slint";
@@ -91,6 +91,20 @@ export component MainWindow inherits Window {
 
     // Storage safety
     in-out property <bool> reset-confirmed: false;
+
+    // Replay dataset controls
+    in-out property <string> replay-dataset-path: "";
+    in-out property <string> replay-dataset-status: "";
+
+    // Advisor / LLM integration (daemon-only)
+    in-out property <bool> advisor-enabled: false;
+    in-out property <string> advisor-mode: "";
+    in-out property <int> advisor-every-trials: 0;
+    in-out property <string> advisor-last-rationale: "";
+    in-out property <bool> advisor-include-action-scores: false;
+    in-out property <string> advisor-context-json: "";
+    in-out property <string> advisor-report-json: "";
+    in-out property <string> advisor-status: "";
     
     // Callbacks to Rust
     callback mode-changed(bool);
@@ -123,6 +137,12 @@ export component MainWindow inherits Window {
     callback graph-request(string, int, int, bool);
     callback graph-hover(float, float);
     callback view-mode-changed(string);
+
+    callback replay-load-dataset(string);
+    callback replay-load-sample();
+
+    callback advisor-fetch-context(bool);
+    callback advisor-once(bool);
     
     // Control state
     in-out property <int> framerate: 60;
@@ -424,6 +444,12 @@ export component MainWindow inherits Window {
                                             }
                                             Text { text: "" + (round(root.game.pong-paddle-half-height * 100.0) / 100.0); color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
                                         }
+
+                                        CheckBox {
+                                            text: "Distractor ball (2 balls)";
+                                            checked: root.game.pong-ball2-enabled;
+                                            toggled => { set-game-param("pong", "distractor_enabled", self.checked ? 1.0 : 0.0); }
+                                        }
                                     }
 
                                     if root.effective-game-kind == "bandit": Text {
@@ -469,6 +495,50 @@ export component MainWindow inherits Window {
                                             text: "-";
                                             enabled: root.game.kind == "spotxy" && !root.game.spotxy-eval && root.game.spotxy-grid-n > 0;
                                             clicked => { spotxy-decrease-grid(); }
+                                        }
+                                    }
+
+                                    if root.effective-game-kind == "replay": VerticalBox {
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: "Replay Dataset";
+                                            color: Theme.text-primary;
+                                            font-size: 14px;
+                                            font-weight: 600;
+                                        }
+
+                                        Text {
+                                            text: "Stop the simulation before loading a dataset.";
+                                            color: Theme.text-secondary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                        }
+
+                                        LineEdit {
+                                            text <=> root.replay-dataset-path;
+                                            enabled: !root.running;
+                                        }
+
+                                        HorizontalBox {
+                                            spacing: 8px;
+                                            Button {
+                                                text: "Load from path";
+                                                enabled: !root.running;
+                                                clicked => { root.replay-load-dataset(root.replay-dataset-path); }
+                                            }
+                                            Button {
+                                                text: "Load sample";
+                                                enabled: !root.running;
+                                                clicked => { root.replay-load-sample(); }
+                                            }
+                                        }
+
+                                        if root.replay-dataset-status != "": Text {
+                                            text: root.replay-dataset-status;
+                                            color: Theme.text-secondary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
                                         }
                                     }
 
@@ -638,6 +708,93 @@ export component MainWindow inherits Window {
                                             text: "Load";
                                             clicked => { load-snapshot(s.stem); }
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Tab {
+                        title: "Advisor";
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            Rectangle {
+                                background: Theme.bg-panel;
+                                horizontal-stretch: 1;
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 8px;
+
+                                    Text {
+                                        text: "LLM Integration (Advisor)";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                    }
+
+                                    Text {
+                                        text: "This is a bounded, slow-loop integration point: Braine produces structured context; an external LLM returns bounded advice. The LLM does not select actions.";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    Text {
+                                        text: "status=" + (root.advisor-enabled ? "on" : "off") + " mode=" + root.advisor-mode + " every_trials=" + root.advisor-every-trials;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    if root.advisor-last-rationale != "": Text {
+                                        text: "last_rationale=" + root.advisor-last-rationale;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    Rectangle { height: 1px; background: Theme.border; }
+
+                                    CheckBox {
+                                        text: "Include action score breakdowns";
+                                        checked: root.advisor-include-action-scores;
+                                        toggled => { root.advisor-include-action-scores = self.checked; }
+                                    }
+
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Button {
+                                            text: "Get context";
+                                            clicked => { root.advisor-fetch-context(root.advisor-include-action-scores); }
+                                        }
+                                        Button {
+                                            text: "Advisor once (no apply)";
+                                            clicked => { root.advisor-once(false); }
+                                        }
+                                        Button {
+                                            text: "Advisor once (apply)";
+                                            clicked => { root.advisor-once(true); }
+                                        }
+                                    }
+
+                                    if root.advisor-status != "": Text {
+                                        text: root.advisor-status;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    if root.advisor-context-json != "": VerticalBox {
+                                        spacing: 4px;
+                                        Text { text: "Last AdvisorContext (Braine → LLM)"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
+                                        Text { text: root.advisor-context-json; color: Theme.text-secondary; font-size: 11px; wrap: word-wrap; }
+                                    }
+
+                                    if root.advisor-report-json != "": VerticalBox {
+                                        spacing: 4px;
+                                        Text { text: "Last AdvisorReport"; color: Theme.text-primary; font-size: 13px; font-weight: 600; }
+                                        Text { text: root.advisor-report-json; color: Theme.text-secondary; font-size: 11px; wrap: word-wrap; }
                                     }
                                 }
                             }

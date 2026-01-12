@@ -34,6 +34,8 @@ pub struct PongGame {
     action_names: Vec<String>,
     ball_x_names: Vec<String>,
     ball_y_names: Vec<String>,
+    ball2_x_names: Vec<String>,
+    ball2_y_names: Vec<String>,
     paddle_y_names: Vec<String>,
     stimulus_key: String,
     trial_started_at: Instant,
@@ -48,10 +50,14 @@ impl PongGame {
         const BINS: u32 = 8;
         let mut ball_x_names = Vec::with_capacity(BINS as usize);
         let mut ball_y_names = Vec::with_capacity(BINS as usize);
+        let mut ball2_x_names = Vec::with_capacity(BINS as usize);
+        let mut ball2_y_names = Vec::with_capacity(BINS as usize);
         let mut paddle_y_names = Vec::with_capacity(BINS as usize);
         for i in 0..BINS {
             ball_x_names.push(format!("pong_ball_x_{i:02}"));
             ball_y_names.push(format!("pong_ball_y_{i:02}"));
+            ball2_x_names.push(format!("pong_ball2_x_{i:02}"));
+            ball2_y_names.push(format!("pong_ball2_y_{i:02}"));
             paddle_y_names.push(format!("pong_paddle_y_{i:02}"));
         }
 
@@ -64,6 +70,8 @@ impl PongGame {
             action_names: vec!["up".to_string(), "down".to_string(), "stay".to_string()],
             ball_x_names,
             ball_y_names,
+            ball2_x_names,
+            ball2_y_names,
             paddle_y_names,
             stimulus_key: String::new(),
             trial_started_at: now,
@@ -77,6 +85,14 @@ impl PongGame {
 
     pub fn ball_visible(&self) -> bool {
         self.sim.ball_visible()
+    }
+
+    pub fn ball2_visible(&self) -> bool {
+        self.sim.ball2_visible()
+    }
+
+    pub fn ball2_enabled(&self) -> bool {
+        self.sim.distractor_enabled()
     }
 
     pub fn set_param(&mut self, key: &str, value: f32) -> Result<(), String> {
@@ -93,8 +109,20 @@ impl PongGame {
                 self.sim.params.ball_speed = value.clamp(0.1, 3.0);
                 Ok(())
             }
+            "paddle_bounce_y" => {
+                self.sim.params.paddle_bounce_y = value.clamp(0.0, 2.5);
+                Ok(())
+            }
+            "distractor_enabled" => {
+                self.sim.params.distractor_enabled = value >= 0.5;
+                Ok(())
+            }
+            "distractor_speed_scale" => {
+                self.sim.params.distractor_speed_scale = value.clamp(0.1, 2.5);
+                Ok(())
+            }
             _ => Err(format!(
-                "Unknown Pong param '{key}'. Use paddle_speed|paddle_half_height|ball_speed"
+                "Unknown Pong param '{key}'. Use paddle_speed|paddle_half_height|ball_speed|paddle_bounce_y|distractor_enabled|distractor_speed_scale"
             )),
         }
     }
@@ -170,6 +198,12 @@ impl PongGame {
             1.0,
         ));
 
+        if self.sim.ball_visible() {
+            brain.apply_stimulus(Stimulus::new("pong_ball_visible", 1.0));
+        } else {
+            brain.apply_stimulus(Stimulus::new("pong_ball_hidden", 1.0));
+        }
+
         let vx_name = if self.sim.state.ball_vx >= 0.0 {
             "pong_vx_pos"
         } else {
@@ -183,6 +217,38 @@ impl PongGame {
 
         brain.apply_stimulus(Stimulus::new(vx_name, 1.0));
         brain.apply_stimulus(Stimulus::new(vy_name, 1.0));
+
+        if self.sim.distractor_enabled() {
+            let b2x = PongSim::bin_01(self.sim.state.ball2_x, bins);
+            let b2y = PongSim::bin_signed(self.sim.state.ball2_y, bins);
+            brain.apply_stimulus(Stimulus::new(
+                self.ball2_x_names[b2x as usize].as_str(),
+                1.0,
+            ));
+            brain.apply_stimulus(Stimulus::new(
+                self.ball2_y_names[b2y as usize].as_str(),
+                1.0,
+            ));
+
+            if self.sim.ball2_visible() {
+                brain.apply_stimulus(Stimulus::new("pong_ball2_visible", 1.0));
+            } else {
+                brain.apply_stimulus(Stimulus::new("pong_ball2_hidden", 1.0));
+            }
+
+            let b2_vx_name = if self.sim.state.ball2_vx >= 0.0 {
+                "pong_ball2_vx_pos"
+            } else {
+                "pong_ball2_vx_neg"
+            };
+            let b2_vy_name = if self.sim.state.ball2_vy >= 0.0 {
+                "pong_ball2_vy_pos"
+            } else {
+                "pong_ball2_vy_neg"
+            };
+            brain.apply_stimulus(Stimulus::new(b2_vx_name, 1.0));
+            brain.apply_stimulus(Stimulus::new(b2_vy_name, 1.0));
+        }
     }
 
     pub fn score_action(&mut self, action: &str, trial_period_ms: u32) -> Option<(f32, bool)> {
@@ -191,10 +257,29 @@ impl PongGame {
         }
 
         let is_correct = action == self.correct_action();
-        let mut reward: f32 = if is_correct { 0.05f32 } else { -0.05f32 };
+        let mut reward: f32 = 0.0;
+
+        // Tiny nudge reward just for "moving the right way" (kept small so physics + shaping dominate).
+        reward += if is_correct { 0.002 } else { -0.002 };
 
         // Add any physics event reward (hit/miss) since the last action.
         reward += self.sim.take_pending_event_reward();
+
+        // Dense shaping: encourage aligning paddle with the (rewarded) ball when it's approaching.
+        // This stays within small bounds so hit/miss remains the primary learning signal.
+        if self.sim.ball_visible() && self.sim.state.ball_vx < 0.0 {
+            let proximity = (1.0 - self.sim.state.ball_x).clamp(0.0, 1.0);
+            let hh = self.sim.params.paddle_half_height.max(1.0e-6);
+            let err = (self.sim.state.ball_y - self.sim.state.paddle_y).abs();
+            let norm = (err / (hh * 1.5)).clamp(0.0, 1.0);
+            let aligned = 1.0 - norm; // 0..1
+            reward += (aligned - 0.5) * 2.0 * (0.03 * proximity);
+        }
+
+        // Small movement penalty to reduce thrash.
+        if action == "up" || action == "down" {
+            reward -= 0.005;
+        }
 
         // Apply action: move paddle.
         let dt = (trial_period_ms.clamp(10, 60_000) as f32) / 1000.0;
@@ -220,6 +305,7 @@ impl PongGame {
         let bx = PongSim::bin_01(self.sim.state.ball_x, bins);
         let by = PongSim::bin_signed(self.sim.state.ball_y, bins);
         let py = PongSim::bin_signed(self.sim.state.paddle_y, bins);
+        let vis = if self.sim.ball_visible() { "v" } else { "h" };
         let vx = if self.sim.state.ball_vx >= 0.0 {
             "p"
         } else {
@@ -230,6 +316,20 @@ impl PongGame {
         } else {
             "n"
         };
-        self.stimulus_key = format!("pong_b{bins:02}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}");
+
+        if self.sim.distractor_enabled() {
+            let b2x = PongSim::bin_01(self.sim.state.ball2_x, bins);
+            let b2y = PongSim::bin_signed(self.sim.state.ball2_y, bins);
+            let vis2 = if self.sim.ball2_visible() { "v" } else { "h" };
+            let vx2 = if self.sim.state.ball2_vx >= 0.0 { "p" } else { "n" };
+            let vy2 = if self.sim.state.ball2_vy >= 0.0 { "p" } else { "n" };
+            self.stimulus_key = format!(
+                "pong_b{bins:02}_vis{vis}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}_b2vis{vis2}_b2x{b2x:02}_b2y{b2y:02}_b2vx{vx2}_b2vy{vy2}"
+            );
+        } else {
+            self.stimulus_key = format!(
+                "pong_b{bins:02}_vis{vis}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}"
+            );
+        }
     }
 }

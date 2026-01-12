@@ -95,6 +95,7 @@ enum AboutSubTab {
     Memory,
     Architecture,
     Applications,
+    LlmIntegration,
     Apis,
 }
 
@@ -107,6 +108,7 @@ impl AboutSubTab {
             AboutSubTab::Memory => "Memory",
             AboutSubTab::Architecture => "Architecture",
             AboutSubTab::Applications => "Applications",
+            AboutSubTab::LlmIntegration => "LLM Integration",
             AboutSubTab::Apis => "Braine APIs",
         }
     }
@@ -119,10 +121,30 @@ impl AboutSubTab {
             AboutSubTab::Memory,
             AboutSubTab::Architecture,
             AboutSubTab::Applications,
+            AboutSubTab::LlmIntegration,
             AboutSubTab::Apis,
         ]
     }
 }
+
+const ABOUT_LLM_DATAFLOW: &str = r#"Braine (daemon) owns the long-lived Brain.
+
+  (game loop)
+  stimuli ──▶ Brain dynamics ──▶ action ──▶ env/reward ──▶ neuromodulator ──▶ local learning
+
+  (advisor loop, slow + bounded)
+  Brain+HUD snapshot ──▶ AdvisorContext (Braine → LLM)
+                        └──▶ external LLM
+                               └──▶ AdvisorAdvice (LLM → Braine)
+                                        └──▶ daemon clamps + applies bounded knobs
+                                                (exploration_eps, meaning_alpha, ttl)
+"#;
+
+const ABOUT_LLM_ADVISOR_CONTEXT_REQ: &str = r#"{\n  \"type\": \"AdvisorContext\",\n  \"include_action_scores\": true\n}"#;
+
+const ABOUT_LLM_ADVISOR_CONTEXT_RESP: &str = r#"{\n  \"type\": \"AdvisorContext\",\n  \"context\": {\n    \"context_key\": \"replay::spot_lr_small\",\n    \"game\": \"replay\",\n    \"trials\": 200,\n    \"recent_rate\": 0.52,\n    \"last_100_rate\": 0.51,\n    \"exploration_eps\": 0.20,\n    \"meaning_alpha\": 0.60,\n    \"notes\": [\"bounded; no action selection\"]\n  },\n  \"action_scores\": [\n    { \"name\": \"left\",  \"score\": 0.12, \"meaning\": 0.03, \"habit_norm\": 0.09 },\n    { \"name\": \"right\", \"score\": 0.10, \"meaning\": 0.02, \"habit_norm\": 0.08 }\n  ]\n}"#;
+
+const ABOUT_LLM_ADVISOR_APPLY_REQ: &str = r#"{\n  \"type\": \"AdvisorApply\",\n  \"advice\": {\n    \"exploration_eps\": 0.12,\n    \"meaning_alpha\": 0.75,\n    \"ttl_trials\": 200,\n    \"rationale\": \"Increase meaning weight to sharpen context-conditioned discrimination; reduce exploration once stability is improving.\"\n  }\n}"#;
 
 pub fn start() {
     if let Some(el) = web_sys::window()
@@ -2543,6 +2565,70 @@ fn App() -> impl IntoView {
                                     </div>
                                 </Show>
 
+                                // LLM Integration sub-tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::LlmIntegration>
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Why integrate an LLM at all?"</h3>
+                                        <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                            "Braine is not an LLM and should not be shaped like one. The integration point exists to let an external planner/analyst "
+                                            <strong>"observe"</strong>" bounded state summaries and propose "
+                                            <strong>"bounded nudges"</strong>" to a small set of safe knobs. "
+                                            "Actions still come from Braine’s learned dynamics."
+                                        </p>
+                                    </div>
+
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Contract"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li><strong>"Braine → LLM"</strong>" : structured "<span style="font-family: monospace;">"AdvisorContext"</span>" (bounded)"</li>
+                                                <li><strong>"LLM → Braine"</strong>" : structured "<span style="font-family: monospace;">"AdvisorAdvice"</span>" (bounded)"</li>
+                                                <li><strong>"No action selection"</strong>" : the LLM never chooses left/right/up/down"</li>
+                                                <li><strong>"Daemon clamps"</strong>" : advice is validated and clamped before applying"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"KGF fit"</h3>
+                                            <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "KGF here is the idea of keeping a "
+                                                <strong>"symbolic/graph boundary"</strong>" at the frame edge (stimuli/actions/context keys), while the substrate inside remains dynamical and locally plastic. "
+                                                "The LLM reads that boundary (context_key + metrics) and proposes safe parameter nudges; Braine consolidates learned structure internally."
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Data Flow"</h3>
+                                        <pre style="margin: 0; white-space: pre-wrap; background: var(--bg); padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.6; color: var(--text);">{ABOUT_LLM_DATAFLOW}</pre>
+                                    </div>
+
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Sample: AdvisorContext"</h3>
+                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6; margin-bottom: 8px;">
+                                                "Request (client → daemon):"
+                                            </div>
+                                            <pre style="margin: 0; white-space: pre-wrap; background: var(--bg); padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.6; color: var(--text);">{ABOUT_LLM_ADVISOR_CONTEXT_REQ}</pre>
+                                            <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6; margin: 12px 0 8px 0;">
+                                                "Response (daemon → client):"
+                                            </div>
+                                            <pre style="margin: 0; white-space: pre-wrap; background: var(--bg); padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.6; color: var(--text);">{ABOUT_LLM_ADVISOR_CONTEXT_RESP}</pre>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Sample: AdvisorApply"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "The LLM returns bounded advice. The daemon validates/clamps it and applies it as a temporary configuration change (TTL)."
+                                            </p>
+                                            <pre style="margin: 0; white-space: pre-wrap; background: var(--bg); padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.6; color: var(--text);">{ABOUT_LLM_ADVISOR_APPLY_REQ}</pre>
+                                            <div style="margin-top: 10px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Typical evaluation loop: use the Replay game so the context_key is stable (e.g. replay::spot_lr_small), then compare last_100_rate before/after advice over a fixed number of trials."
+                                            </div>
+                                        </div>
+                                    </div>
+                                </Show>
+
                                 // Braine APIs sub-tab (high-level, categorized)
                                 <Show when=move || about_sub_tab.get() == AboutSubTab::Apis>
                                     <div style=STYLE_CARD>
@@ -4736,7 +4822,7 @@ impl GameKind {
             GameKind::Bandit => "Stimulus: bandit (constant context)\nActions: left, right\nParameters: prob_left=0.8, prob_right=0.2",
             GameKind::SpotReversal => "Stimuli: spot_left or spot_right (+ reversal context sensor spot_rev_ctx when reversed)\nActions: left, right\nParameter: flip_after_trials=200\nNote: the web runtime also tags the meaning context with ::rev",
             GameKind::SpotXY => "Base stimulus: spotxy (context)\nSensors: pos_x_00..pos_x_15 and pos_y_00..pos_y_15 (population code)\nStimulus key: spotxy_xbin_XX or spotxy_bin_NN_IX_IY\nActions: left/right (BinaryX) OR spotxy_cell_NN_IX_IY (Grid)\nEval mode: holdout band |x| in [0.25..0.45] with learning suppressed",
-            GameKind::Pong => "Base stimulus: pong (context)\nSensors: pong_ball_x_00..07, pong_ball_y_00..07, pong_paddle_y_00..07, pong_vx_pos/neg, pong_vy_pos/neg\nStimulus key: pong_b08_bx.._by.._py.._vx.._vy..\nActions: up, down, stay",
+            GameKind::Pong => "Base stimulus: pong (context)\nSensors: pong_ball_x_00..07, pong_ball_y_00..07, pong_paddle_y_00..07, pong_ball_visible/hidden, pong_vx_pos/neg, pong_vy_pos/neg\nOptional distractor: pong_ball2_x_00..07, pong_ball2_y_00..07, pong_ball2_visible/hidden, pong_ball2_vx_pos/neg, pong_ball2_vy_pos/neg\nStimulus key: pong_b08_vis.._bx.._by.._py.._vx.._vy.. (+ ball2 fields when enabled)\nActions: up, down, stay",
             GameKind::Sequence => "Base stimulus: sequence (context)\nSensors: seq_token_A/B/C and seq_regime_0/1\nStimulus key: seq_r{0|1}_t{A|B|C}\nActions: A, B, C",
             GameKind::Text => "Base stimulus: text (context)\nSensors: txt_regime_0/1 and txt_tok_XX (byte tokens) + txt_tok_UNK\nActions: tok_XX for bytes in vocab + tok_UNK",
             GameKind::Replay => "Stimuli/actions: defined per-trial by the dataset\nStimulus key: replay::<dataset_name>\nReward: +1 on correct_action, −1 otherwise",
@@ -4870,12 +4956,25 @@ impl AppRuntime {
             self.brain
                 .ensure_sensor_min_width(&format!("pong_ball_y_{i:02}"), 3);
             self.brain
+                .ensure_sensor_min_width(&format!("pong_ball2_x_{i:02}"), 3);
+            self.brain
+                .ensure_sensor_min_width(&format!("pong_ball2_y_{i:02}"), 3);
+            self.brain
                 .ensure_sensor_min_width(&format!("pong_paddle_y_{i:02}"), 3);
         }
+        self.brain.ensure_sensor_min_width("pong_ball_visible", 2);
+        self.brain.ensure_sensor_min_width("pong_ball_hidden", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_visible", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_hidden", 2);
         self.brain.ensure_sensor_min_width("pong_vx_pos", 2);
         self.brain.ensure_sensor_min_width("pong_vx_neg", 2);
         self.brain.ensure_sensor_min_width("pong_vy_pos", 2);
         self.brain.ensure_sensor_min_width("pong_vy_neg", 2);
+
+        self.brain.ensure_sensor_min_width("pong_ball2_vx_pos", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_vx_neg", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_vy_pos", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_vy_neg", 2);
 
         self.brain.ensure_action_min_width("up", 6);
         self.brain.ensure_action_min_width("down", 6);

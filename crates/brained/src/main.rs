@@ -808,6 +808,14 @@ enum GameState {
         pong_ball_y: f32,
         #[serde(default)]
         pong_ball_visible: bool,
+        #[serde(default)]
+        pong_ball2_x: f32,
+        #[serde(default)]
+        pong_ball2_y: f32,
+        #[serde(default)]
+        pong_ball2_visible: bool,
+        #[serde(default)]
+        pong_ball2_enabled: bool,
         pong_paddle_y: f32,
         #[serde(default)]
         pong_paddle_half_height: f32,
@@ -1174,12 +1182,26 @@ impl DaemonState {
             self.brain
                 .ensure_sensor_min_width(&format!("pong_ball_y_{i:02}"), 3);
             self.brain
+                .ensure_sensor_min_width(&format!("pong_ball2_x_{i:02}"), 3);
+            self.brain
+                .ensure_sensor_min_width(&format!("pong_ball2_y_{i:02}"), 3);
+            self.brain
                 .ensure_sensor_min_width(&format!("pong_paddle_y_{i:02}"), 3);
         }
+        self.brain.ensure_sensor_min_width("pong_ball_visible", 2);
+        self.brain.ensure_sensor_min_width("pong_ball_hidden", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_visible", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_hidden", 2);
+
         self.brain.ensure_sensor_min_width("pong_vx_pos", 2);
         self.brain.ensure_sensor_min_width("pong_vx_neg", 2);
         self.brain.ensure_sensor_min_width("pong_vy_pos", 2);
         self.brain.ensure_sensor_min_width("pong_vy_neg", 2);
+
+        self.brain.ensure_sensor_min_width("pong_ball2_vx_pos", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_vx_neg", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_vy_pos", 2);
+        self.brain.ensure_sensor_min_width("pong_ball2_vy_neg", 2);
 
         self.brain.ensure_action_min_width("up", 6);
         self.brain.ensure_action_min_width("down", 6);
@@ -1593,6 +1615,10 @@ impl DaemonState {
                 pong_ball_x: g.sim.state.ball_x,
                 pong_ball_y: g.sim.state.ball_y,
                 pong_ball_visible: g.ball_visible(),
+                pong_ball2_x: g.sim.state.ball2_x,
+                pong_ball2_y: g.sim.state.ball2_y,
+                pong_ball2_visible: g.ball2_visible(),
+                pong_ball2_enabled: g.ball2_enabled(),
                 pong_paddle_y: g.sim.state.paddle_y,
                 pong_paddle_half_height: g.sim.params.paddle_half_height,
                 pong_paddle_speed: g.sim.params.paddle_speed,

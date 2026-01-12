@@ -204,6 +204,17 @@ export component PongCanvas inherits Rectangle {
         y: field.y + (0.5 - 0.5 * game.pos-y) * (field.height - self.height);
         opacity: game.pong-ball-visible ? 0.95 : 0.0;
     }
+
+    // Optional distractor ball (pong-ball2-x/pong-ball2-y are also in [-1,1])
+    if game.pong-ball2-enabled: Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: Theme.accent-red;
+        x: field.x + (0.5 + 0.5 * game.pong-ball2-x) * (field.width - self.width);
+        y: field.y + (0.5 - 0.5 * game.pong-ball2-y) * (field.height - self.height);
+        opacity: game.pong-ball2-visible ? 0.60 : 0.0;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

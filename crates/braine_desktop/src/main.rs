@@ -2,14 +2,23 @@
 //! Connects to the `brained` daemon over TCP (127.0.0.1:9876)
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use slint::{ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+const SAMPLE_REPLAY_DATASET_JSON: &str = include_str!("../../../data/replay/spot_lr_small.json");
+
+fn parse_replay_dataset_json(json: &str) -> Result<Value, String> {
+    serde_json::from_str::<Value>(json)
+        .map_err(|e| format!("Invalid replay dataset JSON: {e}"))
+}
 
 #[derive(Debug, Clone)]
 struct GraphHoverNode {
@@ -270,6 +279,21 @@ enum Request {
     SetTrialPeriodMs {
         ms: u32,
     },
+
+    // Advisor / LLM integration (bounded, slow loop)
+    AdvisorContext {
+        #[serde(default)]
+        include_action_scores: bool,
+    },
+    AdvisorOnce {
+        #[serde(default)]
+        apply: bool,
+    },
+
+    // Replay dataset (dataset-driven evaluation)
+    ReplaySetDataset {
+        dataset: Value,
+    },
     GetGraph {
         kind: String,
         max_nodes: u32,
@@ -285,6 +309,16 @@ enum Response {
     GameParams {
         game: String,
         params: Vec<GameParamDef>,
+    },
+    AdvisorContext {
+        context: Value,
+        #[serde(default)]
+        action_scores: Vec<DaemonActionScore>,
+    },
+    AdvisorReport {
+        report: Value,
+        #[serde(default)]
+        applied: bool,
     },
     Success {
         message: String,
@@ -361,6 +395,22 @@ struct DaemonStateSnapshot {
     // Storage / snapshots
     #[serde(default)]
     storage: DaemonStorageInfo,
+
+    // Advisor / LLM integration (optional)
+    #[serde(default)]
+    advisor: DaemonAdvisorSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DaemonAdvisorSnapshot {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    every_trials: u32,
+    #[serde(default)]
+    last_rationale: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -559,6 +609,14 @@ enum DaemonGameState {
         pong_ball_y: f32,
         #[serde(default)]
         pong_ball_visible: bool,
+        #[serde(default)]
+        pong_ball2_x: f32,
+        #[serde(default)]
+        pong_ball2_y: f32,
+        #[serde(default)]
+        pong_ball2_visible: bool,
+        #[serde(default)]
+        pong_ball2_enabled: bool,
         pong_paddle_y: f32,
         #[serde(default)]
         pong_paddle_half_height: f32,
@@ -677,6 +735,18 @@ impl DaemonGameState {
         }
     }
 
+    fn pong_ball2_pos_xy(&self) -> (f32, f32) {
+        match self {
+            Self::Pong {
+                pong_ball2_x,
+                pong_ball2_y,
+                pong_ball2_enabled,
+                ..
+            } if *pong_ball2_enabled => (pong_ball2_x * 2.0 - 1.0, *pong_ball2_y),
+            _ => (0.0, 0.0),
+        }
+    }
+
     fn spotxy_eval(&self) -> bool {
         match self {
             Self::SpotXY { spotxy_eval, .. } => *spotxy_eval,
@@ -722,6 +792,27 @@ impl DaemonGameState {
                 pong_ball_visible, ..
             } => *pong_ball_visible,
             _ => true,
+        }
+    }
+
+    fn pong_ball2_visible(&self) -> bool {
+        match self {
+            Self::Pong {
+                pong_ball2_visible,
+                pong_ball2_enabled,
+                ..
+            } => *pong_ball2_enabled && *pong_ball2_visible,
+            _ => false,
+        }
+    }
+
+    fn pong_ball2_enabled(&self) -> bool {
+        match self {
+            Self::Pong {
+                pong_ball2_enabled,
+                ..
+            } => *pong_ball2_enabled,
+            _ => false,
         }
     }
 
@@ -861,6 +952,9 @@ struct DaemonClient {
     snapshot: Arc<Mutex<DaemonStateSnapshot>>, // latest state from daemon
     graph: Arc<Mutex<DaemonGraphSnapshot>>,
     game_params: Arc<Mutex<Vec<GameParamDef>>>,
+    advisor_context_json: Arc<Mutex<String>>,
+    advisor_report_json: Arc<Mutex<String>>,
+    advisor_status: Arc<Mutex<String>>,
 }
 
 impl DaemonClient {
@@ -869,9 +963,15 @@ impl DaemonClient {
         let snapshot = Arc::new(Mutex::new(DaemonStateSnapshot::default()));
         let graph = Arc::new(Mutex::new(DaemonGraphSnapshot::default()));
         let game_params = Arc::new(Mutex::new(Vec::<GameParamDef>::new()));
+        let advisor_context_json = Arc::new(Mutex::new(String::new()));
+        let advisor_report_json = Arc::new(Mutex::new(String::new()));
+        let advisor_status = Arc::new(Mutex::new(String::new()));
         let snap_clone = Arc::clone(&snapshot);
         let graph_clone = Arc::clone(&graph);
         let params_clone = Arc::clone(&game_params);
+        let advisor_ctx_clone = Arc::clone(&advisor_context_json);
+        let advisor_report_clone = Arc::clone(&advisor_report_json);
+        let advisor_status_clone = Arc::clone(&advisor_status);
 
         // Background worker: manages TCP connection and request/response loop
         thread::spawn(move || loop {
@@ -912,16 +1012,57 @@ impl DaemonClient {
                                     *p = params;
                                 }
                             }
+                            Ok(Response::AdvisorContext {
+                                context,
+                                action_scores,
+                            }) => {
+                                let mut root = serde_json::Map::new();
+                                root.insert("context".to_string(), context);
+                                root.insert(
+                                    "action_scores".to_string(),
+                                    serde_json::to_value(action_scores).unwrap_or(Value::Null),
+                                );
+                                let v = Value::Object(root);
+                                if let Ok(mut s) = advisor_ctx_clone.lock() {
+                                    *s = serde_json::to_string_pretty(&v)
+                                        .unwrap_or_else(|_| "{...}".to_string());
+                                }
+                                if let Ok(mut s) = advisor_status_clone.lock() {
+                                    *s = "AdvisorContext received".to_string();
+                                }
+                            }
+                            Ok(Response::AdvisorReport { report, applied }) => {
+                                let mut root = serde_json::Map::new();
+                                root.insert("applied".to_string(), Value::Bool(applied));
+                                root.insert("report".to_string(), report);
+                                let v = Value::Object(root);
+                                if let Ok(mut s) = advisor_report_clone.lock() {
+                                    *s = serde_json::to_string_pretty(&v)
+                                        .unwrap_or_else(|_| "{...}".to_string());
+                                }
+                                if let Ok(mut s) = advisor_status_clone.lock() {
+                                    *s = if applied {
+                                        "AdvisorReport received (applied)".to_string()
+                                    } else {
+                                        "AdvisorReport received".to_string()
+                                    };
+                                }
+                            }
                             Ok(Response::Graph(g)) => {
                                 if let Ok(mut gs) = graph_clone.lock() {
                                     *gs = *g;
                                 }
                             }
-                            Ok(Response::Success { .. }) => {
-                                // nothing to store
+                            Ok(Response::Success { message }) => {
+                                if let Ok(mut s) = advisor_status_clone.lock() {
+                                    *s = message;
+                                }
                             }
                             Ok(Response::Error { message }) => {
                                 eprintln!("Daemon error: {}", message);
+                                if let Ok(mut s) = advisor_status_clone.lock() {
+                                    *s = format!("Error: {}", message);
+                                }
                             }
                             Err(e) => eprintln!("Bad response: {}", e),
                         }
@@ -939,6 +1080,9 @@ impl DaemonClient {
             snapshot,
             graph,
             game_params,
+            advisor_context_json,
+            advisor_report_json,
+            advisor_status,
         }
     }
 
@@ -959,6 +1103,24 @@ impl DaemonClient {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default()
+    }
+
+    fn advisor_context_json(&self) -> String {
+        self.advisor_context_json
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    fn advisor_report_json(&self) -> String {
+        self.advisor_report_json
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    fn advisor_status(&self) -> String {
+        self.advisor_status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 }
 
@@ -1186,6 +1348,106 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         });
     }
+
+    // Replay dataset controls
+    {
+        let c = client.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_replay_load_dataset(move |path| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+
+            if ui.get_running() {
+                ui.set_replay_dataset_status(
+                    "Stop the simulation before loading a replay dataset".into(),
+                );
+                return;
+            }
+
+            let path = path.trim().to_string();
+            if path.is_empty() {
+                ui.set_replay_dataset_status("Enter a dataset JSON path".into());
+                return;
+            }
+
+            let json = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    ui.set_replay_dataset_status(format!("Failed to read '{path}': {e}").into());
+                    return;
+                }
+            };
+
+            let dataset = match parse_replay_dataset_json(&json) {
+                Ok(v) => v,
+                Err(msg) => {
+                    ui.set_replay_dataset_status(msg.into());
+                    return;
+                }
+            };
+
+            c.send(Request::ReplaySetDataset { dataset });
+            ui.set_replay_dataset_status("Dataset sent to daemon (ReplaySetDataset)".into());
+        });
+    }
+    {
+        let c = client.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_replay_load_sample(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+
+            if ui.get_running() {
+                ui.set_replay_dataset_status(
+                    "Stop the simulation before loading a replay dataset".into(),
+                );
+                return;
+            }
+
+            let dataset = match parse_replay_dataset_json(SAMPLE_REPLAY_DATASET_JSON) {
+                Ok(v) => v,
+                Err(msg) => {
+                    ui.set_replay_dataset_status(msg.into());
+                    return;
+                }
+            };
+
+            c.send(Request::ReplaySetDataset { dataset });
+            ui.set_replay_dataset_path("(built-in) spot_lr_small".into());
+            ui.set_replay_dataset_status("Sample dataset sent to daemon".into());
+        });
+    }
+
+    // Advisor / LLM integration controls
+    {
+        let c = client.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_advisor_fetch_context(move |include_scores| {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_advisor_status("Requesting AdvisorContext...".into());
+            }
+            c.send(Request::AdvisorContext {
+                include_action_scores: include_scores,
+            });
+        });
+    }
+    {
+        let c = client.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_advisor_once(move |apply| {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_advisor_status(if apply {
+                    "Requesting AdvisorOnce (apply=true)...".into()
+                } else {
+                    "Requesting AdvisorOnce (apply=false)...".into()
+                });
+            }
+            c.send(Request::AdvisorOnce { apply });
+        });
+    }
+
 
     // Experts (child brains)
     {
@@ -1506,6 +1768,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 };
 
                 let (pos_x, pos_y) = snap.game.pos_xy();
+                let (pong_ball2_x, pong_ball2_y) = snap.game.pong_ball2_pos_xy();
                 let (pong_paddle_y, pong_paddle_half_height, pong_paddle_speed, pong_ball_speed) =
                     snap.game.pong_params();
 
@@ -1516,6 +1779,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     pos_x,
                     pos_y,
                     pong_ball_visible: snap.game.pong_ball_visible(),
+                    pong_ball2_x,
+                    pong_ball2_y,
+                    pong_ball2_visible: snap.game.pong_ball2_visible(),
+                    pong_ball2_enabled: snap.game.pong_ball2_enabled(),
                     pong_paddle_y,
                     pong_paddle_half_height,
                     pong_paddle_speed,
@@ -1587,6 +1854,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_storage_runtime_bytes(snap.storage.runtime_bytes as i32);
                 ui.set_storage_loaded_snapshot(snap.storage.loaded_snapshot.clone().into());
                 ui.set_storage_state_wrapper_version(snap.storage.state_wrapper_version as i32);
+
+                // Advisor (daemon-only)
+                ui.set_advisor_enabled(snap.advisor.enabled);
+                ui.set_advisor_mode(snap.advisor.mode.clone().into());
+                ui.set_advisor_every_trials(snap.advisor.every_trials as i32);
+                ui.set_advisor_last_rationale(snap.advisor.last_rationale.clone().into());
+
+                ui.set_advisor_context_json(c.advisor_context_json().into());
+                ui.set_advisor_report_json(c.advisor_report_json().into());
+                ui.set_advisor_status(c.advisor_status().into());
 
                 let snaps: Vec<SnapshotItem> = snap
                     .storage
