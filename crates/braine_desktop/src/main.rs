@@ -16,8 +16,7 @@ use std::time::{Duration, Instant};
 const SAMPLE_REPLAY_DATASET_JSON: &str = include_str!("../../../data/replay/spot_lr_small.json");
 
 fn parse_replay_dataset_json(json: &str) -> Result<Value, String> {
-    serde_json::from_str::<Value>(json)
-        .map_err(|e| format!("Invalid replay dataset JSON: {e}"))
+    serde_json::from_str::<Value>(json).map_err(|e| format!("Invalid replay dataset JSON: {e}"))
 }
 
 #[derive(Debug, Clone)]
@@ -809,8 +808,7 @@ impl DaemonGameState {
     fn pong_ball2_enabled(&self) -> bool {
         match self {
             Self::Pong {
-                pong_ball2_enabled,
-                ..
+                pong_ball2_enabled, ..
             } => *pong_ball2_enabled,
             _ => false,
         }
@@ -1120,7 +1118,10 @@ impl DaemonClient {
     }
 
     fn advisor_status(&self) -> String {
-        self.advisor_status.lock().map(|s| s.clone()).unwrap_or_default()
+        self.advisor_status
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -1447,7 +1448,6 @@ fn main() -> Result<(), slint::PlatformError> {
             c.send(Request::AdvisorOnce { apply });
         });
     }
-
 
     // Experts (child brains)
     {

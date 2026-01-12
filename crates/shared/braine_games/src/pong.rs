@@ -411,7 +411,11 @@ impl PongSim {
         self.state.ball_vx = -1.0;
         self.state.ball_vy = self.sample_uniform(-0.9, 0.9);
         if self.state.ball_vy.abs() < 0.12 {
-            self.state.ball_vy = if self.state.ball_vy >= 0.0 { 0.12 } else { -0.12 };
+            self.state.ball_vy = if self.state.ball_vy >= 0.0 {
+                0.12
+            } else {
+                -0.12
+            };
         }
         self.normalize_primary_dir();
     }
@@ -422,7 +426,11 @@ impl PongSim {
         self.state.ball2_vx = -1.0;
         self.state.ball2_vy = self.sample_uniform(-0.9, 0.9);
         if self.state.ball2_vy.abs() < 0.12 {
-            self.state.ball2_vy = if self.state.ball2_vy >= 0.0 { 0.12 } else { -0.12 };
+            self.state.ball2_vy = if self.state.ball2_vy >= 0.0 {
+                0.12
+            } else {
+                -0.12
+            };
         }
         self.normalize_distractor_dir();
     }
@@ -444,7 +452,8 @@ impl PongSim {
     }
 
     fn normalize_primary_dir(&mut self) {
-        let len2 = self.state.ball_vx * self.state.ball_vx + self.state.ball_vy * self.state.ball_vy;
+        let len2 =
+            self.state.ball_vx * self.state.ball_vx + self.state.ball_vy * self.state.ball_vy;
         if len2 > 1.0e-8 {
             let inv = 1.0 / len2.sqrt();
             self.state.ball_vx *= inv;
@@ -453,7 +462,8 @@ impl PongSim {
     }
 
     fn normalize_distractor_dir(&mut self) {
-        let len2 = self.state.ball2_vx * self.state.ball2_vx + self.state.ball2_vy * self.state.ball2_vy;
+        let len2 =
+            self.state.ball2_vx * self.state.ball2_vx + self.state.ball2_vy * self.state.ball2_vy;
         if len2 > 1.0e-8 {
             let inv = 1.0 / len2.sqrt();
             self.state.ball2_vx *= inv;

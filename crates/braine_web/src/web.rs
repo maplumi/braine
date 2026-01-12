@@ -140,7 +140,8 @@ const ABOUT_LLM_DATAFLOW: &str = r#"Braine (daemon) owns the long-lived Brain.
                                                 (exploration_eps, meaning_alpha, ttl)
 "#;
 
-const ABOUT_LLM_ADVISOR_CONTEXT_REQ: &str = r#"{\n  \"type\": \"AdvisorContext\",\n  \"include_action_scores\": true\n}"#;
+const ABOUT_LLM_ADVISOR_CONTEXT_REQ: &str =
+    r#"{\n  \"type\": \"AdvisorContext\",\n  \"include_action_scores\": true\n}"#;
 
 const ABOUT_LLM_ADVISOR_CONTEXT_RESP: &str = r#"{\n  \"type\": \"AdvisorContext\",\n  \"context\": {\n    \"context_key\": \"replay::spot_lr_small\",\n    \"game\": \"replay\",\n    \"trials\": 200,\n    \"recent_rate\": 0.52,\n    \"last_100_rate\": 0.51,\n    \"exploration_eps\": 0.20,\n    \"meaning_alpha\": 0.60,\n    \"notes\": [\"bounded; no action selection\"]\n  },\n  \"action_scores\": [\n    { \"name\": \"left\",  \"score\": 0.12, \"meaning\": 0.03, \"habit_norm\": 0.09 },\n    { \"name\": \"right\", \"score\": 0.10, \"meaning\": 0.02, \"habit_norm\": 0.08 }\n  ]\n}"#;
 

@@ -321,15 +321,22 @@ impl PongGame {
             let b2x = PongSim::bin_01(self.sim.state.ball2_x, bins);
             let b2y = PongSim::bin_signed(self.sim.state.ball2_y, bins);
             let vis2 = if self.sim.ball2_visible() { "v" } else { "h" };
-            let vx2 = if self.sim.state.ball2_vx >= 0.0 { "p" } else { "n" };
-            let vy2 = if self.sim.state.ball2_vy >= 0.0 { "p" } else { "n" };
+            let vx2 = if self.sim.state.ball2_vx >= 0.0 {
+                "p"
+            } else {
+                "n"
+            };
+            let vy2 = if self.sim.state.ball2_vy >= 0.0 {
+                "p"
+            } else {
+                "n"
+            };
             self.stimulus_key = format!(
                 "pong_b{bins:02}_vis{vis}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}_b2vis{vis2}_b2x{b2x:02}_b2y{b2y:02}_b2vx{vx2}_b2vy{vy2}"
             );
         } else {
-            self.stimulus_key = format!(
-                "pong_b{bins:02}_vis{vis}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}"
-            );
+            self.stimulus_key =
+                format!("pong_b{bins:02}_vis{vis}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}");
         }
     }
 }
