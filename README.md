@@ -6,6 +6,8 @@ A research prototype for a **brain-like** cognitive substrate based on **sparse 
 
 **Terminology**: "Braine" = the system/project. "Brain" = the cognitive substrate (`Brain` struct).
 
+Web demo: https://maplumi.github.io/braine/crates/braine_web/dist/
+
 ## Framing (vs familiar baselines)
 
 This project behaves like a **continuous-time recurrent substrate** with **local plasticity** (Hebbian-ish) and a scalar **neuromodulator** used as reward/salience. That puts it closest to these reference frames:
@@ -45,8 +47,6 @@ cargo build --release --target x86_64-pc-windows-gnu
 ```
 
 Web deployment details: [doc/deployment-web.md](doc/deployment-web.md).
-
-Web demo: https://maplumi.github.io/braine/crates/braine_web/dist/
 
 ### Daemon + UI (Spot game)
 The daemon-based architecture runs the brain as a persistent service:
