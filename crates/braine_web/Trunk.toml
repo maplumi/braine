@@ -5,7 +5,7 @@ dist = "dist"
 filehash = true
 
 [watch]
-watch = ["src", "index.html"]
+watch = ["src", "index.html", "app.css"]
 
 [[hooks]]
 stage = "pre_build"

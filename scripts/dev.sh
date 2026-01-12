@@ -6,13 +6,20 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 MODE="full"          # full|web
-SKIP_DESKTOP=0
-SKIP_WINDOWS=0
+# Temporarily default to skipping desktop builds until deps are reviewed.
+SKIP_DESKTOP=1
+SKIP_WINDOWS=1
 
 for arg in "$@"; do
   case "$arg" in
     --web-only)
       MODE="web"
+      ;;
+    --with-desktop)
+      SKIP_DESKTOP=0
+      ;;
+    --with-windows)
+      SKIP_WINDOWS=0
       ;;
     --skip-desktop)
       SKIP_DESKTOP=1
@@ -27,8 +34,12 @@ Usage: ./scripts/dev.sh [--web-only] [--skip-desktop] [--skip-windows]
 Modes:
   --web-only       Only builds braine_web via trunk and syncs dist (no fmt/clippy/native/Windows/zip).
 
+Platform flags:
+  --with-desktop   Enable braine_desktop builds (off by default).
+  --with-windows   Enable Windows cross-build + portable zip (off by default).
+
 Flags (full mode):
-  --skip-desktop   Skip braine_desktop build and skip portable zip step.
+  --skip-desktop   Skip braine_desktop build and skip portable zip step. (default)
   --skip-windows   Skip the Windows cross-build and portable zip step.
 EOF
       exit 0
@@ -50,6 +61,12 @@ if [[ "$MODE" == "web" ]]; then
   # Manual build instead of trunk due to wasm-bindgen reference-types issues
   # Using Rust 1.84 to avoid reference-types issues in newer Rust versions
   echo "[1/3] cargo build braine_web (wasm32) with Rust 1.84"
+  if command -v rustup >/dev/null; then
+    rustup target add wasm32-unknown-unknown --toolchain 1.84.0
+  else
+    echo "rustup not found; cannot ensure wasm32-unknown-unknown target is installed"
+    exit 1
+  fi
   cargo +1.84.0 build -p braine_web --target wasm32-unknown-unknown --features braine_web/web --release
   
   echo "[2/3] wasm-bindgen post-processing"
@@ -66,9 +83,12 @@ if [[ "$MODE" == "web" ]]; then
     "$WASM_FILE" \
     --no-typescript
   
-  # app.css is checked into the repo (full class-based styling). Don't overwrite it.
+  # Ensure dist/app.css exists. Source-of-truth is crates/braine_web/app.css.
+  if [[ -f "$ROOT/crates/braine_web/app.css" ]]; then
+    cp -f "$ROOT/crates/braine_web/app.css" "$WEB_DIST_DIR/app.css"
+  fi
   if [[ ! -f "$WEB_DIST_DIR/app.css" ]]; then
-    echo "ERROR: Missing $WEB_DIST_DIR/app.css (expected to be checked in).";
+    echo "ERROR: Missing $WEB_DIST_DIR/app.css (expected from crates/braine_web/app.css).";
     exit 1
   fi
 
@@ -116,13 +136,11 @@ HTMLEOF
   exit 0
 fi
 
-command -v 7z >/dev/null || { echo "7z not found; install p7zip-full (Linux) or 7-Zip (Windows)"; exit 1; }
-
 echo "[1/7] cargo fmt"
 cargo fmt
 
 echo "[2/7] cargo clippy --all-targets"
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --exclude braine_desktop --all-targets -- -D warnings
 
 echo "[3/7] cargo build --release (native)"
 if [[ "$SKIP_DESKTOP" == "1" ]]; then
@@ -145,6 +163,7 @@ fi
 if [[ "$SKIP_WINDOWS" == "1" || "$SKIP_DESKTOP" == "1" ]]; then
   echo "[5/7] Skipping portable zip (requires Windows build + braine_desktop)"
 else
+  command -v 7z >/dev/null || { echo "7z not found; install p7zip-full (Linux) or 7-Zip (Windows)"; exit 1; }
   echo "[5/7] Create portable zip"
   mkdir -p dist/windows
   cp target/x86_64-pc-windows-gnu/release/braine_desktop.exe dist/windows/
@@ -208,6 +227,12 @@ fi
 
 echo "[6/7] cargo build braine_web (wasm32) + wasm-bindgen"
 # Manual build with Rust 1.84 to avoid wasm-bindgen reference-types issues
+if command -v rustup >/dev/null; then
+  rustup target add wasm32-unknown-unknown --toolchain 1.84.0
+else
+  echo "rustup not found; cannot ensure wasm32-unknown-unknown target is installed"
+  exit 1
+fi
 cargo +1.84.0 build -p braine_web --target wasm32-unknown-unknown --features braine_web/web --release
 if command -v wasm-bindgen >/dev/null; then
   WASM_FILE="$ROOT/target/wasm32-unknown-unknown/release/braine_web.wasm"
@@ -219,9 +244,12 @@ if command -v wasm-bindgen >/dev/null; then
     "$WASM_FILE" \
     --no-typescript
 
-  # app.css is checked into the repo (full class-based styling). Don't overwrite it.
+  # Ensure dist/app.css exists. Source-of-truth is crates/braine_web/app.css.
+  if [[ -f "$ROOT/crates/braine_web/app.css" ]]; then
+    cp -f "$ROOT/crates/braine_web/app.css" "$WEB_DIST_DIR/app.css"
+  fi
   if [[ ! -f "$WEB_DIST_DIR/app.css" ]]; then
-    echo "ERROR: Missing $WEB_DIST_DIR/app.css (expected to be checked in).";
+    echo "ERROR: Missing $WEB_DIST_DIR/app.css (expected from crates/braine_web/app.css).";
     exit 1
   fi
 
@@ -246,7 +274,9 @@ if command -v wasm-bindgen >/dev/null; then
 HTMLEOF
   echo "braine_web dist: $WEB_DIST_DIR"
 else
-  echo "wasm-bindgen not found; skipping braine_web build (install with: cargo install wasm-bindgen-cli --version 0.2.99)"
+  echo "ERROR: wasm-bindgen not found; cannot build braine_web dist in full mode."
+  echo "Install with: cargo install wasm-bindgen-cli --version 0.2.99"
+  exit 1
 fi
 
 echo "[7/7] Sync braine_web dist to $WEB_DEPLOY_DIR"

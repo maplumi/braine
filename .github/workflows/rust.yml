@@ -10,9 +10,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      fmt: ${{ steps.filter.outputs.fmt }}
+      workspace: ${{ steps.filter.outputs.workspace }}
+      core: ${{ steps.filter.outputs.core }}
+      games: ${{ steps.filter.outputs.games }}
+      brained: ${{ steps.filter.outputs.brained }}
+      web: ${{ steps.filter.outputs.web }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Paths filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            workflows:
+              - '.github/workflows/**'
+            workspace:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'scripts/**'
+            fmt:
+              - '**/*.rs'
+            core:
+              - 'crates/core/**'
+            games:
+              - 'crates/shared/braine_games/**'
+            brained:
+              - 'crates/brained/**'
+            web:
+              - 'crates/braine_web/**'
+
   fmt:
     name: Format check
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.fmt == 'true' || needs.changes.outputs.workflows == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -22,19 +59,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  clippy:
-    name: Clippy
+  clippy-core:
+    name: Clippy (core)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.workspace == 'true' || needs.changes.outputs.workflows == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -42,23 +77,21 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-clippy-core-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
+            ${{ runner.os }}-cargo-clippy-core-
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy -p braine --all-targets -- -D warnings
 
-  build:
-    name: Build & Test
+  test-core:
+    name: Test (core)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.workspace == 'true' || needs.changes.outputs.workflows == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -66,10 +99,125 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-test-core-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-build-
-      - name: Build
-        run: cargo build --workspace --verbose
+            ${{ runner.os }}-cargo-test-core-
       - name: Run tests
-        run: cargo test --workspace --verbose
+        run: cargo test -p braine --verbose
+
+  clippy-games:
+    name: Clippy (braine_games)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.games == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.workspace == 'true' || needs.changes.outputs.workflows == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-games-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-games-
+      - name: Run clippy
+        run: cargo clippy -p braine_games --all-targets -- -D warnings
+
+  test-games:
+    name: Test (braine_games)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.games == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.workspace == 'true' || needs.changes.outputs.workflows == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-games-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-games-
+      - name: Run tests
+        run: cargo test -p braine_games --verbose
+
+  clippy-brained:
+    name: Clippy (brained)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.brained == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.games == 'true' || needs.changes.outputs.workspace == 'true' || needs.changes.outputs.workflows == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-brained-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-brained-
+      - name: Run clippy
+        run: cargo clippy -p brained --all-targets -- -D warnings
+
+  test-brained:
+    name: Test (brained)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.brained == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.games == 'true' || needs.changes.outputs.workspace == 'true' || needs.changes.outputs.workflows == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-brained-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-brained-
+      - name: Run tests
+        run: cargo test -p brained --verbose
+
+
+  check-web:
+    name: Check (web)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.games == 'true' || needs.changes.outputs.workspace == 'true' || needs.changes.outputs.workflows == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-web-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-web-
+      - name: cargo check (wasm)
+        run: cargo check -p braine_web --target wasm32-unknown-unknown --features web

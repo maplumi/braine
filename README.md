@@ -46,6 +46,8 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 Web deployment details: [doc/deployment-web.md](doc/deployment-web.md).
 
+Web demo: https://maplumi.github.io/braine/crates/braine_web/dist/
+
 ### Daemon + UI (Spot game)
 The daemon-based architecture runs the brain as a persistent service:
 ```bash

@@ -1780,9 +1780,9 @@ fn App() -> impl IntoView {
                 <div class="game-area">
                     <Show when=move || show_about_page.get()>
                         // Full-width About page with sub-tabs
-                        <div style="padding: 16px 24px; overflow-y: auto; height: 100%;">
+                        <div class="about">
                             // Header
-                            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">
+                            <div class="about-header">
                                 <div style="font-size: 2.5rem;">"🧠"</div>
                                 <div>
                                     <h1 style="margin: 0; font-size: 1.4rem; font-weight: 700; color: var(--accent);">"Braine"</h1>
@@ -2634,7 +2634,7 @@ fn App() -> impl IntoView {
                                     type="number"
                                 min="10"
                                 max="60000"
-                                class="input"
+                                class="input compact"
                                     title="Trial period in milliseconds (one decision/reward per trial)."
                                 prop:value=move || trial_period_ms.get().to_string()
                                 on:input=move |ev| {
@@ -2652,7 +2652,7 @@ fn App() -> impl IntoView {
                                 min="0"
                                 max="1"
                                 step="0.01"
-                                class="input"
+                                class="input compact"
                                     title="Exploration rate (epsilon): probability of taking a random action."
                                 prop:value=move || format!("{:.2}", exploration_eps.get())
                                 on:input=move |ev| {
@@ -2670,7 +2670,7 @@ fn App() -> impl IntoView {
                                 min="0"
                                 max="30"
                                 step="0.5"
-                                class="input"
+                                class="input compact"
                                     title="Meaning alpha: weighting for meaning-based action ranking (higher = stronger meaning influence)."
                                 prop:value=move || format!("{:.1}", meaning_alpha.get())
                                 on:input=move |ev| {
@@ -2693,7 +2693,7 @@ fn App() -> impl IntoView {
                                     <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Learn to respond LEFT or RIGHT based on stimulus"</p>
                                 </div>
                                 // Visual arena
-                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%;">
+                                <div class="arena-grid">
                                     <div style=move || {
                                         let active = matches!(spot_is_left.get(), Some(true));
                                         format!(
@@ -2741,7 +2741,7 @@ fn App() -> impl IntoView {
                                     <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Explore vs exploit: learn which arm pays better"</p>
                                 </div>
                                 // Slot machine arms
-                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%;">
+                                <div class="arena-grid" style="gap: 16px;">
                                     <div style=move || format!("display: flex; flex-direction: column; align-items: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {}; transition: all 0.2s;",
                                         if last_action.get() == "left" { "#fbbf24" } else { "var(--border)" },
                                         if last_action.get() == "left" { "rgba(251, 191, 36, 0.1)" } else { "rgba(0,0,0,0.2)" })>
@@ -2791,7 +2791,7 @@ fn App() -> impl IntoView {
                                     </div>
                                 </div>
                                 // Arena (same as Spot but with reversal indicator)
-                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%;">
+                                <div class="arena-grid">
                                     <div style=move || {
                                         let active = matches!(spot_is_left.get(), Some(true));
                                         format!(
@@ -2820,7 +2820,7 @@ fn App() -> impl IntoView {
 
                         // SpotXY game with canvas - Modern gaming design
                         <Show when=move || game_kind.get() == GameKind::SpotXY>
-                            <div style="display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 480px;">
+                            <div class="game-shell" style="max-width: 480px;">
                                 // Header with mode indicator
                                 <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
                                     <div>
@@ -2838,17 +2838,18 @@ fn App() -> impl IntoView {
                                 </div>
 
                                 // Canvas container with ambient glow
-                                <div style="position: relative; display: flex; justify-content: center;">
-                                    <div style=move || format!("position: absolute; width: 280px; height: 280px; border-radius: 50%; filter: blur(60px); opacity: 0.3; background: {};",
+                                <div class="game-canvas-wrap">
+                                    <div style=move || format!("position: absolute; width: 280px; height: 280px; border-radius: 50%; filter: blur(60px); opacity: 0.3; pointer-events: none; background: {};",
                                         if spotxy_eval.get() { "#22c55e" } else { "#7aa2ff" })>
                                     </div>
-                                    <div style=move || format!("position: relative; padding: 3px; border-radius: 16px; background: {};",
+                                    <div class="game-canvas-frame" style=move || format!("background: {};",
                                         if spotxy_eval.get() { "linear-gradient(135deg, #22c55e, #16a34a)" } else { "linear-gradient(135deg, #7aa2ff, #5b7dc9)" })>
                                         <canvas
                                             node_ref=canvas_ref
                                             width="340"
                                             height="340"
-                                            style="border-radius: 13px; background: #0a0f1a; display: block;"
+                                            class="game-canvas square"
+                                            style="border-radius: 13px; background: #0a0f1a;"
                                         ></canvas>
                                     </div>
                                 </div>
@@ -2890,7 +2891,7 @@ fn App() -> impl IntoView {
 
                         // Pong game - Modern arcade design
                         <Show when=move || game_kind.get() == GameKind::Pong>
-                            <div style="display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 580px;">
+                            <div class="game-shell" style="max-width: 580px;">
                                 // Header
                                 <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, rgba(251, 191, 36, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
                                     <div>
@@ -2907,13 +2908,14 @@ fn App() -> impl IntoView {
                                 </div>
 
                                 // Game canvas
-                                <div style="position: relative; display: flex; justify-content: center;">
-                                    <div style="position: relative; padding: 3px; border-radius: 16px; border: 1px solid var(--border); background: rgba(0,0,0,0.25);">
+                                <div class="game-canvas-wrap">
+                                    <div class="game-canvas-frame" style="border: 1px solid var(--border); background: rgba(0,0,0,0.25);">
                                         <canvas
                                             node_ref=pong_canvas_ref
                                             width="540"
                                             height="320"
-                                            style="border-radius: 13px; background: #0a0f1a; display: block;"
+                                            class="game-canvas wide"
+                                            style="border-radius: 13px; background: #0a0f1a;"
                                         ></canvas>
                                     </div>
                                 </div>
@@ -3130,7 +3132,7 @@ fn App() -> impl IntoView {
                                         <h3 class="card-title">"📚 Text Training Data (Task Definition)"</h3>
                                         <p class="subtle">"This rebuilds the Text game (vocab + sensors/actions) but keeps the same brain."</p>
 
-                                        <label class="label">
+                                        <label class="label stack">
                                             <span>"Corpus 0"</span>
                                             <textarea
                                                 class="input"
@@ -3140,7 +3142,7 @@ fn App() -> impl IntoView {
                                             />
                                         </label>
 
-                                        <label class="label">
+                                        <label class="label stack">
                                             <span>"Corpus 1"</span>
                                             <textarea
                                                 class="input"
@@ -3154,7 +3156,7 @@ fn App() -> impl IntoView {
                                             <label class="label">
                                                 <span>"Max vocab"</span>
                                                 <input
-                                                    class="input"
+                                                    class="input compact"
                                                     type="number"
                                                     min="2"
                                                     max="512"
@@ -3170,7 +3172,7 @@ fn App() -> impl IntoView {
                                             <label class="label">
                                                 <span>"Shift every (outcomes)"</span>
                                                 <input
-                                                    class="input"
+                                                    class="input compact"
                                                     type="number"
                                                     min="1"
                                                     step="1"
@@ -3199,7 +3201,7 @@ fn App() -> impl IntoView {
                                         <h3 class="card-title">"🏋️ Prompt Training (Supervised Reward)"</h3>
                                         <p class="subtle">"Walks adjacent byte pairs in the prompt and rewards +1 for predicting the next token, −1 otherwise."</p>
 
-                                        <label class="label">
+                                        <label class="label stack">
                                             <span>"Prompt"</span>
                                             <textarea
                                                 class="input"
@@ -3213,7 +3215,7 @@ fn App() -> impl IntoView {
                                             <label class="label">
                                                 <span>"Regime"</span>
                                                 <input
-                                                    class="input"
+                                                    class="input compact"
                                                     type="number"
                                                     min="0"
                                                     max="1"
@@ -3229,7 +3231,7 @@ fn App() -> impl IntoView {
                                             <label class="label">
                                                 <span>"Epochs"</span>
                                                 <input
-                                                    class="input"
+                                                    class="input compact"
                                                     type="number"
                                                     min="1"
                                                     step="1"
@@ -3285,7 +3287,7 @@ fn App() -> impl IntoView {
                                             <label class="label">
                                                 <span>"Regime"</span>
                                                 <input
-                                                    class="input"
+                                                    class="input compact"
                                                     type="number"
                                                     min="0"
                                                     max="1"
@@ -3301,7 +3303,7 @@ fn App() -> impl IntoView {
                                             <label class="label">
                                                 <span>"Temp"</span>
                                                 <input
-                                                    class="input"
+                                                    class="input compact"
                                                     type="number"
                                                     min="0.1"
                                                     max="10"
@@ -3783,7 +3785,7 @@ fn App() -> impl IntoView {
                                             <label class="label">
                                                 <span>"Window"</span>
                                                 <input
-                                                    class="input"
+                                                    class="input compact"
                                                     type="number"
                                                     min="1"
                                                     max="200"
@@ -3874,7 +3876,7 @@ fn App() -> impl IntoView {
                                                         set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(10).max(16));
                                                     }>"-10"</button>
                                                     <input
-                                                        class="input"
+                                                        class="input compact"
                                                         type="number"
                                                         min="16"
                                                         max="1024"
@@ -3905,7 +3907,7 @@ fn App() -> impl IntoView {
                                                         set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(1).max(1));
                                                     }>"-1"</button>
                                                     <input
-                                                        class="input"
+                                                        class="input compact"
                                                         type="number"
                                                         min="1"
                                                         max="32"
@@ -4116,7 +4118,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"Grow units by"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Adds N new units to the substrate (neurogenesis). This increases capacity without gradients/backprop."
                                                 min="1"
@@ -4144,7 +4146,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"dt"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Integration timestep for the continuous dynamics. Smaller dt = more stable/slow updates; larger dt = faster but can destabilize."
                                                 min="0.001"
@@ -4161,7 +4163,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"base_freq"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Base oscillator frequency for unit dynamics (sets the intrinsic rhythm)."
                                                 min="0"
@@ -4178,7 +4180,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"global_inhibition"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Global inhibition strength. Higher values suppress overall activity and can increase selectivity."
                                                 min="0"
@@ -4198,7 +4200,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"noise_amp"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Amplitude of injected noise into dynamics. Useful for exploration; too high can destabilize."
                                                 min="0"
@@ -4215,7 +4217,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"noise_phase"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Phase noise / jitter applied to oscillators. Adds variability without changing amplitude."
                                                 min="0"
@@ -4232,7 +4234,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"causal_decay"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Decay rate for causal memory edges. Higher values forget causality faster."
                                                 min="0"
@@ -4252,7 +4254,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"hebb_rate"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Hebbian learning rate (local plasticity strength). Higher = faster coupling updates."
                                                 min="0"
@@ -4269,7 +4271,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"forget_rate"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Forgetting rate applied to learned couplings. Higher values erase weights faster."
                                                 min="0"
@@ -4286,7 +4288,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"prune_below"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Pruning threshold: connections with |w| below this may be pruned during maintenance."
                                                 min="0"
@@ -4306,7 +4308,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"coactive_threshold"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Co-activity threshold used for forming associations (how strongly two units must co-activate to be considered linked)."
                                                 min="0"
@@ -4323,7 +4325,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"phase_lock_threshold"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Threshold for considering oscillators phase-locked (used for binding / stable coupling decisions)."
                                                 min="0"
@@ -4340,7 +4342,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"imprint_rate"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Imprinting rate for creating stable concepts/engrams. Higher = more aggressive one-shot binding."
                                                 min="0"
@@ -4360,7 +4362,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"salience_decay"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Decay rate for salience (how quickly attention/usage fades). Higher = faster fade."
                                                 min="0"
@@ -4377,7 +4379,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"salience_gain"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 title="Gain applied to salience updates (how quickly frequently used symbols/units become salient)."
                                                 min="0"
@@ -4452,7 +4454,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"Run interval (ms)"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 min="8"
                                                 max="500"
@@ -4493,7 +4495,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"Scale"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 step="0.1"
                                                 prop:value=move || format!("{:.2}", reward_scale.get())
@@ -4507,7 +4509,7 @@ fn App() -> impl IntoView {
                                         <label class="label">
                                             <span>"Bias"</span>
                                             <input
-                                                class="input"
+                                                class="input compact"
                                                 type="number"
                                                 step="0.1"
                                                 prop:value=move || format!("{:.2}", reward_bias.get())
