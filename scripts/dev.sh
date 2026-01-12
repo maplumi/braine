@@ -57,6 +57,25 @@ command -v cargo >/dev/null || { echo "cargo not found"; exit 1; }
 WEB_DIST_DIR="$ROOT/crates/braine_web/dist"
 WEB_DEPLOY_DIR="$HOME/projects/research/braine-web"
 
+ensure_web_dist_not_ignored() {
+  # If we are inside a git repo, ensure the web dist output isn't ignored.
+  # This helps guarantee the generated assets can be committed/tracked.
+  if command -v git >/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git check-ignore -q "${WEB_DIST_DIR}" "${WEB_DIST_DIR}/index.html" 2>/dev/null; then
+      echo "ERROR: $WEB_DIST_DIR is ignored by git (check .gitignore)."
+      exit 1
+    fi
+  fi
+}
+
+replace_web_dist_atomically() {
+  local tmp_dir="$1"
+
+  rm -rf "$WEB_DIST_DIR"
+  mkdir -p "$WEB_DIST_DIR"
+  cp -a "$tmp_dir"/. "$WEB_DIST_DIR"/
+}
+
 if [[ "$MODE" == "web" ]]; then
   # Manual build instead of trunk due to wasm-bindgen reference-types issues
   # Using Rust 1.84 to avoid reference-types issues in newer Rust versions
@@ -75,25 +94,27 @@ if [[ "$MODE" == "web" ]]; then
     echo "wasm-bindgen not found; install with: cargo install wasm-bindgen-cli --version 0.2.99"
     exit 1
   fi
-  mkdir -p "$WEB_DIST_DIR"
+  ensure_web_dist_not_ignored
+  WEB_DIST_TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$WEB_DIST_TMP_DIR"' EXIT
   wasm-bindgen \
     --target=web \
-    --out-dir="$WEB_DIST_DIR" \
+    --out-dir="$WEB_DIST_TMP_DIR" \
     --out-name=braine_web \
     "$WASM_FILE" \
     --no-typescript
   
   # Ensure dist/app.css exists. Source-of-truth is crates/braine_web/app.css.
   if [[ -f "$ROOT/crates/braine_web/app.css" ]]; then
-    cp -f "$ROOT/crates/braine_web/app.css" "$WEB_DIST_DIR/app.css"
+    cp -f "$ROOT/crates/braine_web/app.css" "$WEB_DIST_TMP_DIR/app.css"
   fi
-  if [[ ! -f "$WEB_DIST_DIR/app.css" ]]; then
+  if [[ ! -f "$WEB_DIST_TMP_DIR/app.css" ]]; then
     echo "ERROR: Missing $WEB_DIST_DIR/app.css (expected from crates/braine_web/app.css).";
     exit 1
   fi
 
   # Generate index.html
-  cat > "$WEB_DIST_DIR/index.html" << 'HTMLEOF'
+  cat > "$WEB_DIST_TMP_DIR/index.html" << 'HTMLEOF'
 <!doctype html>
 <html lang="en">
   <head>
@@ -111,6 +132,10 @@ if [[ "$MODE" == "web" ]]; then
   </body>
 </html>
 HTMLEOF
+
+  replace_web_dist_atomically "$WEB_DIST_TMP_DIR"
+  trap - EXIT
+  rm -rf "$WEB_DIST_TMP_DIR"
   echo "braine_web dist: $WEB_DIST_DIR"
 
   echo "[3/3] Sync braine_web dist to $WEB_DEPLOY_DIR"
@@ -236,25 +261,27 @@ fi
 cargo +1.84.0 build -p braine_web --target wasm32-unknown-unknown --features braine_web/web --release
 if command -v wasm-bindgen >/dev/null; then
   WASM_FILE="$ROOT/target/wasm32-unknown-unknown/release/braine_web.wasm"
-  mkdir -p "$WEB_DIST_DIR"
+  ensure_web_dist_not_ignored
+  WEB_DIST_TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$WEB_DIST_TMP_DIR"' EXIT
   wasm-bindgen \
     --target=web \
-    --out-dir="$WEB_DIST_DIR" \
+    --out-dir="$WEB_DIST_TMP_DIR" \
     --out-name=braine_web \
     "$WASM_FILE" \
     --no-typescript
 
   # Ensure dist/app.css exists. Source-of-truth is crates/braine_web/app.css.
   if [[ -f "$ROOT/crates/braine_web/app.css" ]]; then
-    cp -f "$ROOT/crates/braine_web/app.css" "$WEB_DIST_DIR/app.css"
+    cp -f "$ROOT/crates/braine_web/app.css" "$WEB_DIST_TMP_DIR/app.css"
   fi
-  if [[ ! -f "$WEB_DIST_DIR/app.css" ]]; then
+  if [[ ! -f "$WEB_DIST_TMP_DIR/app.css" ]]; then
     echo "ERROR: Missing $WEB_DIST_DIR/app.css (expected from crates/braine_web/app.css).";
     exit 1
   fi
 
   # Generate index.html
-  cat > "$WEB_DIST_DIR/index.html" << 'HTMLEOF'
+  cat > "$WEB_DIST_TMP_DIR/index.html" << 'HTMLEOF'
 <!doctype html>
 <html lang="en">
   <head>
@@ -272,6 +299,10 @@ if command -v wasm-bindgen >/dev/null; then
   </body>
 </html>
 HTMLEOF
+
+  replace_web_dist_atomically "$WEB_DIST_TMP_DIR"
+  trap - EXIT
+  rm -rf "$WEB_DIST_TMP_DIR"
   echo "braine_web dist: $WEB_DIST_DIR"
 else
   echo "ERROR: wasm-bindgen not found; cannot build braine_web dist in full mode."
