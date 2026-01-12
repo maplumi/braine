@@ -1,7 +1,7 @@
 //! Canvas-based charting and visualization for braine_web.
 
-use wasm_bindgen::{JsCast, JsValue};
 use js_sys::Reflect;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 const SERIES_COLORS: [&str; 8] = [

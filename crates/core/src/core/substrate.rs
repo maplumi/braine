@@ -498,6 +498,10 @@ pub struct Brain {
 
     pruned_last_step: usize,
 
+    // Count of tombstoned CSR entries (target == INVALID_UNIT).
+    // Not serialized; persistence compacts away tombstones.
+    csr_tombstones: usize,
+
     /// Units born via neurogenesis in the last step.
     births_last_step: usize,
 
@@ -644,8 +648,10 @@ impl Brain {
         // Build CSR connection storage with random sparse wiring.
         // Total connections = unit_count * connectivity_per_unit
         let total_conns = cfg.unit_count * cfg.connectivity_per_unit;
-        let mut conn_targets = Vec::with_capacity(total_conns);
-        let mut conn_weights = Vec::with_capacity(total_conns);
+        // Over-allocate a bit to reduce realloc spikes if append_connection is triggered.
+        let extra = total_conns / 2;
+        let mut conn_targets = Vec::with_capacity(total_conns + extra);
+        let mut conn_weights = Vec::with_capacity(total_conns + extra);
         let mut conn_offsets = Vec::with_capacity(cfg.unit_count + 1);
 
         for i in 0..cfg.unit_count {
@@ -696,6 +702,7 @@ impl Brain {
             neuromod: 0.0,
             pruned_last_step: 0,
             births_last_step: 0,
+            csr_tombstones: 0,
             rng,
             reserved,
             learning_enabled,
@@ -823,6 +830,7 @@ impl Brain {
             if self.connections.targets[idx] == INVALID_UNIT {
                 self.connections.targets[idx] = target;
                 self.connections.weights[idx] = bump.clamp(-1.5, 1.5);
+                self.csr_tombstones = self.csr_tombstones.saturating_sub(1);
                 return;
             }
         }
@@ -869,6 +877,9 @@ impl Brain {
         self.connections.targets = new_targets;
         self.connections.weights = new_weights;
         self.connections.offsets = new_offsets;
+
+        // All tombstones are removed by compaction.
+        self.csr_tombstones = 0;
     }
 
     // =========================================================================
@@ -930,8 +941,7 @@ impl Brain {
         // Otherwise the renderer will skip edges whose endpoints aren't in the node set.
         let top_edges = self.causal.top_edges(max_edges);
 
-        let mut endpoint_ids: Vec<SymbolId> =
-            Vec::with_capacity(top_edges.len().saturating_mul(2));
+        let mut endpoint_ids: Vec<SymbolId> = Vec::with_capacity(top_edges.len().saturating_mul(2));
         for (from, to, _strength) in &top_edges {
             endpoint_ids.push(*from);
             endpoint_ids.push(*to);
@@ -1256,6 +1266,7 @@ impl Brain {
             reward_neg_symbol,
             pruned_last_step: 0,
             births_last_step: 0,
+            csr_tombstones: 0,
             age_steps,
             telemetry: Telemetry::default(),
         };
@@ -3712,28 +3723,23 @@ impl Brain {
         self.sensor_member.push(false);
         self.group_member.push(false);
 
-        // Add connections FROM the new unit TO existing units.
-        // This requires rebuilding CSR (expensive but rare).
-        let targets_to_add: Vec<UnitId> = (0..connectivity)
-            .map(|_| {
-                let mut target = self.rng.gen_range_usize(0, new_id);
-                // Avoid self-connection (though new_id isn't connected yet)
-                if new_id > 0 && target == new_id {
-                    target = (target + 1) % new_id;
-                }
-                target
-            })
-            .collect();
-
-        let weights_to_add: Vec<f32> = (0..connectivity)
-            .map(|_| self.rng.gen_range_f32(-0.1, 0.1))
-            .collect();
-
         // Append to CSR: add offset for new unit, then add connections.
         let old_end = *self.connections.offsets.last().unwrap_or(&0);
         self.connections.offsets.push(old_end + connectivity);
-        self.connections.targets.extend(targets_to_add);
-        self.connections.weights.extend(weights_to_add);
+
+        // Add connections FROM the new unit TO existing units.
+        // This does not create tombstones; it just extends the CSR arrays.
+        for _ in 0..connectivity {
+            let mut target = self.rng.gen_range_usize(0, new_id);
+            // Avoid self-connection (though new_id isn't connected yet)
+            if new_id > 0 && target == new_id {
+                target = (target + 1) % new_id;
+            }
+            self.connections.targets.push(target);
+            self.connections
+                .weights
+                .push(self.rng.gen_range_f32(-0.1, 0.1));
+        }
 
         // Also create some INCOMING connections (from random existing units TO new unit).
         // This helps the new unit get activated.
@@ -3761,6 +3767,19 @@ impl Brain {
     /// Returns the range of new unit IDs.
     pub fn grow_units(&mut self, count: usize, connectivity: usize) -> core::ops::Range<UnitId> {
         let start_id = self.units.len();
+
+        // Reserve all capacity upfront to avoid repeated reallocations.
+        self.units.reserve(count);
+        self.reserved.reserve(count);
+        self.learning_enabled.reserve(count);
+        self.pending_input.reserve(count);
+        self.sensor_member.reserve(count);
+        self.group_member.reserve(count);
+
+        self.connections.offsets.reserve(count);
+        self.connections.targets.reserve(count * connectivity);
+        self.connections.weights.reserve(count * connectivity);
+
         for _ in 0..count {
             self.grow_unit(connectivity);
         }
@@ -3942,8 +3961,13 @@ impl Brain {
         for &id in &to_prune {
             let range = self.conn_range(id);
             for idx in range {
-                self.connections.targets[idx] = INVALID_UNIT;
-                self.connections.weights[idx] = 0.0;
+                if self.connections.targets[idx] != INVALID_UNIT {
+                    self.connections.targets[idx] = INVALID_UNIT;
+                    self.connections.weights[idx] = 0.0;
+                    self.csr_tombstones += 1;
+                } else {
+                    self.connections.weights[idx] = 0.0;
+                }
             }
             // Zero the unit's state.
             self.units[id].amp = 0.0;
@@ -4408,15 +4432,22 @@ impl Brain {
                     self.connections.targets[idx] = INVALID_UNIT;
                     self.connections.weights[idx] = 0.0;
                     self.pruned_last_step += 1;
+                    self.csr_tombstones += 1;
                 }
             }
         }
 
-        // Compact periodically to reclaim tombstones.
+        // Compact to reclaim tombstones.
+        // - Periodic compaction keeps things tidy even if tombstones are rare.
+        // - Threshold-based compaction prevents long stretches of high waste.
         // NOTE: scripts/dev.sh --web-only builds with Rust 1.84; unsigned `.is_multiple_of()`
         // is unstable there, so we keep the modulo form and silence the clippy lint.
         #[allow(clippy::manual_is_multiple_of)]
-        if self.age_steps % 1000 == 0 {
+        if self.age_steps % 1000 == 0
+            || (self.csr_tombstones > 0
+                && self.csr_tombstones * 4 > self.connections.targets.len()
+                && (self.age_steps & 0x3F) == 0)
+        {
             self.compact_connections();
         }
     }

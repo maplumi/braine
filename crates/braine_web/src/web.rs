@@ -1139,6 +1139,37 @@ fn App() -> impl IntoView {
         }
     };
 
+    // Migration: if IndexedDB contains an older brain image format, load it and re-save
+    // using the current serializer (latest version).
+    let do_migrate_idb_format = {
+        let set_status = set_status.clone();
+        move || {
+            let set_status = set_status.clone();
+            spawn_local(async move {
+                match idb_get_bytes(IDB_KEY_BRAIN_IMAGE).await {
+                    Ok(Some(bytes)) => match Brain::load_image_bytes(&bytes) {
+                        Ok(brain) => match brain.save_image_bytes() {
+                            Ok(new_bytes) => {
+                                match idb_put_bytes(IDB_KEY_BRAIN_IMAGE, &new_bytes).await {
+                                    Ok(()) => set_status.set(format!(
+                                        "migrated IndexedDB brain image: {} -> {} bytes",
+                                        bytes.len(),
+                                        new_bytes.len()
+                                    )),
+                                    Err(e) => set_status.set(format!("migration save failed: {e}")),
+                                }
+                            }
+                            Err(e) => set_status.set(format!("migration encode failed: {e}")),
+                        },
+                        Err(e) => set_status.set(format!("migration load failed: {e}")),
+                    },
+                    Ok(None) => set_status.set("no saved brain image in IndexedDB".to_string()),
+                    Err(e) => set_status.set(format!("migration read failed: {e}")),
+                }
+            });
+        }
+    };
+
     // Best-effort auto-load on startup so the web runtime can run without the daemon.
     // This is intentionally quiet unless a saved image exists.
     {
@@ -3508,6 +3539,7 @@ fn App() -> impl IntoView {
                                     <div class="stack tight">
                                         <button class="btn" on:click=move |_| do_save()>"💾 Save (IndexedDB)"</button>
                                         <button class="btn" on:click=move |_| do_load()>"📂 Load (IndexedDB)"</button>
+                                        <button class="btn" on:click=move |_| do_migrate_idb_format()>"🔁 Migrate stored format"</button>
                                         <button class="btn" on:click=move |_| do_export_bbi()>"📥 Export .bbi"</button>
                                         <button class="btn" on:click=move |_| do_import_bbi_click()>"📤 Import .bbi"</button>
                                     </div>

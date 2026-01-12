@@ -16,6 +16,22 @@ Braine is designed as an **edge-first, continuously-running cognitive substrate*
 4. **Symbol Tables** use inefficient String storage with no deduplication
 5. **Child Brain Spawning** creates full memory copies without structural sharing
 
+### Implementation Status (repo-aligned)
+
+This document mixes analysis with proposed changes. As of **2026-01-12**, the repo already implements some of the “recommended” mitigations, and a few others are intentionally deferred because they would change core dynamics, determinism, or persistence compatibility.
+
+Implemented (no functional changes):
+- **CSR tombstone reuse is already implemented**: when adding/bumping a connection, the code first reuses a tombstone slot inside the unit’s CSR segment before falling back to an expensive CSR insert/rebuild.
+- **CSR tombstone tracking + threshold compaction**: compaction now triggers not only periodically but also when tombstones exceed a fraction of the CSR storage.
+- **Neurogenesis capacity reservation**: `grow_units` now reserves capacity across the parallel arrays and CSR buffers up-front to reduce peak realloc spikes.
+- **Causal base_total maintenance**: pruning now updates `base_total` incrementally during retain, avoiding an O(|base|) sum during pruning passes.
+
+Deferred / needs explicit approval (changes behavior or compatibility):
+- **Hard caps / eviction in causal memory**: any cap changes long-horizon retention. Even “keep strongest edges” introduces an algorithmic bias. This should be behind a config knob with a clear evaluation plan.
+- **Sparse `pending_input`**: switching from `Vec<f32>` to a hash-map changes iteration order and can introduce small nondeterministic floating-point differences unless carefully controlled.
+- **f16 / quantized weights**: changes numeric precision and therefore the dynamical regime; should be treated as a new execution mode and validated per-task.
+- **Copy-on-write / structural sharing for child brains**: large architectural change that touches persistence, mutability boundaries, and expert consolidation semantics.
+
 ### Critical Bottlenecks (Priority Order)
 
 | Component | Severity | Memory Impact | Mitigation Complexity |

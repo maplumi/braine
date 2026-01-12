@@ -260,6 +260,10 @@ enum Request {
     SaveBrain,
     LoadBrain,
     ResetBrain,
+
+    MigrateStateFormat {
+        target_state_version: u32,
+    },
     SetFramerate {
         fps: u32,
     },
@@ -373,6 +377,9 @@ struct DaemonStorageInfo {
     brain_bytes: u64,
     #[serde(default)]
     runtime_bytes: u64,
+
+    #[serde(default)]
+    state_wrapper_version: u32,
     #[serde(default)]
     snapshots: Vec<DaemonSnapshotEntry>,
 }
@@ -1256,6 +1263,15 @@ fn main() -> Result<(), slint::PlatformError> {
         let c = client.clone();
         ui.on_reset_brain(move || c.send(Request::ResetBrain));
     }
+    {
+        let c = client.clone();
+        ui.on_migrate_state_format(move |target| {
+            let target_state_version = (target as u32).max(1);
+            c.send(Request::MigrateStateFormat {
+                target_state_version,
+            });
+        });
+    }
 
     // Auto snapshot (UI-driven repeating timer)
     {
@@ -1521,6 +1537,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_storage_runtime_file(snap.storage.runtime_file.clone().into());
                 ui.set_storage_runtime_bytes(snap.storage.runtime_bytes as i32);
                 ui.set_storage_loaded_snapshot(snap.storage.loaded_snapshot.clone().into());
+                ui.set_storage_state_wrapper_version(snap.storage.state_wrapper_version as i32);
 
                 let snaps: Vec<SnapshotItem> = snap
                     .storage

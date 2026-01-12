@@ -3,16 +3,16 @@
 extern crate alloc;
 
 #[cfg(feature = "std")]
-use std::collections::HashMap;
-#[cfg(feature = "std")]
 use std::collections::BinaryHeap;
+#[cfg(feature = "std")]
+use std::collections::HashMap;
 #[cfg(feature = "std")]
 use std::io::{self, Read, Write};
 
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(not(feature = "std"))]
 use alloc::collections::BinaryHeap;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use hashbrown::HashMap;
 
@@ -104,9 +104,7 @@ impl CausalMemory {
         // Amortized to avoid scanning large maps every tick.
         if (self.observe_count & 0xFF) == 0 {
             let thr = 0.001;
-            self.base.retain(|_, v| *v > thr);
-            self.edges.retain(|_, e| e.count > thr);
-            self.base_total = self.base.values().sum::<f32>();
+            self.prune_near_zero(thr);
         }
 
         // Update base counts.
@@ -142,6 +140,27 @@ impl CausalMemory {
 
         self.prev_symbols.clear();
         self.prev_symbols.extend_from_slice(current_symbols);
+    }
+
+    fn prune_near_zero(&mut self, threshold: f32) {
+        let mut new_total = 0.0;
+        self.base.retain(|_, v| {
+            if *v <= threshold {
+                false
+            } else {
+                new_total += *v;
+                true
+            }
+        });
+        self.base_total = new_total.max(0.0);
+
+        self.edges.retain(|_, e| e.count > threshold);
+
+        // Floating-point drift can accumulate after many retains.
+        // Re-anchor occasionally; this is still amortized and keeps invariants tight.
+        if (self.observe_count & 0x1FFF) == 0 {
+            self.base_total = self.base.values().sum::<f32>();
+        }
     }
 
     pub fn stats(&self) -> CausalStats {
@@ -543,5 +562,27 @@ mod tests {
 
         assert_eq!(a, unpacked_a);
         assert_eq!(b, unpacked_b);
+    }
+
+    #[test]
+    fn base_total_tracks_base_sum_after_prune() {
+        let mut mem = CausalMemory::new(0.0);
+
+        // Create a bunch of symbols with varying counts.
+        for i in 0..200u32 {
+            mem.observe(&[i]);
+        }
+
+        // Manually force some near-zero entries, then prune.
+        for (i, (_sym, v)) in mem.base.iter_mut().enumerate() {
+            if i % 3 == 0 {
+                *v = 0.0005;
+            }
+        }
+        mem.base_total = mem.base.values().sum::<f32>();
+        mem.prune_near_zero(0.001);
+
+        let expected = mem.base.values().sum::<f32>();
+        assert!((mem.base_total - expected).abs() < 1e-6);
     }
 }
