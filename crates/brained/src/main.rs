@@ -28,13 +28,17 @@ use tokio::sync::RwLock;
 use tokio::time;
 use tracing::{error, info, warn};
 
+mod advisor;
 mod experts;
 mod game;
 mod paths;
 mod state_image;
 
 use experts::{ExpertManager, ExpertsPersistenceMode, ParentLearningPolicy};
-use game::{BanditGame, PongGame, SpotGame, SpotReversalGame, SpotXYGame, TextNextTokenGame};
+use game::{
+    BanditGame, PongGame, ReplayDataset, ReplayGame, SpotGame, SpotReversalGame, SpotXYGame,
+    TextNextTokenGame,
+};
 use paths::AppPaths;
 
 fn default_experts_max_depth() -> u32 {
@@ -66,6 +70,7 @@ enum ActiveGame {
     SpotXY(SpotXYGame),
     Pong(PongGame),
     Text(TextNextTokenGame),
+    Replay(ReplayGame),
 }
 
 impl ActiveGame {
@@ -77,6 +82,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(_) => "spotxy",
             ActiveGame::Pong(_) => "pong",
             ActiveGame::Text(_) => "text",
+            ActiveGame::Replay(_) => "replay",
         }
     }
 
@@ -88,6 +94,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => g.update_timing(trial_period_ms),
             ActiveGame::Pong(g) => g.update_timing(trial_period_ms),
             ActiveGame::Text(g) => g.update_timing(trial_period_ms),
+            ActiveGame::Replay(g) => g.update_timing(trial_period_ms),
         }
     }
 
@@ -99,6 +106,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => g.stimulus_name(),
             ActiveGame::Pong(g) => g.stimulus_name(),
             ActiveGame::Text(g) => g.stimulus_name(),
+            ActiveGame::Replay(g) => g.stimulus_name(),
         }
     }
 
@@ -110,6 +118,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => std::borrow::Cow::Borrowed(g.correct_action()),
             ActiveGame::Pong(g) => std::borrow::Cow::Borrowed(g.correct_action()),
             ActiveGame::Text(g) => std::borrow::Cow::Owned(g.correct_action()),
+            ActiveGame::Replay(g) => std::borrow::Cow::Borrowed(g.correct_action()),
         }
     }
 
@@ -122,6 +131,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => g.allowed_actions(),
             ActiveGame::Pong(g) => g.allowed_actions(),
             ActiveGame::Text(g) => g.allowed_actions(),
+            ActiveGame::Replay(g) => g.allowed_actions(),
         }
     }
 
@@ -133,6 +143,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => g.response_made,
             ActiveGame::Pong(g) => g.response_made,
             ActiveGame::Text(g) => g.response_made,
+            ActiveGame::Replay(g) => g.response_made,
         }
     }
 
@@ -144,6 +155,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => g.trial_frame,
             ActiveGame::Pong(g) => g.trial_frame,
             ActiveGame::Text(g) => g.trial_frame,
+            ActiveGame::Replay(g) => g.trial_frame,
         }
     }
 
@@ -159,6 +171,9 @@ impl ActiveGame {
             ActiveGame::Pong(g) => g.sim.state.ball_y > g.sim.state.paddle_y,
             // For Text, this field is not meaningful.
             ActiveGame::Text(_) => false,
+
+            // For Replay, this field is not meaningful.
+            ActiveGame::Replay(_) => false,
         }
     }
 
@@ -180,6 +195,10 @@ impl ActiveGame {
                 let _ = trial_period_ms;
                 g.score_action(action)
             }
+            ActiveGame::Replay(g) => {
+                let _ = trial_period_ms;
+                g.score_action(action)
+            }
         }
     }
 
@@ -191,6 +210,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => &g.stats,
             ActiveGame::Pong(g) => &g.stats,
             ActiveGame::Text(g) => &g.stats,
+            ActiveGame::Replay(g) => &g.stats,
         }
     }
 
@@ -202,6 +222,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => &mut g.stats,
             ActiveGame::Pong(g) => &mut g.stats,
             ActiveGame::Text(g) => &mut g.stats,
+            ActiveGame::Replay(g) => &mut g.stats,
         }
     }
 
@@ -213,6 +234,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => g.last_action.as_deref(),
             ActiveGame::Pong(g) => g.last_action.as_deref(),
             ActiveGame::Text(g) => g.last_action.as_deref(),
+            ActiveGame::Replay(g) => g.last_action.as_deref(),
         }
     }
 
@@ -221,6 +243,7 @@ impl ActiveGame {
             ActiveGame::SpotXY(g) => Some(g.stimulus_key()),
             ActiveGame::Pong(g) => Some(g.stimulus_key()),
             ActiveGame::Text(g) => Some(g.stimulus_key()),
+            ActiveGame::Replay(g) => Some(g.stimulus_key()),
             _ => None,
         }
     }
@@ -409,6 +432,37 @@ enum Request {
         persistence_mode: String,
     },
     CullExperts,
+
+    // Advisor / LLM integration (slow loop; bounded config nudges)
+    AdvisorGet,
+    AdvisorSet {
+        enabled: bool,
+        #[serde(default)]
+        every_trials: Option<u32>,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    AdvisorOnce {
+        #[serde(default)]
+        apply: bool,
+    },
+
+    /// What Braine produces for LLM consumption (bounded, structured context).
+    AdvisorContext {
+        #[serde(default)]
+        include_action_scores: bool,
+    },
+
+    /// What an LLM returns (bounded advice). The daemon clamps and applies.
+    AdvisorApply {
+        advice: advisor::AdvisorAdvice,
+    },
+
+    // Replay dataset (dataset-driven evaluation)
+    ReplayGetDataset,
+    ReplaySetDataset {
+        dataset: ReplayDataset,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -456,6 +510,27 @@ enum Response {
         params: Vec<GameParamDef>,
     },
     Graph(Box<GraphSnapshot>),
+
+    AdvisorStatus {
+        config: advisor::AdvisorConfig,
+        #[serde(default)]
+        last_report: Option<advisor::AdvisorReport>,
+    },
+    AdvisorReport {
+        report: advisor::AdvisorReport,
+        #[serde(default)]
+        applied: bool,
+    },
+
+    AdvisorContext {
+        context: advisor::AdvisorContext,
+        #[serde(default)]
+        action_scores: Vec<ActionScoreBreakdown>,
+    },
+
+    ReplayDataset {
+        dataset: ReplayDataset,
+    },
     Success {
         message: String,
     },
@@ -559,6 +634,22 @@ struct StateSnapshot {
     // Storage / snapshots
     #[serde(default)]
     storage: StorageInfo,
+
+    // Advisor / LLM integration (optional)
+    #[serde(default)]
+    advisor: AdvisorSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AdvisorSnapshot {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    every_trials: u32,
+    #[serde(default)]
+    last_rationale: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -742,6 +833,20 @@ enum GameState {
         #[serde(default)]
         text_vocab_size: u32,
     },
+
+    #[serde(rename = "replay")]
+    Replay {
+        #[serde(flatten)]
+        common: GameCommon,
+        #[serde(default)]
+        replay_dataset: String,
+        #[serde(default)]
+        replay_index: u32,
+        #[serde(default)]
+        replay_total: u32,
+        #[serde(default)]
+        replay_trial_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -794,6 +899,7 @@ struct DaemonState {
     brain: Brain,
     experts: ExpertManager,
     game: ActiveGame,
+    replay_dataset: ReplayDataset,
     running: bool,
     frame: u64,
     last_reward: f32,
@@ -817,6 +923,8 @@ struct DaemonState {
     meaning_last: MeaningSnapshot,
     meaning_pair_gap_history: Vec<f32>,
     meaning_global_gap_history: Vec<f32>,
+
+    advisor: advisor::AdvisorRuntime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -882,6 +990,7 @@ impl DaemonState {
             brain,
             experts: ExpertManager::new(),
             game: ActiveGame::Spot(SpotGame::new()),
+            replay_dataset: ReplayDataset::builtin_left_right_spot(),
             running: false,
             frame: 0,
             last_reward: 0.0,
@@ -906,6 +1015,8 @@ impl DaemonState {
             meaning_pair_gap_history: Vec::with_capacity(96),
             meaning_global_gap_history: Vec::with_capacity(96),
             view_mode: BrainViewMode::Parent,
+
+            advisor: advisor::AdvisorRuntime::new_from_env(),
         }
     }
 
@@ -1014,9 +1125,14 @@ impl DaemonState {
                 self.ensure_text_io(&gg);
                 self.game = ActiveGame::Text(gg);
             }
+            "replay" => {
+                let gg = ReplayGame::new(self.replay_dataset.clone());
+                self.ensure_replay_io();
+                self.game = ActiveGame::Replay(gg);
+            }
             _ => {
                 return Err(format!(
-                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|pong|text"
+                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|pong|text|replay"
                 ))
             }
         }
@@ -1078,6 +1194,32 @@ impl DaemonState {
         }
         for name in g.allowed_actions() {
             self.brain.ensure_action_min_width(name, 6);
+        }
+    }
+
+    fn ensure_replay_io(&mut self) {
+        use std::collections::BTreeSet;
+
+        let mut sensors: BTreeSet<String> = BTreeSet::new();
+        let mut actions: BTreeSet<String> = BTreeSet::new();
+
+        for tr in &self.replay_dataset.trials {
+            for s in &tr.stimuli {
+                sensors.insert(s.name.clone());
+            }
+            for a in &tr.allowed_actions {
+                actions.insert(a.clone());
+            }
+            if !tr.correct_action.trim().is_empty() {
+                actions.insert(tr.correct_action.clone());
+            }
+        }
+
+        for name in sensors {
+            self.brain.ensure_sensor_min_width(&name, 3);
+        }
+        for name in actions {
+            self.brain.ensure_action_min_width(&name, 6);
         }
     }
 
@@ -1181,6 +1323,10 @@ impl DaemonState {
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
                 ActiveGame::Text(g) => {
+                    g.apply_stimuli(brain);
+                    brain.note_compound_symbol(&[stimulus_key]);
+                }
+                ActiveGame::Replay(g) => {
                     g.apply_stimuli(brain);
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
@@ -1328,6 +1474,33 @@ impl DaemonState {
         }
 
         if completed {
+            // Advisor (LLM integration point): slow-loop, bounded config nudges.
+            // Must not directly choose actions; only updates a small set of knobs.
+            if allow_learning {
+                let trials = self.game.stats().trials;
+                if self.advisor.should_invoke(trials) {
+                    let text_regime = match &self.game {
+                        ActiveGame::Text(g) => Some(g.regime()),
+                        _ => None,
+                    };
+                    let ctx = advisor::AdvisorContext {
+                        game: self.game.kind().to_string(),
+                        context_key: context_key.to_string(),
+                        trials,
+                        accuracy: self.game.stats().accuracy(),
+                        recent_rate: self.game.stats().recent_rate(),
+                        last_reward: self.last_reward,
+                        exploration_eps: self.exploration_eps,
+                        meaning_alpha: self.meaning_alpha,
+                        text_regime,
+                    };
+
+                    // Auto-invocation always applies.
+                    let report = self.advisor.invoke(ctx, trials, true);
+                    self.apply_advice(&report.advice);
+                }
+            }
+
             // Anneal exploration but keep a small floor for on-policy correction
             self.exploration_eps = (self.exploration_eps * 0.99).max(0.02);
 
@@ -1360,6 +1533,15 @@ impl DaemonState {
         }
 
         self.frame += 1;
+    }
+
+    fn apply_advice(&mut self, advice: &advisor::AdvisorAdvice) {
+        if let Some(v) = advice.exploration_eps {
+            self.exploration_eps = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = advice.meaning_alpha {
+            self.meaning_alpha = v.clamp(0.0, 50.0);
+        }
     }
 
     fn get_snapshot(&self) -> StateSnapshot {
@@ -1425,6 +1607,13 @@ impl DaemonState {
                 text_shift_every: g.shift_every_outcomes(),
                 text_vocab_size: g.vocab_size() as u32,
             },
+            ActiveGame::Replay(g) => GameState::Replay {
+                common: common(),
+                replay_dataset: g.dataset_name().to_string(),
+                replay_index: g.index() as u32,
+                replay_total: g.total_trials() as u32,
+                replay_trial_id: g.current_trial_id().to_string(),
+            },
         };
 
         let (osc_x, osc_y, osc_mag) = view_brain.oscillation_sample(512);
@@ -1486,6 +1675,22 @@ impl DaemonState {
             active_expert,
 
             storage: self.storage_info(),
+
+            advisor: {
+                let cfg = self.advisor.status();
+                let last_rationale = self
+                    .advisor
+                    .last_report
+                    .as_ref()
+                    .map(|r| r.advice.rationale.clone())
+                    .unwrap_or_default();
+                AdvisorSnapshot {
+                    enabled: cfg.enabled,
+                    mode: cfg.mode,
+                    every_trials: cfg.every_trials,
+                    last_rationale,
+                }
+            },
         }
     }
 
@@ -2391,6 +2596,58 @@ async fn handle_client(
                         }],
                     },
                     ApiCategory {
+                        name: "Advisor".to_string(),
+                        endpoints: vec![
+                            ApiEndpoint {
+                                request: "AdvisorGet".to_string(),
+                                input: "{}".to_string(),
+                                output: "{ type: AdvisorStatus, config, last_report? }".to_string(),
+                                description: "Get advisor runtime config + last report (if any).".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "AdvisorSet".to_string(),
+                                input: "{ enabled, every_trials?, mode? }".to_string(),
+                                output: "{ type: Success|Error }".to_string(),
+                                description: "Update advisor runtime knobs.".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "AdvisorOnce".to_string(),
+                                input: "{ apply }".to_string(),
+                                output: "{ type: AdvisorReport, report, applied }".to_string(),
+                                description: "Invoke built-in advisor once (stub) and optionally apply.".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "AdvisorContext".to_string(),
+                                input: "{ include_action_scores }".to_string(),
+                                output: "{ type: AdvisorContext, context, action_scores: [...] }".to_string(),
+                                description: "LLM boundary: get structured context for an external advisor.".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "AdvisorApply".to_string(),
+                                input: "{ advice: { exploration_eps?, meaning_alpha?, ttl_trials, rationale } }".to_string(),
+                                output: "{ type: Success|Error }".to_string(),
+                                description: "LLM boundary: apply external advisor advice (daemon clamps + records).".to_string(),
+                            },
+                        ],
+                    },
+                    ApiCategory {
+                        name: "Replay".to_string(),
+                        endpoints: vec![
+                            ApiEndpoint {
+                                request: "ReplayGetDataset".to_string(),
+                                input: "{}".to_string(),
+                                output: "{ type: ReplayDataset, dataset: { name, trials: [...] } }".to_string(),
+                                description: "Get current replay dataset (for dataset-driven evaluation).".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "ReplaySetDataset".to_string(),
+                                input: "{ dataset: { name, trials: [...] } }".to_string(),
+                                output: "{ type: Success|Error }".to_string(),
+                                description: "Set replay dataset (must be stopped); resizes sensors/actions as needed.".to_string(),
+                            },
+                        ],
+                    },
+                    ApiCategory {
                         name: "General".to_string(),
                         endpoints: vec![ApiEndpoint {
                             request: "GetState".to_string(),
@@ -2539,6 +2796,167 @@ async fn handle_client(
             Request::GetState => {
                 let s = state.read().await;
                 Response::State(Box::new(s.get_snapshot()))
+            }
+
+            Request::AdvisorGet => {
+                let s = state.read().await;
+                Response::AdvisorStatus {
+                    config: s.advisor.status(),
+                    last_report: s.advisor.last_report.clone(),
+                }
+            }
+
+            Request::AdvisorSet {
+                enabled,
+                every_trials,
+                mode,
+            } => {
+                let mut s = state.write().await;
+                s.advisor.set_enabled(enabled);
+                if let Some(n) = every_trials {
+                    s.advisor.set_every_trials(n);
+                }
+                if let Some(m) = mode {
+                    s.advisor.set_mode(m);
+                }
+                Response::Success {
+                    message: "Advisor config updated".to_string(),
+                }
+            }
+
+            Request::AdvisorOnce { apply } => {
+                let mut s = state.write().await;
+                let trials = s.game.stats().trials;
+                let context_key = s.current_stimulus_key();
+                let text_regime = match &s.game {
+                    ActiveGame::Text(g) => Some(g.regime()),
+                    _ => None,
+                };
+
+                let ctx = advisor::AdvisorContext {
+                    game: s.game.kind().to_string(),
+                    context_key: context_key.into_owned(),
+                    trials,
+                    accuracy: s.game.stats().accuracy(),
+                    recent_rate: s.game.stats().recent_rate(),
+                    last_reward: s.last_reward,
+                    exploration_eps: s.exploration_eps,
+                    meaning_alpha: s.meaning_alpha,
+                    text_regime,
+                };
+
+                let report = s.advisor.invoke(ctx, trials, apply);
+                if apply {
+                    s.apply_advice(&report.advice);
+                }
+                Response::AdvisorReport {
+                    report,
+                    applied: apply,
+                }
+            }
+
+            Request::AdvisorContext {
+                include_action_scores,
+            } => {
+                let s = state.read().await;
+                let trials = s.game.stats().trials;
+                let context_key = s.current_stimulus_key();
+                let text_regime = match &s.game {
+                    ActiveGame::Text(g) => Some(g.regime()),
+                    _ => None,
+                };
+
+                let ctx = advisor::AdvisorContext {
+                    game: s.game.kind().to_string(),
+                    context_key: context_key.clone().into_owned(),
+                    trials,
+                    accuracy: s.game.stats().accuracy(),
+                    recent_rate: s.game.stats().recent_rate(),
+                    last_reward: s.last_reward,
+                    exploration_eps: s.exploration_eps,
+                    meaning_alpha: s.meaning_alpha,
+                    text_regime,
+                };
+
+                let action_scores = if include_action_scores {
+                    let brain = s.view_brain_for_context(&context_key);
+                    brain.action_score_breakdown(&context_key, s.meaning_alpha)
+                } else {
+                    Vec::new()
+                };
+
+                Response::AdvisorContext {
+                    context: ctx,
+                    action_scores,
+                }
+            }
+
+            Request::AdvisorApply { advice } => {
+                let mut s = state.write().await;
+                let trials = s.game.stats().trials;
+                let context_key = s.current_stimulus_key();
+                let text_regime = match &s.game {
+                    ActiveGame::Text(g) => Some(g.regime()),
+                    _ => None,
+                };
+
+                let ctx = advisor::AdvisorContext {
+                    game: s.game.kind().to_string(),
+                    context_key: context_key.into_owned(),
+                    trials,
+                    accuracy: s.game.stats().accuracy(),
+                    recent_rate: s.game.stats().recent_rate(),
+                    last_reward: s.last_reward,
+                    exploration_eps: s.exploration_eps,
+                    meaning_alpha: s.meaning_alpha,
+                    text_regime,
+                };
+
+                // Clamp + apply. This is the explicit LLM boundary.
+                s.apply_advice(&advice);
+
+                // Record for visibility, even when advice did not originate from the built-in stub.
+                s.advisor.last_report = Some(advisor::AdvisorReport {
+                    at_trials: trials,
+                    applied: true,
+                    context: ctx,
+                    advice,
+                });
+
+                Response::Success {
+                    message: "Advisor advice applied".to_string(),
+                }
+            }
+
+            Request::ReplayGetDataset => {
+                let s = state.read().await;
+                Response::ReplayDataset {
+                    dataset: s.replay_dataset.clone(),
+                }
+            }
+
+            Request::ReplaySetDataset { dataset } => {
+                let mut s = state.write().await;
+                if s.running {
+                    Response::Error {
+                        message: "Stop the simulation before setting replay dataset".to_string(),
+                    }
+                } else {
+                    s.replay_dataset = dataset;
+
+                    // Keep I/O sizes in sync, and reset replay game if currently active.
+                    s.ensure_replay_io();
+                    if matches!(s.game, ActiveGame::Replay(_)) {
+                        let gg = ReplayGame::new(s.replay_dataset.clone());
+                        s.game = ActiveGame::Replay(gg);
+                        s.pending_neuromod = 0.0;
+                        s.last_reward = 0.0;
+                    }
+
+                    Response::Success {
+                        message: "Replay dataset updated".to_string(),
+                    }
+                }
             }
             Request::SetView { view } => {
                 let mut s = state.write().await;

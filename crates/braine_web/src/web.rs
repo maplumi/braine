@@ -1,6 +1,12 @@
+#![allow(clippy::clone_on_copy)]
+
 use braine::substrate::{Brain, BrainConfig, CausalGraphViz, Stimulus, UnitPlotPoint};
 use braine_games::{
-    bandit::BanditGame, spot::SpotGame, spot_reversal::SpotReversalGame, spot_xy::SpotXYGame,
+    bandit::BanditGame,
+    replay::{ReplayDataset, ReplayGame},
+    spot::SpotGame,
+    spot_reversal::SpotReversalGame,
+    spot_xy::SpotXYGame,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -206,6 +212,7 @@ fn App() -> impl IntoView {
 
     let (sequence_state, set_sequence_state) = signal::<Option<SequenceUiState>>(None);
     let (text_state, set_text_state) = signal::<Option<TextUiState>>(None);
+    let (replay_state, set_replay_state) = signal::<Option<ReplayUiState>>(None);
 
     // Spot/SpotReversal stimulus (left/right) for UI highlighting.
     let (spot_is_left, set_spot_is_left) = signal::<Option<bool>>(None);
@@ -481,7 +488,7 @@ fn App() -> impl IntoView {
                             let ts = js_sys::Date::new_0()
                                 .to_iso_string()
                                 .as_string()
-                                .unwrap_or_else(|| "".to_string());
+                                .unwrap_or_default();
                             set_idb_last_save.set(ts);
                         }
                         Err(e) => {
@@ -599,6 +606,7 @@ fn App() -> impl IntoView {
             set_pong_ball_speed.set(snap.pong_ball_speed);
             set_sequence_state.set(snap.sequence_state);
             set_text_state.set(snap.text_state);
+            set_replay_state.set(snap.replay_state);
             set_spot_is_left.set(snap.spot_is_left);
 
             // Persist per-game stats + chart history so refresh restores the current state.
@@ -1100,7 +1108,7 @@ fn App() -> impl IntoView {
                         let ts = js_sys::Date::new_0()
                             .to_iso_string()
                             .as_string()
-                            .unwrap_or_else(|| "".to_string());
+                            .unwrap_or_default();
                         set_idb_last_save.set(ts);
                         set_status.set(format!("saved {} bytes to IndexedDB", bytes.len()));
                     }
@@ -1293,7 +1301,7 @@ fn App() -> impl IntoView {
                                         let ts = js_sys::Date::new_0()
                                             .to_iso_string()
                                             .as_string()
-                                            .unwrap_or_else(|| "".to_string());
+                                            .unwrap_or_default();
                                         set_idb_last_save.set(ts);
                                         set_status.set(format!(
                                             "imported {} bytes (.bbi); auto-saved to IndexedDB",
@@ -1534,6 +1542,7 @@ fn App() -> impl IntoView {
                 }
             } else {
                 let bucket = (idle_time * 10.0) as u32; // ~10Hz buckets
+                #[allow(clippy::manual_is_multiple_of)]
                 if bucket % 20 != 0 {
                     return;
                 }
@@ -3763,6 +3772,33 @@ fn App() -> impl IntoView {
                                                         </ul>
                                                     </div>
                                                 }.into_any(),
+                                                GameKind::Replay => view! {
+                                                    <div style="color: var(--text); line-height: 1.6;">
+                                                        <div style="margin-bottom: 6px;"><strong>"Replay"</strong>" — Dataset-driven trials"</div>
+                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
+                                                            <li>"Stimuli and correct actions come from a JSON dataset"</li>
+                                                            <li>"Goal: Learn the dataset mapping online"</li>
+                                                            <li>"Ideal for deterministic evaluation + LLM boundary tests"</li>
+                                                            <li>
+                                                                {move || {
+                                                                    replay_state
+                                                                        .get()
+                                                                        .map(|s| {
+                                                                            format!(
+                                                                                "Dataset: {} (trial {} / {}, id={})",
+                                                                                s.dataset,
+                                                                                s.index,
+                                                                                s.total
+                                                                                ,
+                                                                                s.trial_id
+                                                                            )
+                                                                        })
+                                                                        .unwrap_or_else(|| "Dataset: (not running)".to_string())
+                                                                }}
+                                                            </li>
+                                                        </ul>
+                                                    </div>
+                                                }.into_any(),
                                             }
                                         }}
                                     </div>
@@ -4625,6 +4661,7 @@ enum GameKind {
     Pong,
     Sequence,
     Text,
+    Replay,
 }
 
 impl GameKind {
@@ -4637,6 +4674,7 @@ impl GameKind {
             GameKind::Pong => "pong",
             GameKind::Sequence => "sequence",
             GameKind::Text => "text",
+            GameKind::Replay => "replay",
         }
     }
 
@@ -4649,6 +4687,7 @@ impl GameKind {
             GameKind::Pong => "Pong",
             GameKind::Sequence => "Sequence",
             GameKind::Text => "Text",
+            GameKind::Replay => "Replay",
         }
     }
 
@@ -4661,6 +4700,7 @@ impl GameKind {
             GameKind::Pong => "🏓",
             GameKind::Sequence => "🔢",
             GameKind::Text => "📝",
+            GameKind::Replay => "📼",
         }
     }
 
@@ -4673,6 +4713,7 @@ impl GameKind {
             GameKind::Pong => "Discrete-sensor Pong: ball/paddle position and velocity are binned into named sensors; actions are up/down/stay. The sim uses continuous collision detection against the arena walls and is deterministic given a fixed seed (randomness only on post-score serve).",
             GameKind::Sequence => "Next-token prediction over a small alphabet {A,B,C} with a regime shift between two fixed patterns every 60 outcomes.",
             GameKind::Text => "Next-token prediction over a byte vocabulary built from two small corpora (default: 'hello world\\n' vs 'goodbye world\\n') with a regime shift every 80 outcomes.",
+            GameKind::Replay => "Dataset-driven replay: each completed trial consumes a record (stimuli + allowed actions + correct action) and emits reward based on correctness. Useful for deterministic evaluation of the advisor boundary.",
         }
     }
 
@@ -4685,6 +4726,7 @@ impl GameKind {
             GameKind::Pong => "• Continuous state representation\n• Real-time motor control\n• Predictive tracking\n• Reward delay handling\n• Sensorimotor coordination",
             GameKind::Sequence => "• Temporal pattern recognition\n• Regime/distribution shifts\n• Sequence prediction over {A,B,C}\n• Phase detection\n• Attractor dynamics",
             GameKind::Text => "• Symbolic next-token prediction (byte tokens)\n• Regime/distribution shifts\n• Online learning without backprop\n• Vocabulary scaling (max_vocab)\n• Credit assignment with scalar reward",
+            GameKind::Replay => "• Deterministic evaluation loop\n• Dataset-conditioned correctness reward\n• Context stability (replay::<dataset>)\n• Advisor boundary validation (context → advice)",
         }
     }
 
@@ -4697,6 +4739,7 @@ impl GameKind {
             GameKind::Pong => "Base stimulus: pong (context)\nSensors: pong_ball_x_00..07, pong_ball_y_00..07, pong_paddle_y_00..07, pong_vx_pos/neg, pong_vy_pos/neg\nStimulus key: pong_b08_bx.._by.._py.._vx.._vy..\nActions: up, down, stay",
             GameKind::Sequence => "Base stimulus: sequence (context)\nSensors: seq_token_A/B/C and seq_regime_0/1\nStimulus key: seq_r{0|1}_t{A|B|C}\nActions: A, B, C",
             GameKind::Text => "Base stimulus: text (context)\nSensors: txt_regime_0/1 and txt_tok_XX (byte tokens) + txt_tok_UNK\nActions: tok_XX for bytes in vocab + tok_UNK",
+            GameKind::Replay => "Stimuli/actions: defined per-trial by the dataset\nStimulus key: replay::<dataset_name>\nReward: +1 on correct_action, −1 otherwise",
         }
     }
 
@@ -4709,6 +4752,7 @@ impl GameKind {
             GameKind::Pong => "+0.05: Action matches a simple tracking heuristic\n−0.05: Action mismatches heuristic\nEvent reward: +1 on paddle hit, −1 on miss (when the ball reaches the left boundary at x=0)\nAll rewards are clamped to [−1, +1]",
             GameKind::Sequence => "+1.0: Correct next-token prediction\n−1.0: Incorrect\nRegime flips every shift_every_outcomes=60",
             GameKind::Text => "+1.0: Correct next-token prediction\n−1.0: Incorrect\nRegime flips every shift_every_outcomes=80",
+            GameKind::Replay => "+1.0: Action matches correct_action\n−1.0: Otherwise\nNotes: no stochasticity unless your dataset includes it",
         }
     }
 
@@ -4721,6 +4765,7 @@ impl GameKind {
             GameKind::Pong => "• Track ball trajectory predictively\n• Minimize missed balls over time\n• Develop smooth control policy",
             GameKind::Sequence => "• Predict sequences of length 3-6+\n• Recognize phase within sequence\n• Handle pattern length changes",
             GameKind::Text => "• Build character transition model\n• Adapt to regime shifts\n• Predict based on statistical regularities",
+            GameKind::Replay => "• Achieve high accuracy on dataset\n• Use stable context to generalize across repeated trials\n• Validate advisor integration without action selection",
         }
     }
 
@@ -4733,6 +4778,7 @@ impl GameKind {
             GameKind::Pong,
             GameKind::Sequence,
             GameKind::Text,
+            GameKind::Replay,
         ]
     }
 }
@@ -4791,6 +4837,11 @@ impl AppRuntime {
                 let g = TextWebGame::new();
                 self.ensure_text_io(&g);
                 WebGame::Text(g)
+            }
+            GameKind::Replay => {
+                let ds = ReplayDataset::builtin_left_right_spot();
+                self.ensure_replay_io(&ds);
+                WebGame::Replay(ReplayGame::new(ds))
             }
         };
         self.pending_neuromod = 0.0;
@@ -4852,6 +4903,32 @@ impl AppRuntime {
         }
         for name in g.allowed_actions() {
             self.brain.ensure_action_min_width(name, 6);
+        }
+    }
+
+    fn ensure_replay_io(&mut self, dataset: &ReplayDataset) {
+        use std::collections::BTreeSet;
+
+        let mut sensors: BTreeSet<String> = BTreeSet::new();
+        let mut actions: BTreeSet<String> = BTreeSet::new();
+
+        for tr in &dataset.trials {
+            for s in &tr.stimuli {
+                sensors.insert(s.name.clone());
+            }
+            for a in &tr.allowed_actions {
+                actions.insert(a.clone());
+            }
+            if !tr.correct_action.trim().is_empty() {
+                actions.insert(tr.correct_action.clone());
+            }
+        }
+
+        for name in sensors {
+            self.brain.ensure_sensor_min_width(&name, 3);
+        }
+        for name in actions {
+            self.brain.ensure_action_min_width(&name, 6);
         }
     }
 
@@ -4961,10 +5038,8 @@ impl AppRuntime {
         let base_stimulus = self.game.stimulus_name();
         let stimulus_key_owned: Option<String> = if self.game.reversal_active() {
             Some(format!("{}::rev", base_stimulus))
-        } else if let Some(k) = self.game.stimulus_key() {
-            Some(k.to_string())
         } else {
-            None
+            self.game.stimulus_key().map(|k| k.to_string())
         };
         let context_key_owned = stimulus_key_owned.unwrap_or_else(|| base_stimulus.to_string());
         let context_key = context_key_owned.as_str();
@@ -4988,6 +5063,9 @@ impl AppRuntime {
                 g.apply_stimuli(&mut self.brain);
             }
             WebGame::Text(g) => {
+                g.apply_stimuli(&mut self.brain);
+            }
+            WebGame::Replay(g) => {
                 g.apply_stimuli(&mut self.brain);
             }
         }
@@ -5088,6 +5166,26 @@ impl AppRuntime {
                         .unwrap_or_else(|| "tok_UNK".to_string())
                 }
             }
+            WebGame::Replay(g) => {
+                let allowed = g.allowed_actions();
+                if allowed.is_empty() {
+                    return None;
+                }
+
+                if explore {
+                    allowed[rand_idx % allowed.len()].to_string()
+                } else {
+                    let ranked = self
+                        .brain
+                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
+                    ranked
+                        .into_iter()
+                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
+                        .map(|(name, _score)| name)
+                        .or_else(|| allowed.first().cloned())
+                        .unwrap_or_else(|| "stay".to_string())
+                }
+            }
             _ => {
                 let allowed = ["left", "right"];
                 if explore {
@@ -5148,6 +5246,7 @@ impl AppRuntime {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum WebGame {
     Spot(SpotGame),
     Bandit(BanditGame),
@@ -5156,6 +5255,7 @@ enum WebGame {
     Pong(PongWebGame),
     Sequence(SequenceWebGame),
     Text(TextWebGame),
+    Replay(ReplayGame),
 }
 
 impl WebGame {
@@ -5168,6 +5268,7 @@ impl WebGame {
             WebGame::Pong(g) => g.allowed_actions().to_vec(),
             WebGame::Sequence(g) => g.allowed_actions().to_vec(),
             WebGame::Text(g) => g.allowed_actions().to_vec(),
+            WebGame::Replay(g) => g.allowed_actions().to_vec(),
         }
     }
 
@@ -5180,6 +5281,7 @@ impl WebGame {
             WebGame::Pong(g) => g.stimulus_name(),
             WebGame::Sequence(g) => g.stimulus_name(),
             WebGame::Text(g) => g.stimulus_name(),
+            WebGame::Replay(g) => g.stimulus_name(),
         }
     }
 
@@ -5189,6 +5291,7 @@ impl WebGame {
             WebGame::Pong(g) => Some(g.stimulus_key()),
             WebGame::Sequence(g) => Some(g.stimulus_key()),
             WebGame::Text(g) => Some(g.stimulus_key()),
+            WebGame::Replay(g) => Some(g.stimulus_key()),
             _ => None,
         }
     }
@@ -5216,6 +5319,7 @@ impl WebGame {
             WebGame::Pong(g) => g.response_made,
             WebGame::Sequence(g) => g.response_made(),
             WebGame::Text(g) => g.response_made(),
+            WebGame::Replay(g) => g.response_made,
         }
     }
 
@@ -5228,6 +5332,7 @@ impl WebGame {
             WebGame::Pong(g) => g.update_timing(trial_period_ms),
             WebGame::Sequence(g) => g.update_timing(trial_period_ms),
             WebGame::Text(g) => g.update_timing(trial_period_ms),
+            WebGame::Replay(g) => g.update_timing(trial_period_ms),
         }
     }
 
@@ -5249,6 +5354,10 @@ impl WebGame {
                 let _ = trial_period_ms;
                 g.score_action(action)
             }
+            WebGame::Replay(g) => {
+                let _ = trial_period_ms;
+                g.score_action(action)
+            }
         }
     }
 
@@ -5261,6 +5370,7 @@ impl WebGame {
             WebGame::Pong(g) => &g.stats,
             WebGame::Sequence(g) => &g.game.stats,
             WebGame::Text(g) => &g.game.stats,
+            WebGame::Replay(g) => &g.stats,
         }
     }
 
@@ -5273,6 +5383,7 @@ impl WebGame {
             WebGame::Pong(g) => g.stats = stats,
             WebGame::Sequence(g) => g.game.stats = stats,
             WebGame::Text(g) => g.game.stats = stats,
+            WebGame::Replay(g) => g.stats = stats,
         }
     }
 
@@ -5332,6 +5443,15 @@ impl WebGame {
                 }),
                 ..GameUiSnapshot::default()
             },
+            WebGame::Replay(g) => GameUiSnapshot {
+                replay_state: Some(ReplayUiState {
+                    dataset: g.dataset_name().to_string(),
+                    index: g.index() as u32,
+                    total: g.total_trials() as u32,
+                    trial_id: g.current_trial_id().to_string(),
+                }),
+                ..GameUiSnapshot::default()
+            },
         }
     }
 }
@@ -5357,6 +5477,15 @@ struct GameUiSnapshot {
 
     sequence_state: Option<SequenceUiState>,
     text_state: Option<TextUiState>,
+    replay_state: Option<ReplayUiState>,
+}
+
+#[derive(Clone)]
+struct ReplayUiState {
+    dataset: String,
+    index: u32,
+    total: u32,
+    trial_id: String,
 }
 
 #[derive(Clone)]
@@ -5618,7 +5747,7 @@ fn choose_text_token_sensor(last_byte: Option<u8>, known_sensors: &[String]) -> 
         return unk.to_string();
     }
 
-    known_sensors.first().cloned().unwrap_or_else(|| preferred)
+    known_sensors.first().cloned().unwrap_or(preferred)
 }
 
 fn token_action_name_from_sensor(sensor: &str) -> String {

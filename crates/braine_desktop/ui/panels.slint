@@ -22,6 +22,7 @@ export component GameHeader inherits Rectangle {
         (kind == "spotxy") ? "SpotXY" :
         (kind == "pong") ? "Pong" :
         (kind == "text") ? "Text" :
+        (kind == "replay") ? "Replay" :
         "Spot";
 
     property <string> help_text:
@@ -30,6 +31,7 @@ export component GameHeader inherits Rectangle {
         (kind == "spotxy") ? "Track the dot (TRAIN) or holdout (EVAL)." :
         (kind == "spot_reversal") ? "Rule flips; context bit helps detect reversals." :
         (kind == "text") ? "Next-token prediction: observe token, choose the next token." :
+        (kind == "replay") ? "Dataset-driven trials: reward is computed from correctness." :
         "Discriminate left vs right spot.";
 
     VerticalBox {
@@ -52,6 +54,14 @@ export component GameHeader inherits Rectangle {
                   " token=" + game.text-token +
                   " target_next=" + game.text-target-next +
                   " vocab=" + game.text-vocab-size;
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        if kind == "replay": Text {
+            text: "dataset=" + game.replay-dataset +
+                  " trial=" + game.replay-index + "/" + game.replay-total +
+                  ((game.replay-trial-id != "") ? (" id=" + game.replay-trial-id) : "");
             color: Theme.text-secondary;
             font-size: 12px;
         }

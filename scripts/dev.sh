@@ -55,7 +55,7 @@ done
 command -v cargo >/dev/null || { echo "cargo not found"; exit 1; }
 
 WEB_DIST_DIR="$ROOT/crates/braine_web/dist"
-WEB_DEPLOY_DIR="$HOME/projects/research/braine-web"
+
 
 ensure_web_dist_not_ignored() {
   # If we are inside a git repo, ensure the web dist output isn't ignored.
@@ -138,25 +138,7 @@ HTMLEOF
   rm -rf "$WEB_DIST_TMP_DIR"
   echo "braine_web dist: $WEB_DIST_DIR"
 
-  echo "[3/3] Sync braine_web dist to $WEB_DEPLOY_DIR"
-  if [[ -d "$WEB_DIST_DIR" ]]; then
-    mkdir -p "$WEB_DEPLOY_DIR"
-    if command -v rsync >/dev/null; then
-      # NOTE: $WEB_DEPLOY_DIR is often a git checkout. Protect .git from deletion.
-      rsync -a --delete \
-        --filter='protect .git/' \
-        --filter='protect .git/***' \
-        --exclude='.git/' \
-        "$WEB_DIST_DIR"/ "$WEB_DEPLOY_DIR"/
-    else
-      rm -rf "$WEB_DEPLOY_DIR"/*
-      cp -r "$WEB_DIST_DIR"/* "$WEB_DEPLOY_DIR"/
-    fi
-    echo "Synced web assets to: $WEB_DEPLOY_DIR"
-  else
-    echo "Missing dist dir: $WEB_DIST_DIR"
-    exit 1
-  fi
+  echo "[3/3] Web assets generated in: $WEB_DIST_DIR"
 
   exit 0
 fi
@@ -310,31 +292,4 @@ else
   exit 1
 fi
 
-echo "[7/7] Sync braine_web dist to $WEB_DEPLOY_DIR"
-if [[ -d "$WEB_DIST_DIR" ]]; then
-  mkdir -p "$WEB_DEPLOY_DIR"
-  if command -v rsync >/dev/null; then
-    # NOTE: $WEB_DEPLOY_DIR is often a git checkout. Protect .git from deletion.
-    rsync -a --delete \
-      --filter='protect .git/' \
-      --filter='protect .git/***' \
-      --exclude='.git/' \
-      "$WEB_DIST_DIR"/ "$WEB_DEPLOY_DIR"/
-  else
-    rm -rf "$WEB_DEPLOY_DIR"/*
-    cp -r "$WEB_DIST_DIR"/* "$WEB_DEPLOY_DIR"/
-  fi
-  echo "Synced web assets to: $WEB_DEPLOY_DIR"
-
-  # Also copy native release assets for convenience.
-  # Keep them in a subfolder so they don't conflict with the web dist.
-  mkdir -p "$WEB_DEPLOY_DIR/release"
-  if [[ -f "$ROOT/dist/braine-portable.zip" ]]; then
-    cp -f "$ROOT/dist/braine-portable.zip" "$WEB_DEPLOY_DIR/release/"
-    echo "Copied release bundle to: $WEB_DEPLOY_DIR/release/braine-portable.zip"
-  fi
-else
-  echo "Skipping sync (missing dist or target dir)."
-  echo "  dist:   $WEB_DIST_DIR"
-  echo "  target: $WEB_DEPLOY_DIR"
-fi
+echo "[7/7] Web assets generated in: $WEB_DIST_DIR"

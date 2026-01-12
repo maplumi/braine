@@ -15,6 +15,8 @@ pub(crate) mod time;
 #[cfg(feature = "std")]
 pub mod bandit;
 #[cfg(feature = "std")]
+pub mod replay;
+#[cfg(feature = "std")]
 pub mod sequence;
 #[cfg(feature = "std")]
 pub mod spot;

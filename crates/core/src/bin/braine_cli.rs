@@ -76,6 +76,49 @@ enum Request {
         persistence_mode: String,
     },
     CullExperts,
+
+    // Advisor / LLM integration
+    AdvisorGet,
+    AdvisorSet {
+        enabled: bool,
+        #[serde(default)]
+        every_trials: Option<u32>,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    AdvisorOnce {
+        #[serde(default)]
+        apply: bool,
+    },
+
+    // Explicit LLM boundary
+    AdvisorContext {
+        #[serde(default)]
+        include_action_scores: bool,
+    },
+    AdvisorApply {
+        advice: AdvisorAdvice,
+    },
+
+    // Replay dataset (dataset-driven evaluation)
+    ReplayGetDataset,
+    ReplaySetDataset {
+        dataset: ReplayDataset,
+    },
+
+    // Newer daemon knob surface (optional)
+    CfgSet {
+        #[serde(default)]
+        exploration_eps: Option<f32>,
+        #[serde(default)]
+        meaning_alpha: Option<f32>,
+        #[serde(default)]
+        target_fps: Option<u32>,
+        #[serde(default)]
+        trial_period_ms: Option<u32>,
+        #[serde(default)]
+        max_units: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +135,116 @@ enum Response {
     Error {
         message: String,
     },
+
+    // Advisor / LLM integration
+    AdvisorStatus {
+        config: AdvisorConfig,
+        #[serde(default)]
+        last_report: Option<AdvisorReport>,
+    },
+    AdvisorReport {
+        report: AdvisorReport,
+        #[serde(default)]
+        applied: bool,
+    },
+
+    AdvisorContext {
+        context: AdvisorContext,
+        #[serde(default)]
+        action_scores: Vec<serde_json::Value>,
+    },
+
+    ReplayDataset {
+        dataset: ReplayDataset,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ReplayStimulus {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "default_replay_strength")]
+    strength: f32,
+}
+
+fn default_replay_strength() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ReplayTrial {
+    #[serde(default)]
+    stimuli: Vec<ReplayStimulus>,
+    #[serde(default)]
+    allowed_actions: Vec<String>,
+    #[serde(default)]
+    correct_action: String,
+    #[serde(default)]
+    id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ReplayDataset {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    trials: Vec<ReplayTrial>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AdvisorConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    every_trials: u32,
+    #[serde(default)]
+    mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AdvisorContext {
+    #[serde(default)]
+    game: String,
+    #[serde(default)]
+    context_key: String,
+    #[serde(default)]
+    trials: u32,
+    #[serde(default)]
+    accuracy: f32,
+    #[serde(default)]
+    recent_rate: f32,
+    #[serde(default)]
+    last_reward: f32,
+    #[serde(default)]
+    exploration_eps: f32,
+    #[serde(default)]
+    meaning_alpha: f32,
+    #[serde(default)]
+    text_regime: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AdvisorAdvice {
+    #[serde(default)]
+    ttl_trials: u32,
+    #[serde(default)]
+    exploration_eps: Option<f32>,
+    #[serde(default)]
+    meaning_alpha: Option<f32>,
+    #[serde(default)]
+    rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AdvisorReport {
+    #[serde(default)]
+    at_trials: u32,
+    #[serde(default)]
+    applied: bool,
+    #[serde(default)]
+    context: AdvisorContext,
+    #[serde(default)]
+    advice: AdvisorAdvice,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,7 +475,9 @@ fn usage() -> ! {
     eprintln!("Commands:");
     eprintln!("  status                      Show daemon state");
     eprintln!("  start | stop                Control run loop");
-    eprintln!("  game <spot|bandit|spot_reversal|spotxy|pong|text>  Switch task/game (stop first)");
+    eprintln!(
+        "  game <spot|bandit|spot_reversal|spotxy|pong|text|replay>  Switch task/game (stop first)"
+    );
     eprintln!("  mode <braine|human>         Switch control mode");
     eprintln!("  action <left|right>         Send human action");
     eprintln!("  trigger <dream|burst|sync|imprint>  Fire learning helpers");
@@ -336,11 +491,69 @@ fn usage() -> ! {
     eprintln!("                               max_depth: >=1 (default 1)");
     eprintln!("                               persist_mode: full|drop_active (default full)");
     eprintln!("  paths                       Show data directory and brain file path");
+    eprintln!("  advisor status              Show advisor configuration + last report");
+    eprintln!("  advisor set <on|off> [every_trials] [mode]  Configure advisor");
+    eprintln!("  advisor once [apply]         Invoke advisor once (default apply=false)");
+    eprintln!("  advisor context [scores]     Print structured advisor context (Braine -> LLM)");
+    eprintln!("  advisor apply [eps] [alpha] [ttl] [rationale...]  Apply advice (LLM -> Braine)");
+    eprintln!("  replay get                   Print current replay dataset summary");
+    eprintln!("  replay set <dataset.json>    Set replay dataset (stop first)");
+    eprintln!("  demo text <trials> [advisor] Run a quick text task demo and print summary");
+    eprintln!("  demo replay <trials> [dataset.json] [mock_llm]  Run replay demo; optionally mimic LLM via context/apply");
     eprintln!();
     eprintln!("⚠️  RESEARCH DISCLAIMER: This system was developed with LLM assistance under");
     eprintln!("   human guidance. It is a RESEARCH DEMONSTRATION, NOT PRODUCTION-READY.");
     eprintln!("   Do not use for safety-critical or real-world deployment scenarios.");
     process::exit(1);
+}
+
+fn llm_stub_advice(
+    ctx: &AdvisorContext,
+    prev_text_regime: Option<u32>,
+) -> (AdvisorAdvice, Option<u32>) {
+    let mut rationale_parts: Vec<String> = Vec::new();
+    let mut exploration_target: Option<f32> = None;
+    let mut meaning_alpha_target: Option<f32> = None;
+
+    let regime_changed = match (prev_text_regime, ctx.text_regime) {
+        (Some(a), Some(b)) => a != b,
+        (None, Some(_)) => false,
+        _ => false,
+    };
+
+    if regime_changed {
+        rationale_parts
+            .push("detected regime change; increasing exploration for adaptation".to_string());
+        exploration_target = Some((ctx.exploration_eps + 0.10).min(0.45));
+    } else if ctx.trials >= 20 && ctx.recent_rate < 0.55 {
+        rationale_parts.push("recent performance low; increasing exploration".to_string());
+        exploration_target = Some((ctx.exploration_eps + 0.05).min(0.40));
+    } else if ctx.trials >= 20 && ctx.recent_rate > 0.85 {
+        rationale_parts.push("recent performance high; annealing exploration".to_string());
+        exploration_target = Some((ctx.exploration_eps * 0.85).max(0.02));
+    }
+
+    if ctx.trials >= 40 && ctx.recent_rate < 0.45 {
+        rationale_parts
+            .push("very low performance; slightly increasing meaning weight".to_string());
+        meaning_alpha_target = Some((ctx.meaning_alpha + 0.05).min(1.0));
+    }
+
+    let rationale = if rationale_parts.is_empty() {
+        "no change".to_string()
+    } else {
+        rationale_parts.join("; ")
+    };
+
+    (
+        AdvisorAdvice {
+            ttl_trials: 50,
+            exploration_eps: exploration_target,
+            meaning_alpha: meaning_alpha_target,
+            rationale,
+        },
+        ctx.text_regime,
+    )
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -653,6 +866,283 @@ fn main() {
             }
             process::exit(0);
         }
+        "advisor" => {
+            if args.len() < 2 {
+                usage();
+            }
+            match args[1].as_str() {
+                "status" => Request::AdvisorGet,
+                "set" => {
+                    if args.len() < 3 {
+                        make_error("usage: advisor set <on|off> [every_trials] [mode]");
+                    }
+                    let enabled = parse_bool(&args[2]).unwrap_or_else(|| {
+                        make_error("advisor set: <on|off> must be true|false (or on|off)")
+                    });
+                    let every_trials: Option<u32> = if args.len() >= 4 {
+                        Some(
+                            args[3]
+                                .parse()
+                                .unwrap_or_else(|_| make_error("every_trials must be a u32")),
+                        )
+                    } else {
+                        None
+                    };
+                    let mode: Option<String> = if args.len() >= 5 {
+                        Some(args[4].clone())
+                    } else {
+                        None
+                    };
+                    Request::AdvisorSet {
+                        enabled,
+                        every_trials,
+                        mode,
+                    }
+                }
+                "once" => {
+                    let apply = if args.len() >= 3 {
+                        parse_bool(&args[2])
+                            .unwrap_or_else(|| make_error("apply must be true|false (or 1|0)"))
+                    } else {
+                        false
+                    };
+                    Request::AdvisorOnce { apply }
+                }
+                "context" => {
+                    let include_action_scores = args.len() >= 3 && args[2].as_str() == "scores";
+                    Request::AdvisorContext {
+                        include_action_scores,
+                    }
+                }
+                "apply" => {
+                    // usage: advisor apply [eps] [alpha] [ttl] [rationale...]
+                    let exploration_eps: Option<f32> = if args.len() >= 3 {
+                        if args[2].trim() == "-" {
+                            None
+                        } else {
+                            Some(
+                                args[2]
+                                    .parse()
+                                    .unwrap_or_else(|_| make_error("eps must be a float or '-'")),
+                            )
+                        }
+                    } else {
+                        None
+                    };
+
+                    let meaning_alpha: Option<f32> = if args.len() >= 4 {
+                        if args[3].trim() == "-" {
+                            None
+                        } else {
+                            Some(
+                                args[3]
+                                    .parse()
+                                    .unwrap_or_else(|_| make_error("alpha must be a float or '-'")),
+                            )
+                        }
+                    } else {
+                        None
+                    };
+
+                    let ttl_trials: u32 = if args.len() >= 5 {
+                        args[4]
+                            .parse()
+                            .unwrap_or_else(|_| make_error("ttl must be a u32"))
+                    } else {
+                        50
+                    };
+
+                    let rationale: String = if args.len() >= 6 {
+                        args[5..].join(" ")
+                    } else {
+                        "manual".to_string()
+                    };
+
+                    Request::AdvisorApply {
+                        advice: AdvisorAdvice {
+                            ttl_trials,
+                            exploration_eps,
+                            meaning_alpha,
+                            rationale,
+                        },
+                    }
+                }
+                _ => usage(),
+            }
+        }
+        "replay" => {
+            if args.len() < 2 {
+                usage();
+            }
+            match args[1].as_str() {
+                "get" => Request::ReplayGetDataset,
+                "set" => {
+                    if args.len() < 3 {
+                        make_error("usage: replay set <dataset.json>");
+                    }
+                    let path = args[2].as_str();
+                    let raw = std::fs::read_to_string(path)
+                        .unwrap_or_else(|e| make_error(&format!("failed to read {path}: {e}")));
+                    let dataset: ReplayDataset = serde_json::from_str(&raw).unwrap_or_else(|e| {
+                        make_error(&format!("failed to parse dataset json: {e}"))
+                    });
+                    Request::ReplaySetDataset { dataset }
+                }
+                _ => usage(),
+            }
+        }
+        "demo" => {
+            if args.len() < 3 {
+                make_error("usage: demo text <trials> [advisor_on] | demo replay <trials> [dataset.json] [mock_llm]");
+            }
+            let kind = args[1].as_str();
+            let target_trials: u32 = args[2]
+                .parse()
+                .unwrap_or_else(|_| make_error("trials must be a u32"));
+
+            let advisor_on: bool = if kind == "text" {
+                if args.len() >= 4 {
+                    parse_bool(&args[3])
+                        .unwrap_or_else(|| make_error("advisor_on must be true|false (or 1|0)"))
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            let dataset_path: Option<String> = if kind == "replay" && args.len() >= 4 {
+                Some(args[3].clone())
+            } else {
+                None
+            };
+
+            let mock_llm: bool = if kind == "replay" && args.len() >= 5 {
+                parse_bool(&args[4])
+                    .unwrap_or_else(|| make_error("mock_llm must be true|false (or 1|0)"))
+            } else {
+                false
+            };
+
+            // Orchestrate via multiple daemon requests.
+            let must = |r: &Request| match send_request(&addr, r) {
+                Ok(Response::Success { .. })
+                | Ok(Response::State(_))
+                | Ok(Response::AdvisorStatus { .. })
+                | Ok(Response::AdvisorReport { .. }) => {}
+                Ok(Response::Error { message }) => make_error(&format!("daemon error: {message}")),
+                Ok(_) => {}
+                Err(e) => make_error(&format!("daemon request failed: {e}")),
+            };
+
+            must(&Request::Stop);
+            must(&Request::ResetBrain);
+            if kind == "replay" {
+                if let Some(p) = &dataset_path {
+                    let raw = std::fs::read_to_string(p)
+                        .unwrap_or_else(|e| make_error(&format!("failed to read {p}: {e}")));
+                    let dataset: ReplayDataset = serde_json::from_str(&raw).unwrap_or_else(|e| {
+                        make_error(&format!("failed to parse dataset json: {e}"))
+                    });
+                    must(&Request::ReplaySetDataset { dataset });
+                }
+                must(&Request::SetGame {
+                    game: "replay".to_string(),
+                });
+            } else if kind == "text" {
+                must(&Request::SetGame {
+                    game: "text".to_string(),
+                });
+            } else {
+                make_error("demo: only 'text' and 'replay' are implemented right now");
+            }
+            must(&Request::CfgSet {
+                exploration_eps: Some(0.25),
+                meaning_alpha: None,
+                target_fps: Some(120),
+                trial_period_ms: Some(40),
+                max_units: None,
+            });
+            if kind == "text" {
+                must(&Request::AdvisorSet {
+                    enabled: advisor_on,
+                    every_trials: Some(25),
+                    mode: Some("stub".to_string()),
+                });
+            } else if kind == "replay" {
+                // For replay demos we usually want the explicit boundary (mock_llm) rather than the built-in stub.
+                must(&Request::AdvisorSet {
+                    enabled: false,
+                    every_trials: Some(25),
+                    mode: Some("off".to_string()),
+                });
+            }
+            must(&Request::Start);
+
+            let start = std::time::Instant::now();
+            let mut last_trials: u32 = 0;
+            let mut last_acc: f32 = 0.0;
+            let mut prev_text_regime: Option<u32> = None;
+            let mut last_advised_trials: u32 = 0;
+            loop {
+                match send_request(&addr, &Request::GetState) {
+                    Ok(Response::State(s)) => {
+                        let trials = s.hud.trials;
+                        if trials != last_trials {
+                            last_trials = trials;
+                            last_acc = s.hud.last_100_rate;
+                        }
+
+                        if kind == "replay" && mock_llm {
+                            // Mimic an external LLM: poll context occasionally and push back advice.
+                            if trials >= 25 && trials.saturating_sub(last_advised_trials) >= 25 {
+                                if let Ok(Response::AdvisorContext { context, .. }) = send_request(
+                                    &addr,
+                                    &Request::AdvisorContext {
+                                        include_action_scores: false,
+                                    },
+                                ) {
+                                    let (advice, next_prev) =
+                                        llm_stub_advice(&context, prev_text_regime);
+                                    prev_text_regime = next_prev;
+                                    let _ = send_request(&addr, &Request::AdvisorApply { advice });
+                                    last_advised_trials = trials;
+                                }
+                            }
+                        }
+                        if trials >= target_trials {
+                            break;
+                        }
+                    }
+                    Ok(Response::Error { message }) => {
+                        make_error(&format!("GetState failed: {message}"))
+                    }
+                    Ok(_) => {}
+                    Err(e) => make_error(&format!("GetState failed: {e}")),
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+
+            must(&Request::Stop);
+
+            let elapsed = start.elapsed().as_secs_f32();
+            if kind == "text" {
+                println!(
+                    "demo=text trials={} advisor={} elapsed_s={:.2} last100_rate={:.3}",
+                    target_trials, advisor_on, elapsed, last_acc
+                );
+            } else {
+                println!(
+                    "demo=replay trials={} dataset={} mock_llm={} elapsed_s={:.2} last100_rate={:.3}",
+                    target_trials,
+                    dataset_path.as_deref().unwrap_or("(daemon default)"),
+                    mock_llm,
+                    elapsed,
+                    last_acc
+                );
+            }
+            process::exit(0);
+        }
         _ => usage(),
     };
 
@@ -675,6 +1165,55 @@ fn main() {
             }
         }
         Ok(Response::Success { message }) => println!("{message}"),
+        Ok(Response::AdvisorStatus {
+            config,
+            last_report,
+        }) => {
+            println!(
+                "advisor: enabled={} mode={} every_trials={}",
+                config.enabled, config.mode, config.every_trials
+            );
+            if let Some(r) = last_report {
+                println!(
+                    "last_report: at_trials={} applied={} rationale={}",
+                    r.at_trials, r.applied, r.advice.rationale
+                );
+            }
+        }
+        Ok(Response::AdvisorReport { report, applied }) => {
+            println!(
+                "advisor_report: applied={} at_trials={} game={} recent_rate={:.3} eps_before={:.3} advice_eps={:?} rationale={}",
+                applied,
+                report.at_trials,
+                report.context.game,
+                report.context.recent_rate,
+                report.context.exploration_eps,
+                report.advice.exploration_eps,
+                report.advice.rationale
+            );
+        }
+        Ok(Response::AdvisorContext {
+            context,
+            action_scores,
+        }) => {
+            // Print JSON so external tools can consume it.
+            let out = serde_json::json!({
+                "context": context,
+                "action_scores": action_scores,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&out)
+                    .unwrap_or_else(|_| "{\"error\":\"failed to serialize\"}".to_string())
+            );
+        }
+        Ok(Response::ReplayDataset { dataset }) => {
+            println!(
+                "replay_dataset: name={} trials={}",
+                dataset.name,
+                dataset.trials.len()
+            );
+        }
         Ok(Response::Error { message }) => {
             eprintln!("Error: {message}");
             process::exit(1);

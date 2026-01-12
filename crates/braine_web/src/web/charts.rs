@@ -227,7 +227,7 @@ pub fn draw_brain_connectivity_sphere(
 
     // Golden spiral distribution on sphere
     let n = nodes.len() as f64;
-    let golden = 2.39996322972865332_f64; // ~pi*(3-sqrt(5))
+    let golden = 2.399_963_229_728_653_5_f64; // ~pi*(3-sqrt(5))
 
     // Use rotation from opts (supports both X and Y axes)
     let rot_y = opts.rotation_y as f64;
@@ -286,16 +286,14 @@ pub fn draw_brain_connectivity_sphere(
                 } else {
                     (251, 191, 36) // amber
                 }
+            } else if node.is_sensor_member {
+                (122, 162, 255) // blue
+            } else if node.is_group_member {
+                (34, 211, 238) // cyan
+            } else if node.is_reserved {
+                (148, 163, 184) // gray
             } else {
-                if node.is_sensor_member {
-                    (122, 162, 255) // blue
-                } else if node.is_group_member {
-                    (34, 211, 238) // cyan
-                } else if node.is_reserved {
-                    (148, 163, 184) // gray
-                } else {
-                    (167, 139, 250) // purple
-                }
+                (167, 139, 250) // purple
             }
         };
 
@@ -590,7 +588,7 @@ pub fn draw_causal_graph(
 
     // Golden spiral distribution on sphere (same algorithm as substrate view)
     let n = nodes.len() as f64;
-    let golden = 2.39996322972865332_f64; // ~pi*(3-sqrt(5))
+    let golden = 2.399_963_229_728_653_5_f64; // ~pi*(3-sqrt(5))
     let rot_y = opts.rotation as f64;
     let rot_x = opts.rotation_x as f64;
 
@@ -855,7 +853,7 @@ pub fn draw_action_scores(
 
     for (i, (name, score)) in actions.iter().enumerate() {
         let y = 5.0 + (i as f64) * (bar_height + 4.0);
-        let is_highlight = highlight.map_or(false, |h| h == *name);
+        let is_highlight = highlight == Some(*name);
 
         // Label
         ctx.set_fill_style_str(if is_highlight {

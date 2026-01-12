@@ -11,6 +11,8 @@ braine = ["std", "dep:braine"]
 [dependencies]
 # Keep this crate lightweight and wasm-friendly.
 
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+
 # Optional: allow certain games to directly apply stimuli to a `braine::substrate::Brain`.
 # This is used by the daemon today, and can be disabled for WASM builds.
 braine = { workspace = true, optional = true, features = ["std"] }

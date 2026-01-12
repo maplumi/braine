@@ -584,6 +584,19 @@ enum DaemonGameState {
         #[serde(default)]
         text_vocab_size: u32,
     },
+    #[serde(rename = "replay")]
+    Replay {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+        #[serde(default)]
+        replay_dataset: String,
+        #[serde(default)]
+        replay_index: u32,
+        #[serde(default)]
+        replay_total: u32,
+        #[serde(default)]
+        replay_trial_id: String,
+    },
     #[serde(other)]
     #[default]
     Unknown,
@@ -598,6 +611,7 @@ impl DaemonGameState {
             Self::SpotXY { .. } => "spotxy",
             Self::Pong { .. } => "pong",
             Self::Text { .. } => "text",
+            Self::Replay { .. } => "replay",
             Self::Unknown => "unknown",
         }
     }
@@ -609,7 +623,8 @@ impl DaemonGameState {
             | Self::SpotReversal { common, .. }
             | Self::SpotXY { common, .. }
             | Self::Pong { common, .. }
-            | Self::Text { common, .. } => Some(common),
+            | Self::Text { common, .. }
+            | Self::Replay { common, .. } => Some(common),
             Self::Unknown => None,
         }
     }
@@ -755,6 +770,36 @@ impl DaemonGameState {
                 text_vocab_size, ..
             } => *text_vocab_size,
             _ => 0,
+        }
+    }
+
+    fn replay_dataset(&self) -> &str {
+        match self {
+            Self::Replay { replay_dataset, .. } => replay_dataset.as_str(),
+            _ => "",
+        }
+    }
+
+    fn replay_index(&self) -> u32 {
+        match self {
+            Self::Replay { replay_index, .. } => *replay_index,
+            _ => 0,
+        }
+    }
+
+    fn replay_total(&self) -> u32 {
+        match self {
+            Self::Replay { replay_total, .. } => *replay_total,
+            _ => 0,
+        }
+    }
+
+    fn replay_trial_id(&self) -> &str {
+        match self {
+            Self::Replay {
+                replay_trial_id, ..
+            } => replay_trial_id.as_str(),
+            _ => "",
         }
     }
 }
@@ -1488,6 +1533,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     text_outcomes: snap.game.text_outcomes() as i32,
                     text_shift_every: snap.game.text_shift_every() as i32,
                     text_vocab_size: snap.game.text_vocab_size() as i32,
+                    replay_dataset: snap.game.replay_dataset().into(),
+                    replay_index: snap.game.replay_index() as i32,
+                    replay_total: snap.game.replay_total() as i32,
+                    replay_trial_id: snap.game.replay_trial_id().into(),
                     last_reward: snap.game.last_reward(),
                     spot_is_left: snap.game.spot_is_left(),
                     response_made: snap.game.response_made(),

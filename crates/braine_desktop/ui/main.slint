@@ -244,6 +244,7 @@ export component MainWindow inherits Window {
                           (root.effective-game-kind == "spotxy") ? "SpotXY" :
                           (root.effective-game-kind == "pong") ? "Pong" :
                           (root.effective-game-kind == "text") ? "Text" :
+                          (root.effective-game-kind == "replay") ? "Replay" :
                           "Spot";
                     enabled: !running;
                     clicked => {
@@ -252,6 +253,7 @@ export component MainWindow inherits Window {
                                                   (root.selected-game-kind == "spot_reversal") ? "spotxy" :
                                                   (root.selected-game-kind == "spotxy") ? "pong" :
                                                   (root.selected-game-kind == "pong") ? "text" :
+                                                  (root.selected-game-kind == "text") ? "replay" :
                                                   "spot";
 
                         // Pong is sensitive to control cadence. If the user hasn't already chosen
