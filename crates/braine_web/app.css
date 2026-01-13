@@ -709,11 +709,13 @@ a.good { color: var(--accent-2); }
 @media (max-width: 768px) {
   .content-split {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
   }
 
   .game-area {
     border-right: none;
     padding: 14px;
+    grid-row: 1;
   }
 
   .about {
@@ -732,10 +734,11 @@ a.good { color: var(--accent-2); }
     bottom: 0;
     width: 92%;
     max-width: 420px;
-    z-index: 100;
+    z-index: 150;
     transform: translateX(100%);
     transition: transform 0.3s ease;
     box-shadow: -4px 0 20px rgba(0, 0, 0, 0.4);
+    background: var(--bg);
 
     padding-right: env(safe-area-inset-right);
     padding-bottom: env(safe-area-inset-bottom);
@@ -753,7 +756,7 @@ a.good { color: var(--accent-2); }
     right: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.5);
-    z-index: 99;
+    z-index: 140;
     opacity: 0;
     visibility: hidden;
     transition: opacity 0.3s ease, visibility 0.3s ease;
@@ -770,7 +773,7 @@ a.good { color: var(--accent-2); }
     right: 0;
     top: 50%;
     transform: translateY(-50%);
-    z-index: 98;
+    z-index: 130;
     width: 44px;
     height: 76px;
     background: var(--accent);
@@ -884,11 +887,17 @@ a.good { color: var(--accent-2); }
     left: 50%;
     right: auto;
     transform: translateX(-50%) translateY(-6px);
+    z-index: 9999;
   }
 
   .tooltip-wrap:hover .tooltip,
   .tooltip-wrap:focus-within .tooltip {
     transform: translateX(-50%) translateY(0);
+  }
+
+  .param-field {
+    position: relative;
+    z-index: 1;
   }
 }
 
@@ -1129,7 +1138,7 @@ a.good { color: var(--accent-2); }
   border-radius: 12px;
   padding: 14px 16px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(122, 162, 255, 0.08);
-  z-index: 100;
+  z-index: 9999;
   opacity: 0;
   transform: translateY(-6px);
   pointer-events: none;
@@ -1207,7 +1216,7 @@ a.good { color: var(--accent-2); }
 .settings-footer {
   position: sticky;
   bottom: 0;
-  z-index: 30;
+  z-index: 50;
   background: linear-gradient(to bottom, rgba(11, 16, 32, 0.75) 0%, rgba(11, 16, 32, 0.95) 100%);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
