@@ -1,0 +1,80 @@
+name: Deploy Web (GitHub Pages)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'crates/braine_web/**'
+      - 'crates/core/**'
+      - 'crates/shared/braine_games/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Install Rust (wasm32)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-pages-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-pages-
+
+      - name: Install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - name: Build web app
+        working-directory: crates/braine_web
+        env:
+          # For project pages the base path is '/<repo>/'
+          TRUNK_PUBLIC_URL: /${{ github.event.repository.name }}/
+        run: |
+          trunk build --release --features web --public-url "$TRUNK_PUBLIC_URL"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: crates/braine_web/dist
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

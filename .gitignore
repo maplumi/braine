@@ -5,6 +5,9 @@
 # Packaging/build artifacts
 /dist/
 
+# Web build output (Trunk)
+/crates/braine_web/dist/
+
 # Local brain-image artifacts
 *.bbi
 *.bbi.tmp
