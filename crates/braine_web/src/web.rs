@@ -361,6 +361,10 @@ fn App() -> impl IntoView {
     let (text_state, set_text_state) = signal::<Option<TextUiState>>(None);
     let (replay_state, set_replay_state) = signal::<Option<ReplayUiState>>(None);
 
+    // Bandit tuning (editable live in-game).
+    let (bandit_prob_left, set_bandit_prob_left) = signal(0.8f32);
+    let (bandit_prob_right, set_bandit_prob_right) = signal(0.2f32);
+
     // Spot/SpotReversal stimulus (left/right) for UI highlighting.
     let (spot_is_left, set_spot_is_left) = signal::<Option<bool>>(None);
 
@@ -829,6 +833,14 @@ fn App() -> impl IntoView {
             set_text_state.set(snap.text_state);
             set_replay_state.set(snap.replay_state);
             set_spot_is_left.set(snap.spot_is_left);
+
+            // Read live Bandit parameters when in-bandit.
+            runtime.with_value(|r| {
+                if let WebGame::Bandit(g) = &r.game {
+                    set_bandit_prob_left.set(g.prob_left);
+                    set_bandit_prob_right.set(g.prob_right);
+                }
+            });
 
             // Persist per-game stats + chart history so refresh restores the current state.
             let kind = game_kind.get_untracked();
@@ -1577,6 +1589,36 @@ fn App() -> impl IntoView {
         }
     };
 
+    let do_bandit_set_probs = {
+        let runtime = runtime.clone();
+        move |prob_left: f32, prob_right: f32| {
+            let pl = prob_left.clamp(0.0, 1.0);
+            let pr = prob_right.clamp(0.0, 1.0);
+            runtime.update_value(|r| {
+                if let WebGame::Bandit(g) = &mut r.game {
+                    g.prob_left = pl;
+                    g.prob_right = pr;
+                }
+            });
+            set_bandit_prob_left.set(pl);
+            set_bandit_prob_right.set(pr);
+            refresh_ui_from_runtime();
+        }
+    };
+
+    let do_reversal_set_flip_after = {
+        let runtime = runtime.clone();
+        move |flip_after_trials: u32| {
+            let n = flip_after_trials.max(1);
+            runtime.update_value(|r| {
+                if let WebGame::SpotReversal(g) = &mut r.game {
+                    g.flip_after_trials = n;
+                }
+            });
+            refresh_ui_from_runtime();
+        }
+    };
+
     let do_spotxy_grid_plus = {
         let runtime = runtime.clone();
         move || {
@@ -1598,6 +1640,39 @@ fn App() -> impl IntoView {
         move || {
             let next = !spotxy_eval.get_untracked();
             runtime.update_value(|r| r.spotxy_set_eval(next));
+            refresh_ui_from_runtime();
+        }
+    };
+
+    let do_spotxy_set_eval = {
+        let runtime = runtime.clone();
+        move |eval: bool| {
+            runtime.update_value(|r| r.spotxy_set_eval(eval));
+            refresh_ui_from_runtime();
+        }
+    };
+
+    let do_spotxy_set_grid_target = {
+        let runtime = runtime.clone();
+        move |target: u32| {
+            runtime.update_value(|r| {
+                let mut guard = 0u32;
+                loop {
+                    let cur = match &r.game {
+                        WebGame::SpotXY(g) => g.grid_n(),
+                        _ => return,
+                    };
+                    if cur == target || guard > 24 {
+                        break;
+                    }
+                    if cur < target {
+                        r.spotxy_increase_grid();
+                    } else {
+                        r.spotxy_decrease_grid();
+                    }
+                    guard += 1;
+                }
+            });
             refresh_ui_from_runtime();
         }
     };
@@ -1971,6 +2046,68 @@ fn App() -> impl IntoView {
         apply_theme_to_document(t);
         local_storage_set_string(LOCALSTORAGE_THEME_KEY, t.as_attr());
     });
+
+    let training_health_bar_view = move || {
+        view! {
+            <div style="width: 100%; padding: 12px 14px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 12px;">
+                <div style="display: flex; gap: 10px; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                    <span
+                        style=move || {
+                            let tone = learning_milestone_tone.get();
+                            let (bg, fg, border) = if tone == "mastered" {
+                                ("rgba(34, 197, 94, 0.18)", "#4ade80", "rgba(34, 197, 94, 0.35)")
+                            } else if tone == "learned" {
+                                ("rgba(34, 211, 238, 0.16)", "#22d3ee", "rgba(34, 211, 238, 0.32)")
+                            } else if tone == "learning" {
+                                ("rgba(122, 162, 255, 0.16)", "#7aa2ff", "rgba(122, 162, 255, 0.32)")
+                            } else if tone == "starting" {
+                                ("rgba(148, 163, 184, 0.16)", "#94a3b8", "rgba(148, 163, 184, 0.28)")
+                            } else {
+                                ("rgba(251, 191, 36, 0.14)", "#fbbf24", "rgba(251, 191, 36, 0.28)")
+                            };
+                            format!(
+                                "padding: 6px 10px; border-radius: 999px; background: {bg}; color: {fg}; border: 1px solid {border}; font-weight: 800; font-size: 0.75rem; letter-spacing: 0.4px;"
+                            )
+                        }
+                    >
+                        {move || learning_milestone.get()}
+                    </span>
+
+                    <span style="color: var(--muted); font-size: 0.8rem;">
+                        {move || format!("Accuracy (last 100): {:.0}%", recent_rate.get().clamp(0.0, 1.0) * 100.0)}
+                    </span>
+
+                    <span style="color: var(--muted); font-size: 0.8rem;">
+                        {move || format!("Trials: {}", trials.get())}
+                    </span>
+
+                    <span style="color: var(--muted); font-size: 0.8rem;">
+                        {move || format!("✓ {}  ✗ {}", correct_count.get(), incorrect_count.get())}
+                    </span>
+                </div>
+
+                <div style="margin-top: 10px; height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.20); overflow: hidden;">
+                    <div style=move || {
+                        let pct = recent_rate.get().clamp(0.0, 1.0);
+                        format!(
+                            "height: 100%; width: {:.1}%; background: linear-gradient(90deg, #22c55e, #7aa2ff);",
+                            pct * 100.0
+                        )
+                    }></div>
+                </div>
+
+                <div style="margin-top: 8px; color: var(--muted); font-size: 0.78rem;">
+                    {move || {
+                        if learning_enabled.get() {
+                            "Learning writes: ON".to_string()
+                        } else {
+                            "Learning writes: OFF (eval/demo)".to_string()
+                        }
+                    }}
+                </div>
+            </div>
+        }
+    };
 
     view! {
         <div class="app">
@@ -3049,6 +3186,33 @@ fn App() -> impl IntoView {
                                     <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"Spot Discrimination"</h2>
                                     <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Learn to respond LEFT or RIGHT based on stimulus"</p>
                                 </div>
+
+                                {training_health_bar_view()}
+
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
+                                    <button class="btn sm" on:click=move |_| {
+                                        set_trial_period_ms.set(450);
+                                        set_exploration_eps.set(0.06);
+                                        set_meaning_alpha.set(8.0);
+                                    }>
+                                        "Easy"
+                                    </button>
+                                    <button class="btn sm" on:click=move |_| {
+                                        set_trial_period_ms.set(300);
+                                        set_exploration_eps.set(0.08);
+                                        set_meaning_alpha.set(6.0);
+                                    }>
+                                        "Normal"
+                                    </button>
+                                    <button class="btn sm" on:click=move |_| {
+                                        set_trial_period_ms.set(160);
+                                        set_exploration_eps.set(0.12);
+                                        set_meaning_alpha.set(4.5);
+                                    }>
+                                        "Hard"
+                                    </button>
+                                </div>
+
                                 // Visual arena
                                 <div class="arena-grid">
                                     <div style=move || {
@@ -3097,6 +3261,66 @@ fn App() -> impl IntoView {
                                     <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"🎰 Two-Armed Bandit"</h2>
                                     <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Explore vs exploit: learn which arm pays better"</p>
                                 </div>
+
+                                {training_health_bar_view()}
+
+                                <div style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+                                        <div style="color: var(--muted); font-size: 0.8rem;">
+                                            "Payoffs"
+                                            <div style="margin-top: 4px; color: var(--text); font-weight: 800;">
+                                                {move || format!("P(left)={:.2}  P(right)={:.2}", bandit_prob_left.get(), bandit_prob_right.get())}
+                                            </div>
+                                        </div>
+                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                            <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.90, 0.10)>
+                                                "Easy"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.80, 0.20)>
+                                                "Normal"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.60, 0.40)>
+                                                "Hard"
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
+                                        <label class="label" style="min-width: 160px;">
+                                            <span title="Probability that choosing LEFT yields +1 (otherwise -1).">"P(left)"</span>
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.05"
+                                                class="input compact"
+                                                prop:value=move || format!("{:.2}", bandit_prob_left.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(x) = event_target_value(&ev).parse::<f32>() {
+                                                        do_bandit_set_probs(x, bandit_prob_right.get_untracked());
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <label class="label" style="min-width: 160px;">
+                                            <span title="Probability that choosing RIGHT yields +1 (otherwise -1).">"P(right)"</span>
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                max="1"
+                                                step="0.05"
+                                                class="input compact"
+                                                prop:value=move || format!("{:.2}", bandit_prob_right.get())
+                                                on:input=move |ev| {
+                                                    if let Ok(x) = event_target_value(&ev).parse::<f32>() {
+                                                        do_bandit_set_probs(bandit_prob_left.get_untracked(), x);
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+                                </div>
+
                                 // Slot machine arms
                                 <div class="arena-grid" style="gap: 16px;">
                                     <div style=move || format!("display: flex; flex-direction: column; align-items: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {}; transition: all 0.2s;",
@@ -3133,6 +3357,53 @@ fn App() -> impl IntoView {
                                     <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"Spot Reversal"</h2>
                                     <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Rules flip periodically; context bit helps detect reversals"</p>
                                 </div>
+
+                                {training_health_bar_view()}
+
+                                <div style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+                                        <div style="color: var(--muted); font-size: 0.8rem;">
+                                            "Flip timing"
+                                            <div style="margin-top: 4px; color: var(--text); font-weight: 800;">
+                                                {move || format!("flip_after_trials={}", reversal_flip_after.get())}
+                                            </div>
+                                        </div>
+                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                            <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(400)>
+                                                "Easier (slow flip)"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(200)>
+                                                "Normal"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(80)>
+                                                "Hard (fast flip)"
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
+                                        <label class="label" style="min-width: 200px;">
+                                            <span title="After this many trials, the correct mapping flips.">"flip_after_trials"</span>
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                max="2000"
+                                                step="10"
+                                                class="input compact"
+                                                prop:value=move || reversal_flip_after.get().to_string()
+                                                on:input=move |ev| {
+                                                    if let Ok(n) = event_target_value(&ev).parse::<u32>() {
+                                                        do_reversal_set_flip_after(n);
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <div style="color: var(--muted); font-size: 0.78rem; max-width: 210px;">
+                                            "If this flips too fast, Braine can’t stabilize two rules."
+                                        </div>
+                                    </div>
+                                </div>
+
                                 // Reversal status badge
                                 <div style=move || format!("display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-radius: 24px; background: {}; border: 2px solid {};",
                                     if reversal_active.get() { "rgba(251, 191, 36, 0.15)" } else { "rgba(122, 162, 255, 0.1)" },
@@ -3191,6 +3462,32 @@ fn App() -> impl IntoView {
                                         if spotxy_eval.get() { "linear-gradient(135deg, #22c55e, #16a34a)" } else { "rgba(122, 162, 255, 0.2)" },
                                         if spotxy_eval.get() { "#fff" } else { "var(--accent)" })>
                                         {move || if spotxy_eval.get() { "🧪 EVAL" } else { "📚 TRAIN" }}
+                                    </div>
+                                </div>
+
+                                {training_health_bar_view()}
+
+                                <div style="margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
+                                    <div style="display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center;">
+                                        <div>
+                                            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Difficulty presets"</div>
+                                            <div style="font-size: 0.85rem; color: var(--text); font-weight: 800;">"Bigger grid = harder"</div>
+                                        </div>
+                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                            <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(0); }>
+                                                "Easy (BinaryX)"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(4); }>
+                                                "Normal (4×4)"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(8); }>
+                                                "Hard (8×8)"
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-top: 10px; color: var(--muted); font-size: 0.78rem; line-height: 1.5;">
+                                        "Tip: Eval mode is a holdout run (no learning writes). Use it to check if learning generalizes."
                                     </div>
                                 </div>
 
@@ -3263,6 +3560,8 @@ fn App() -> impl IntoView {
                                         <kbd style="padding: 4px 10px; background: rgba(255,255,255,0.1); border: 1px solid var(--border); border-radius: 6px; font-size: 0.75rem; color: var(--muted);">"↑/↓"</kbd>
                                     </div>
                                 </div>
+
+                                {training_health_bar_view()}
 
                                 // Game canvas
                                 <div class="game-canvas-wrap">
@@ -3445,6 +3744,32 @@ fn App() -> impl IntoView {
                                     <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"Sequence Prediction"</h2>
                                     <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Learn repeating patterns: A→B→C→A..."</p>
                                 </div>
+
+                                {training_health_bar_view()}
+
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
+                                    <button class="btn sm" on:click=move |_| {
+                                        set_trial_period_ms.set(450);
+                                        set_exploration_eps.set(0.06);
+                                        set_meaning_alpha.set(8.0);
+                                    }>
+                                        "Easy"
+                                    </button>
+                                    <button class="btn sm" on:click=move |_| {
+                                        set_trial_period_ms.set(280);
+                                        set_exploration_eps.set(0.08);
+                                        set_meaning_alpha.set(6.0);
+                                    }>
+                                        "Normal"
+                                    </button>
+                                    <button class="btn sm" on:click=move |_| {
+                                        set_trial_period_ms.set(140);
+                                        set_exploration_eps.set(0.12);
+                                        set_meaning_alpha.set(4.5);
+                                    }>
+                                        "Hard"
+                                    </button>
+                                </div>
                                 // Token display
                                 <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; background: rgba(0,0,0,0.3); border-radius: 16px; width: 100%;">
                                     <span style="color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;">"Current Token"</span>
@@ -3480,6 +3805,43 @@ fn App() -> impl IntoView {
                                 <div style="text-align: center;">
                                     <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"📝 Text Prediction"</h2>
                                     <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Next-token prediction: observe and predict"</p>
+                                </div>
+
+                                {training_health_bar_view()}
+
+                                <div style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
+                                    <div style="display:flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                        <div>
+                                            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Difficulty presets"</div>
+                                            <div style="font-size: 0.85rem; color: var(--text); font-weight: 800;">"Smaller vocab + slower shifts = easier"</div>
+                                        </div>
+                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                            <button class="btn sm" on:click=move |_| {
+                                                set_text_max_vocab.set(16);
+                                                set_text_shift_every.set(140);
+                                                (do_text_apply_corpora_sv.get_value())();
+                                            }>
+                                                "Easy (reset)"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| {
+                                                set_text_max_vocab.set(32);
+                                                set_text_shift_every.set(80);
+                                                (do_text_apply_corpora_sv.get_value())();
+                                            }>
+                                                "Normal (reset)"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| {
+                                                set_text_max_vocab.set(96);
+                                                set_text_shift_every.set(50);
+                                                (do_text_apply_corpora_sv.get_value())();
+                                            }>
+                                                "Hard (reset)"
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div style="margin-top: 8px; color: var(--muted); font-size: 0.78rem; line-height: 1.5;">
+                                        {move || format!("Current: max_vocab={}  shift_every={}", text_max_vocab.get(), text_shift_every.get())}
+                                    </div>
                                 </div>
                                 // Token display card
                                 <div style="width: 100%; padding: 24px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
@@ -3535,6 +3897,20 @@ fn App() -> impl IntoView {
                                                 .map(|s| s.dataset)
                                                 .unwrap_or_else(|| "(not running)".to_string())
                                         }}
+                                    </div>
+                                </div>
+
+                                {training_health_bar_view()}
+
+                                <div style="margin-top: 12px; padding: 16px 18px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 12px;">
+                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--text);">"Explain Replay like I'm 5"</h3>
+                                    <div style="color: var(--text); font-size: 0.85rem; line-height: 1.6;">
+                                        <div>"Replay is like a stack of flashcards."</div>
+                                        <div>"Each flashcard shows some clues (stimuli)."</div>
+                                        <div>"Braine picks one button (an action)."</div>
+                                        <div>"If it picked the right button, it gets a green point. If not, a red point."</div>
+                                        <div style="margin-top: 8px; color: var(--muted);">"Step = do 1 flashcard. Run = keep going."</div>
+                                        <div style="margin-top: 6px; color: var(--muted);">"Replay is special because the questions don’t change — it’s great for checking whether a settings change helped."</div>
                                     </div>
                                 </div>
 
@@ -3619,7 +3995,7 @@ fn App() -> impl IntoView {
                                     </div>
 
                                     <div style="margin-top: 10px; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                        "Tip: Use Step/Run to consume dataset trials. Replay is ideal for stable context (replay::<dataset>) when evaluating parameter changes or advisor nudges."
+                                        "Tip: If accuracy is stuck, slow the trial, lower ε, and increase α a bit."
                                     </div>
                                 </div>
                             </div>
