@@ -20,9 +20,14 @@ use sequence_web::SequenceWebGame;
 mod text_web;
 use charts::RollingHistory;
 use text_web::TextWebGame;
+mod parameter_field;
+mod settings_schema;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+use parameter_field::ParameterField;
+use settings_schema::ParamSection;
 
 const IDB_DB_NAME: &str = "braine";
 const IDB_STORE: &str = "kv";
@@ -184,6 +189,9 @@ fn App() -> impl IntoView {
     let (learning_enabled, set_learning_enabled) = signal(true);
     let (grow_units_n, set_grow_units_n) = signal(128u32);
 
+    // Settings panel UI: Basic/Advanced toggle (persisted).
+    let (settings_advanced, set_settings_advanced) = signal(false);
+
     // BrainConfig tuning (live). These mirror `BrainConfig` fields that are safe to
     // update on a running brain. Topology fields are shown read-only.
     let (cfg_dt, set_cfg_dt) = signal(runtime.with_value(|r| r.brain.config().dt));
@@ -220,6 +228,16 @@ fn App() -> impl IntoView {
     let (trials, set_trials) = signal(0u32);
     let (recent_rate, set_recent_rate) = signal(0.5f32);
     let (status, set_status) = signal(String::new());
+
+    // Lightweight toast when config is applied.
+    let (config_applied, set_config_applied) = signal(false);
+
+    // Schema-driven Settings UI.
+    let settings_specs = StoredValue::new(settings_schema::param_specs());
+    let settings_validity_map: RwSignal<std::collections::HashMap<String, bool>> =
+        RwSignal::new(std::collections::HashMap::new());
+    let settings_apply_disabled =
+        Memo::new(move |_| settings_validity_map.get().values().any(|v| !*v));
 
     let (spotxy_pos, set_spotxy_pos) = signal::<Option<(f32, f32)>>(None);
     let (_spotxy_stimulus_key, set_spotxy_stimulus_key) = signal(String::new());
@@ -284,6 +302,18 @@ fn App() -> impl IntoView {
                 set_status.set(format!("Config error: {e}"));
             } else {
                 set_status.set("Braine config applied".to_string());
+
+                set_config_applied.set(true);
+                if let Some(win) = web_sys::window() {
+                    let cb = Closure::wrap(Box::new(move || {
+                        set_config_applied.set(false);
+                    }) as Box<dyn FnMut()>);
+                    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        cb.as_ref().unchecked_ref(),
+                        1500,
+                    );
+                    cb.forget();
+                }
             }
         }
     };
@@ -814,6 +844,19 @@ fn App() -> impl IntoView {
         let refresh_ui_from_runtime = refresh_ui_from_runtime.clone();
         move || {
             let n = grow_units_n.get_untracked().max(1) as usize;
+
+            if n > 256 {
+                let msg = format!(
+                    "Grow by {} units? This increases memory/compute and may stutter the UI.",
+                    n
+                );
+                let ok = web_sys::window()
+                    .and_then(|w| w.confirm_with_message(&msg).ok())
+                    .unwrap_or(true);
+                if !ok {
+                    return;
+                }
+            }
             runtime.update_value(|r| {
                 let con = r.brain.config().connectivity_per_unit;
                 r.brain.grow_units(n, con);
@@ -1726,6 +1769,7 @@ fn App() -> impl IntoView {
             set_learning_enabled.set(s.learning_enabled);
             set_run_interval_ms.set(s.run_interval_ms.clamp(8, 500));
             set_trial_period_ms.set(s.trial_period_ms.clamp(10, 60_000));
+            set_settings_advanced.set(s.settings_advanced);
         }
     });
     Effect::new(move |_| {
@@ -1735,6 +1779,7 @@ fn App() -> impl IntoView {
             learning_enabled: learning_enabled.get(),
             run_interval_ms: run_interval_ms.get(),
             trial_period_ms: trial_period_ms.get(),
+            settings_advanced: settings_advanced.get(),
         };
         save_persisted_settings(&s);
     });
@@ -4115,15 +4160,10 @@ fn App() -> impl IntoView {
                                                         return;
                                                     }
 
-                                                    let sx = (canvas.width() as f64) / rw;
-                                                    let sy = (canvas.height() as f64) / rh;
-                                                    let x = css_x * sx;
-                                                    let y = css_y * sy;
-
                                                     if brainviz_dragging.get_value() {
                                                         let (lx, ly) = brainviz_last_drag_xy.get_value();
-                                                        let dx = (css_x - lx) * sx;
-                                                        let dy = (css_y - ly) * sy;
+                                                        let dx = css_x - lx;
+                                                        let dy = css_y - ly;
 
                                                         // Shift+drag = pan, regular drag = rotate (both axes)
                                                         if ev.shift_key() {
@@ -4143,17 +4183,13 @@ fn App() -> impl IntoView {
                                                     brainviz_hit_nodes.with_value(|hits| {
                                                         let mut best_d2: f64 = f64::INFINITY;
                                                         for hn in hits {
-                                                            let dx = hn.x - x;
-                                                            let dy = hn.y - y;
+                                                            let dx = hn.x - css_x;
+                                                            let dy = hn.y - css_y;
                                                             let d2 = dx * dx + dy * dy;
                                                             let r = hn.r + 4.0;
                                                             if d2 <= r * r && d2 < best_d2 {
                                                                 best_d2 = d2;
-                                                                best = Some((
-                                                                    hn.id,
-                                                                    hn.x / sx,
-                                                                    hn.y / sy,
-                                                                ));
+                                                                best = Some((hn.id, hn.x, hn.y));
                                                             }
                                                         }
                                                     });
@@ -4236,305 +4272,159 @@ fn App() -> impl IntoView {
                         </Show>
 
                         <Show when=move || dashboard_tab.get() == DashboardTab::Settings>
-                            <div class="stack">
-                                <div class="card">
-                                    <h3 class="card-title">"⚙️ Braine Settings"</h3>
-                                    <p class="subtle">"Adjust substrate size and how scalar reward is delivered."</p>
-                                </div>
+                            {
+                                let bind = move |k: &str| -> Option<(ReadSignal<f32>, WriteSignal<f32>)> {
+                                    match k {
+                                        "dt" => Some((cfg_dt, set_cfg_dt)),
+                                        "base_freq" => Some((cfg_base_freq, set_cfg_base_freq)),
+                                        "global_inhibition" => Some((cfg_global_inhibition, set_cfg_global_inhibition)),
+                                        "noise_amp" => Some((cfg_noise_amp, set_cfg_noise_amp)),
+                                        "noise_phase" => Some((cfg_noise_phase, set_cfg_noise_phase)),
+                                        "hebb_rate" => Some((cfg_hebb_rate, set_cfg_hebb_rate)),
+                                        "forget_rate" => Some((cfg_forget_rate, set_cfg_forget_rate)),
+                                        "imprint_rate" => Some((cfg_imprint_rate, set_cfg_imprint_rate)),
+                                        "salience_decay" => Some((cfg_salience_decay, set_cfg_salience_decay)),
+                                        "salience_gain" => Some((cfg_salience_gain, set_cfg_salience_gain)),
+                                        "prune_below" => Some((cfg_prune_below, set_cfg_prune_below)),
+                                        "coactive_threshold" => Some((cfg_coactive_threshold, set_cfg_coactive_threshold)),
+                                        "phase_lock_threshold" => Some((cfg_phase_lock_threshold, set_cfg_phase_lock_threshold)),
+                                        "causal_decay" => Some((cfg_causal_decay, set_cfg_causal_decay)),
+                                        _ => None,
+                                    }
+                                };
 
-                                <div class="card">
-                                    <h3 class="card-title">"🧬 Neurogenesis"</h3>
-                                    <div class="row end">
-                                        <label class="label">
-                                            <span>"Grow units by"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Adds N new units to the substrate (neurogenesis). This increases capacity without gradients/backprop."
-                                                min="1"
-                                                step="1"
-                                                prop:value=move || grow_units_n.get().to_string()
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                        set_grow_units_n.set(v.max(1));
-                                                    }
+                                view! {
+                                    <div class="stack settings-stack">
+                                        <div class="card">
+                                            <div class="settings-header">
+                                                <div>
+                                                    <h3 class="card-title">"⚙️ Settings"</h3>
+                                                    <p class="subtle">"Schema-driven tuning for live dynamics and maintenance. Values clamp to safe limits on blur; warnings indicate non-standard ranges."</p>
+                                                </div>
+                                                <label class="label settings-advanced">
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || settings_advanced.get()
+                                                        on:change=move |ev| {
+                                                            set_settings_advanced.set(event_target_checked(&ev));
+                                                        }
+                                                    />
+                                                    <span>"Show advanced"</span>
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"🧬 Neurogenesis"</h3>
+                                            <p class="subtle">"Adds new units to increase capacity (no gradients/backprop). Expect more compute and memory use."</p>
+
+                                            <div class="row end wrap" style="gap: 10px;">
+                                                <label class="label stack" style="min-width: 160px;">
+                                                    <span>"Grow units by"</span>
+                                                    <input
+                                                        class="input compact"
+                                                        type="number"
+                                                        min="1"
+                                                        step="1"
+                                                        prop:value=move || grow_units_n.get().to_string()
+                                                        on:input=move |ev| {
+                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                set_grow_units_n.set(v.max(1));
+                                                            }
+                                                        }
+                                                    />
+                                                </label>
+
+                                                <div class="preset-row">
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(16)>"16"</button>
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(32)>"32"</button>
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(64)>"64"</button>
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(128)>"128"</button>
+                                                </div>
+
+                                                <button class="btn primary" on:click=move |_| do_grow_units()>
+                                                    "➕ Grow"
+                                                </button>
+                                            </div>
+
+                                            <Show when=move || grow_units_n.get() > 256>
+                                                <div class="callout" style="margin-top: 10px; border-color: rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.08);">
+                                                    <p style="margin: 0;">"Large growth may stutter the UI and significantly increase memory."</p>
+                                                </div>
+                                            </Show>
+                                        </div>
+
+                                        <For
+                                            each=move || settings_schema::sections_ordered().into_iter()
+                                            key=|s| s.title
+                                            children=move |sec| {
+                                                if matches!(sec.section, ParamSection::BraineSettings | ParamSection::Neurogenesis) {
+                                                    return view! { <></> }.into_view();
                                                 }
-                                            />
-                                        </label>
-                                        <button class="btn primary" on:click=move |_| do_grow_units()>
-                                            "➕ Grow"
-                                        </button>
+
+                                                view! {
+                                                    <div class="card">
+                                                        <h3 class="card-title">{sec.title}</h3>
+                                                        <p class="subtle">{sec.blurb}</p>
+                                                        <div class="param-grid">
+                                                            <For
+                                                                each=move || {
+                                                                    let show_adv = settings_advanced.get();
+                                                                    settings_specs
+                                                                        .get_value()
+                                                                        .into_iter()
+                                                                        .filter(|p| p.section == sec.section)
+                                                                        .filter(move |p| show_adv || !p.advanced)
+                                                                        .collect::<Vec<_>>()
+                                                                }
+                                                                key=|p| p.key
+                                                                children=move |p| {
+                                                                    let Some((v, set_v)) = bind(p.key) else {
+                                                                        return view! { <></> }.into_view();
+                                                                    };
+                                                                    view! {
+                                                                        <ParameterField
+                                                                            spec=p
+                                                                            value=v
+                                                                            set_value=set_v
+                                                                            validity_map=settings_validity_map
+                                                                        />
+                                                                    }
+                                                                }
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                }
+                                            }
+                                        />
+
+                                        <div class="settings-footer">
+                                            <div class="row end wrap" style="justify-content: space-between;">
+                                                <div class="settings-footer-left">
+                                                    <Show when=move || settings_apply_disabled.get()>
+                                                        <div class="param-warn">"Fix invalid values to apply."</div>
+                                                    </Show>
+                                                    <Show when=move || config_applied.get()>
+                                                        <div class="apply-toast">"Applied ✓"</div>
+                                                    </Show>
+                                                </div>
+                                                <div class="row end wrap" style="gap: 10px;">
+                                                    <button class="btn" on:click=move |_| reset_brain_config_from_runtime()>
+                                                        "Reset"
+                                                    </button>
+                                                    <button
+                                                        class="btn primary"
+                                                        disabled=move || settings_apply_disabled.get()
+                                                        on:click=move |_| apply_brain_config()
+                                                    >
+                                                        "Apply"
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <p class="subtle">"Adds new units to the substrate without gradients/backprop."</p>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"🧠 Brain Config (Live)"</h3>
-                                    <p class="subtle">"Tunes continuous dynamics/learning parameters. Topology (unit count/connectivity) is not changed here."</p>
-
-                                    <div class="row end wrap">
-                                        <label class="label">
-                                            <span>"dt"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Integration timestep for the continuous dynamics. Smaller dt = more stable/slow updates; larger dt = faster but can destabilize."
-                                                min="0.001"
-                                                max="1"
-                                                step="0.001"
-                                                prop:value=move || format!("{:.3}", cfg_dt.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_dt.set(v.clamp(0.001, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"base_freq"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Base oscillator frequency for unit dynamics (sets the intrinsic rhythm)."
-                                                min="0"
-                                                max="10"
-                                                step="0.05"
-                                                prop:value=move || format!("{:.2}", cfg_base_freq.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_base_freq.set(v.clamp(0.0, 10.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"global_inhibition"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Global inhibition strength. Higher values suppress overall activity and can increase selectivity."
-                                                min="0"
-                                                max="5"
-                                                step="0.01"
-                                                prop:value=move || format!("{:.2}", cfg_global_inhibition.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_global_inhibition.set(v.clamp(0.0, 5.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                    </div>
-
-                                    <div class="row end wrap">
-                                        <label class="label">
-                                            <span>"noise_amp"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Amplitude of injected noise into dynamics. Useful for exploration; too high can destabilize."
-                                                min="0"
-                                                max="1"
-                                                step="0.001"
-                                                prop:value=move || format!("{:.3}", cfg_noise_amp.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_noise_amp.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"noise_phase"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Phase noise / jitter applied to oscillators. Adds variability without changing amplitude."
-                                                min="0"
-                                                max="1"
-                                                step="0.001"
-                                                prop:value=move || format!("{:.3}", cfg_noise_phase.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_noise_phase.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"causal_decay"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Decay rate for causal memory edges. Higher values forget causality faster."
-                                                min="0"
-                                                max="1"
-                                                step="0.001"
-                                                prop:value=move || format!("{:.3}", cfg_causal_decay.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_causal_decay.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                    </div>
-
-                                    <div class="row end wrap">
-                                        <label class="label">
-                                            <span>"hebb_rate"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Hebbian learning rate (local plasticity strength). Higher = faster coupling updates."
-                                                min="0"
-                                                max="1"
-                                                step="0.01"
-                                                prop:value=move || format!("{:.2}", cfg_hebb_rate.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_hebb_rate.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"forget_rate"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Forgetting rate applied to learned couplings. Higher values erase weights faster."
-                                                min="0"
-                                                max="1"
-                                                step="0.001"
-                                                prop:value=move || format!("{:.4}", cfg_forget_rate.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_forget_rate.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"prune_below"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Pruning threshold: connections with |w| below this may be pruned during maintenance."
-                                                min="0"
-                                                max="1"
-                                                step="0.001"
-                                                prop:value=move || format!("{:.3}", cfg_prune_below.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_prune_below.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                    </div>
-
-                                    <div class="row end wrap">
-                                        <label class="label">
-                                            <span>"coactive_threshold"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Co-activity threshold used for forming associations (how strongly two units must co-activate to be considered linked)."
-                                                min="0"
-                                                max="1"
-                                                step="0.01"
-                                                prop:value=move || format!("{:.2}", cfg_coactive_threshold.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_coactive_threshold.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"phase_lock_threshold"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Threshold for considering oscillators phase-locked (used for binding / stable coupling decisions)."
-                                                min="0"
-                                                max="1"
-                                                step="0.01"
-                                                prop:value=move || format!("{:.2}", cfg_phase_lock_threshold.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_phase_lock_threshold.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"imprint_rate"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Imprinting rate for creating stable concepts/engrams. Higher = more aggressive one-shot binding."
-                                                min="0"
-                                                max="1"
-                                                step="0.01"
-                                                prop:value=move || format!("{:.2}", cfg_imprint_rate.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_imprint_rate.set(v.clamp(0.0, 1.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                    </div>
-
-                                    <div class="row end wrap">
-                                        <label class="label">
-                                            <span>"salience_decay"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Decay rate for salience (how quickly attention/usage fades). Higher = faster fade."
-                                                min="0"
-                                                max="0.1"
-                                                step="0.0001"
-                                                prop:value=move || format!("{:.4}", cfg_salience_decay.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_salience_decay.set(v.clamp(0.0, 0.1));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label">
-                                            <span>"salience_gain"</span>
-                                            <input
-                                                class="input compact"
-                                                type="number"
-                                                title="Gain applied to salience updates (how quickly frequently used symbols/units become salient)."
-                                                min="0"
-                                                max="5"
-                                                step="0.01"
-                                                prop:value=move || format!("{:.2}", cfg_salience_gain.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_cfg_salience_gain.set(v.clamp(0.0, 5.0));
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                    </div>
-
-                                    <div class="row end wrap">
-                                        <button class="btn" on:click=move |_| reset_brain_config_from_runtime()>
-                                            "Reset"
-                                        </button>
-                                        <button class="btn primary" on:click=move |_| apply_brain_config()>
-                                            "Apply"
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
+                                }
+                            }
                         </Show>
 
                         <Show when=move || dashboard_tab.get() == DashboardTab::Learning>
@@ -5747,6 +5637,8 @@ struct PersistedSettings {
     run_interval_ms: u32,
     #[serde(default = "default_trial_period_ms")]
     trial_period_ms: u32,
+    #[serde(default)]
+    settings_advanced: bool,
 }
 
 fn default_true() -> bool {

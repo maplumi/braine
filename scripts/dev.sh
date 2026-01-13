@@ -86,7 +86,7 @@ if [[ "$MODE" == "web" ]]; then
     echo "rustup not found; cannot ensure wasm32-unknown-unknown target is installed"
     exit 1
   fi
-  cargo +1.84.0 build -p braine_web --target wasm32-unknown-unknown --features braine_web/web --release
+  cargo +1.84.0 build -p braine_web --target wasm32-unknown-unknown --features braine_web/gpu --release
   
   echo "[2/3] wasm-bindgen post-processing"
   WASM_FILE="$ROOT/target/wasm32-unknown-unknown/release/braine_web.wasm"
@@ -151,9 +151,9 @@ cargo clippy --workspace --exclude braine_desktop --all-targets -- -D warnings
 
 echo "[3/7] cargo build --release (native)"
 if [[ "$SKIP_DESKTOP" == "1" ]]; then
-  cargo build --release -p braine -p brained
+  cargo build --release -p braine -p brained --features brained/gpu
 else
-  cargo build --release -p braine -p brained -p braine_desktop
+  cargo build --release -p braine -p brained -p braine_desktop --features brained/gpu
 fi
 
 if [[ "$SKIP_WINDOWS" == "1" ]]; then
@@ -161,9 +161,9 @@ if [[ "$SKIP_WINDOWS" == "1" ]]; then
 else
   echo "[4/7] cargo build --release --target x86_64-pc-windows-gnu"
   if [[ "$SKIP_DESKTOP" == "1" ]]; then
-    cargo build --release --target x86_64-pc-windows-gnu -p braine -p brained
+    cargo build --release --target x86_64-pc-windows-gnu -p braine -p brained --features brained/gpu
   else
-    cargo build --release --target x86_64-pc-windows-gnu -p braine -p brained -p braine_desktop
+    cargo build --release --target x86_64-pc-windows-gnu -p braine -p brained -p braine_desktop --features brained/gpu
   fi
 fi
 
@@ -240,7 +240,7 @@ else
   echo "rustup not found; cannot ensure wasm32-unknown-unknown target is installed"
   exit 1
 fi
-cargo +1.84.0 build -p braine_web --target wasm32-unknown-unknown --features braine_web/web --release
+cargo +1.84.0 build -p braine_web --target wasm32-unknown-unknown --features braine_web/gpu --release
 if command -v wasm-bindgen >/dev/null; then
   WASM_FILE="$ROOT/target/wasm32-unknown-unknown/release/braine_web.wasm"
   ensure_web_dist_not_ignored

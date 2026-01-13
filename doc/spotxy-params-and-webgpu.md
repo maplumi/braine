@@ -36,21 +36,21 @@ Extended the daemon's `GetGameParams` / `SetGameParam` protocol to include SpotX
   - Optional `gpu` feature (disabled by default) enables `wgpu` compute shaders
   - Targets substrates with 10k+ units for performance gains
   - Uses `pollster::block_on` for synchronous GPU initialization
-  - **Not compatible with WASM** (requires `std` + blocking APIs)
+  - WASM/WebGPU support is available behind the web build's `gpu` feature, and will fall back to CPU if WebGPU is unavailable.
 
 - **`braine_web` (WASM)**:
-  - **CPU-only** by default (uses `Scalar` execution tier)
-  - No GPU acceleration currently enabled
-  - Runtime WebGPU detection added:
+  - Default hosted builds enable the `gpu` feature and will use WebGPU for the substrate dynamics update when available.
+  - If WebGPU is unavailable (or initialization fails), it falls back to CPU automatically.
+  - Runtime WebGPU detection:
     - Checks `navigator.gpu` availability on startup
-    - Displays status message in UI: "WebGPU: available (not yet used)" or "not available (CPU only)"
+    - Displays a status message indicating whether GPU dynamics are enabled
   - Canvas rendering uses 2D context (`CanvasRenderingContext2d`), not WebGL/WebGPU
 
 ### Future WebGPU Integration
-To enable WebGPU in `braine_web`:
-1. Adapt `wgpu` initialization for WASM (async via `wasm-bindgen-futures`)
-2. Use WASM32 backend features for `wgpu` (no `pollster::block_on`)
-3. Optionally integrate WebGPU for canvas rendering (e.g., for visualizations)
+Future work:
+1. Improve async-friendly initialization paths and error reporting for WebGPU
+2. Expand GPU acceleration beyond the dense dynamics step
+3. Optionally integrate WebGPU for visualization rendering (e.g., for large graphs)
 
 See [doc/deployment-web.md](deployment-web.md) "Future Work" section for details.
 

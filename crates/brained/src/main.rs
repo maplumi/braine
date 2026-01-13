@@ -879,6 +879,8 @@ struct BrainStats {
     unit_count: usize,
     #[serde(default)]
     max_units_limit: usize,
+    #[serde(default)]
+    execution_tier: String,
     connection_count: usize,
     pruned_last_step: usize,
     births_last_step: usize,
@@ -981,17 +983,36 @@ impl DaemonState {
         brain.define_action("right", 6);
         brain.set_observer_telemetry(true);
 
-        // Optional execution tier override (safe default if feature not enabled).
+        // Execution tier selection.
+        // - If BRAINE_EXEC_TIER is set, honor it as a request and warn if unavailable.
+        // - Otherwise, auto-select GPU (if compiled+available) with safe fallbacks.
         // Values: scalar|simd|parallel|gpu
         if let Ok(v) = std::env::var("BRAINE_EXEC_TIER") {
             let vv = v.trim().to_ascii_lowercase();
-            match vv.as_str() {
-                "scalar" => brain.set_execution_tier(braine::substrate::ExecutionTier::Scalar),
-                "simd" => brain.set_execution_tier(braine::substrate::ExecutionTier::Simd),
-                "parallel" => brain.set_execution_tier(braine::substrate::ExecutionTier::Parallel),
-                "gpu" => brain.set_execution_tier(braine::substrate::ExecutionTier::Gpu),
-                _ => warn!("Unknown BRAINE_EXEC_TIER value: {}", v),
+            let requested = match vv.as_str() {
+                "scalar" => Some(braine::substrate::ExecutionTier::Scalar),
+                "simd" => Some(braine::substrate::ExecutionTier::Simd),
+                "parallel" => Some(braine::substrate::ExecutionTier::Parallel),
+                "gpu" => Some(braine::substrate::ExecutionTier::Gpu),
+                _ => {
+                    warn!("Unknown BRAINE_EXEC_TIER value: {}", v);
+                    None
+                }
+            };
+
+            if let Some(t) = requested {
+                brain.set_execution_tier(t);
+                let effective = brain.effective_execution_tier();
+                if effective != t {
+                    warn!(
+                        "Requested execution tier {:?} but using {:?} (feature/runtime unavailable)",
+                        t, effective
+                    );
+                }
             }
+        } else {
+            let selected = brain.auto_select_execution_tier();
+            tracing::info!("Auto-selected execution tier: {:?}", selected);
         }
 
         Self {
@@ -1665,6 +1686,13 @@ impl DaemonState {
             brain_stats: BrainStats {
                 unit_count: diag.unit_count,
                 max_units_limit: self.max_units_limit,
+                execution_tier: match view_brain.effective_execution_tier() {
+                    braine::substrate::ExecutionTier::Scalar => "Scalar",
+                    braine::substrate::ExecutionTier::Simd => "SIMD",
+                    braine::substrate::ExecutionTier::Parallel => "Parallel",
+                    braine::substrate::ExecutionTier::Gpu => "GPU",
+                }
+                .to_string(),
                 connection_count: diag.connection_count,
                 pruned_last_step: diag.pruned_last_step,
                 births_last_step: diag.births_last_step,

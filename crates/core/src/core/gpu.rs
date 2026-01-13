@@ -10,6 +10,27 @@ use bytemuck::{Pod, Zeroable};
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
+thread_local! {
+    static GPU_CTX: std::cell::OnceCell<Option<GpuContext>> = const { std::cell::OnceCell::new() };
+}
+
+/// Access the shared GPU context (lazily initialized).
+///
+/// The context is cached per-thread for simplicity.
+pub fn with_gpu_context<T>(max_units: usize, f: impl FnOnce(Option<&GpuContext>) -> T) -> T {
+    GPU_CTX.with(|cell| {
+        let ctx = cell.get_or_init(|| GpuContext::new(max_units));
+        f(ctx.as_ref())
+    })
+}
+
+/// Returns true if a GPU context can be created.
+///
+/// Note: this may initialize the GPU context and can be expensive.
+pub fn gpu_available(max_units: usize) -> bool {
+    with_gpu_context(max_units, |ctx| ctx.is_some())
+}
+
 /// GPU-friendly unit representation (aligned to 16 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

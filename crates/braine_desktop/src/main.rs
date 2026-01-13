@@ -915,6 +915,8 @@ struct DaemonBrainStats {
     unit_count: usize,
     #[serde(default)]
     max_units_limit: usize,
+    #[serde(default)]
+    execution_tier: String,
     connection_count: usize,
     #[serde(default)]
     pruned_last_step: usize,
@@ -1831,6 +1833,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui.set_brain_stats(BrainStats {
                     unit_count: snap.brain_stats.unit_count as i32,
                     max_units_limit: snap.brain_stats.max_units_limit as i32,
+                    execution_tier: snap.brain_stats.execution_tier.clone().into(),
                     connection_count: snap.brain_stats.connection_count as i32,
                     pruned_last_step: snap.brain_stats.pruned_last_step as i32,
                     births_last_step: snap.brain_stats.births_last_step as i32,

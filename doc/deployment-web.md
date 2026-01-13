@@ -10,12 +10,13 @@ This document explains how to build and deploy the fully in-browser `braine_web`
 - IndexedDB persistence for brain images
 - Canvas-based visualizations for Pong and SpotXY
 
-**GPU status**: The core `braine` substrate currently uses the `Scalar` execution tier in WASM builds. The `gpu` feature (based on `wgpu`) is designed for native targets and requires `std` + blocking APIs (`pollster::block_on`), which are not WASM-compatible. A future WebGPU port would require:
-- Async `wgpu` initialization using `wasm-bindgen-futures`
-- Adapting the GPU compute pipeline for WASM32 + WebGPU backend
-- Feature-gating to avoid conflicts with native GPU builds
+**GPU status**: The web build can enable the core `gpu` execution tier (via `wgpu`) and will automatically use WebGPU for the substrate dynamics update when available. If WebGPU is unavailable (or initialization fails), it falls back to CPU.
 
-The web UI includes a runtime check for `navigator.gpu` availability and displays whether WebGPU is detected (currently informational only).
+Notes:
+- The GPU tier currently accelerates the dense dynamics step inside `Brain::step()`; learning/plasticity updates remain CPU.
+- WebGPU availability is still browser- and platform-dependent.
+
+The web UI includes a runtime check for `navigator.gpu` availability and displays whether GPU dynamics are enabled.
 
 ---
 
@@ -217,4 +218,4 @@ Save as `scripts/deploy-web.sh`, make executable (`chmod +x scripts/deploy-web.s
 - **Build**: `trunk build --release --features web` in `crates/braine_web/`
 - **Deploy to GitHub Pages**: Copy `dist/*` to `gh-pages` branch root
 - **Optimize**: Use `wasm-opt -Oz` for smaller binaries
-- **GPU**: Currently CPU-only (`Scalar` tier); WebGPU is a future enhancement
+- **GPU**: Optional; when enabled, uses WebGPU for dynamics with CPU fallback

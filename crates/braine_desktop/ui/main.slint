@@ -326,6 +326,25 @@ export component MainWindow inherits Window {
                         font-size: 12px;
                     }
                 }
+
+                if root.brain-stats.execution-tier != "": Rectangle {
+                    height: 22px;
+                    border-radius: 11px;
+                    background: #4080aa20;
+                    border-width: 1px;
+                    border-color: #4080aa66;
+
+                    HorizontalBox {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        Text {
+                            text: "Tier: " + root.brain-stats.execution-tier;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                            font-size: 12px;
+                        }
+                    }
+                }
                 
                 Button {
                     text: paused ? "▶ Resume UI" : "⏸ Pause UI";

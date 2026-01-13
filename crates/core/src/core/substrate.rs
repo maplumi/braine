@@ -773,6 +773,81 @@ impl Brain {
         self.tier
     }
 
+    /// Returns the effective execution tier that will actually be used.
+    ///
+    /// This accounts for compile-time feature gates (e.g. `simd`, `parallel`, `gpu`)
+    /// and for runtime GPU availability.
+    pub fn effective_execution_tier(&self) -> ExecutionTier {
+        match self.tier {
+            ExecutionTier::Scalar => ExecutionTier::Scalar,
+            ExecutionTier::Simd => {
+                #[cfg(feature = "simd")]
+                {
+                    ExecutionTier::Simd
+                }
+                #[cfg(not(feature = "simd"))]
+                {
+                    ExecutionTier::Scalar
+                }
+            }
+            ExecutionTier::Parallel => {
+                #[cfg(feature = "parallel")]
+                {
+                    ExecutionTier::Parallel
+                }
+                #[cfg(not(feature = "parallel"))]
+                {
+                    ExecutionTier::Scalar
+                }
+            }
+            ExecutionTier::Gpu => {
+                #[cfg(feature = "gpu")]
+                {
+                    let max_units = self.units.len().max(65_536);
+                    if crate::gpu::gpu_available(max_units) {
+                        ExecutionTier::Gpu
+                    } else {
+                        ExecutionTier::Scalar
+                    }
+                }
+                #[cfg(not(feature = "gpu"))]
+                {
+                    ExecutionTier::Scalar
+                }
+            }
+        }
+    }
+
+    /// Select a default execution tier.
+    ///
+    /// Picks GPU when compiled+available, otherwise falls back to Parallel/Simd/Scalar.
+    /// Returns the effective tier selected.
+    pub fn auto_select_execution_tier(&mut self) -> ExecutionTier {
+        #[cfg(feature = "gpu")]
+        {
+            let max_units = self.units.len().max(65_536);
+            if crate::gpu::gpu_available(max_units) {
+                self.tier = ExecutionTier::Gpu;
+                return ExecutionTier::Gpu;
+            }
+        }
+
+        #[cfg(feature = "parallel")]
+        {
+            self.tier = ExecutionTier::Parallel;
+            return ExecutionTier::Parallel;
+        }
+
+        #[cfg(all(not(feature = "parallel"), feature = "simd"))]
+        {
+            self.tier = ExecutionTier::Simd;
+            return ExecutionTier::Simd;
+        }
+
+        self.tier = ExecutionTier::Scalar;
+        ExecutionTier::Scalar
+    }
+
     // =========================================================================
     // CSR Connection Helpers
     // =========================================================================
@@ -3329,13 +3404,9 @@ impl Brain {
     /// Only beneficial for very large substrates (10k+ units).
     #[cfg(feature = "gpu")]
     fn step_dynamics_gpu(&mut self) {
-        use crate::gpu::{GpuContext, GpuInfluence, GpuParams, GpuUnit};
+        use crate::gpu::{GpuInfluence, GpuParams, GpuUnit};
 
-        // Lazily initialize GPU context (stored in thread-local for simplicity).
-        // A production implementation would store this in Brain.
-        thread_local! {
-            static GPU_CTX: std::cell::OnceCell<Option<GpuContext>> = const { std::cell::OnceCell::new() };
-        }
+        let max_units = self.units.len().max(65_536);
 
         let n = self.units.len();
 
@@ -3387,10 +3458,8 @@ impl Brain {
         };
 
         // Try GPU, fallback to scalar if unavailable or on error.
-        let used_gpu = GPU_CTX.with(|cell| {
-            let ctx = cell.get_or_init(|| GpuContext::new(65536));
+        let used_gpu = crate::gpu::with_gpu_context(max_units, |ctx| {
             if let Some(gpu) = ctx {
-                // Handle Result: if GPU fails, we'll fall back to scalar
                 gpu.step_dynamics(&mut gpu_units, &influences, &self.pending_input, params)
                     .is_ok()
             } else {
@@ -3496,7 +3565,7 @@ impl Brain {
             avg_amp,
             avg_weight,
             memory_bytes,
-            execution_tier: self.tier,
+            execution_tier: self.effective_execution_tier(),
         }
     }
 
@@ -5046,11 +5115,17 @@ mod tests {
 
         // Switch to SIMD (falls back to scalar if feature not enabled).
         brain.set_execution_tier(ExecutionTier::Simd);
-        assert_eq!(brain.execution_tier(), ExecutionTier::Simd);
+        #[cfg(feature = "simd")]
+        assert_eq!(brain.diagnostics().execution_tier, ExecutionTier::Simd);
+        #[cfg(not(feature = "simd"))]
+        assert_eq!(brain.diagnostics().execution_tier, ExecutionTier::Scalar);
 
         // Switch to Parallel (falls back to scalar if feature not enabled).
         brain.set_execution_tier(ExecutionTier::Parallel);
-        assert_eq!(brain.execution_tier(), ExecutionTier::Parallel);
+        #[cfg(feature = "parallel")]
+        assert_eq!(brain.diagnostics().execution_tier, ExecutionTier::Parallel);
+        #[cfg(not(feature = "parallel"))]
+        assert_eq!(brain.diagnostics().execution_tier, ExecutionTier::Scalar);
 
         // Step with parallel.
         for _ in 0..10 {

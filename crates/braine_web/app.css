@@ -392,6 +392,18 @@ button {
   color: #fff;
 }
 
+.btn.link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  padding: 6px 8px;
+  min-height: 34px;
+}
+
+.btn.link:hover {
+  filter: brightness(1.1);
+}
+
 .btn.ghost {
   background: transparent;
 }
@@ -866,4 +878,191 @@ a.good { color: var(--accent-2); }
   .dashboard-overlay {
     display: none;
   }
+}
+
+/* Settings panel (schema-driven) */
+
+.settings-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.label.settings-advanced {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.preset-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.param-field {
+  grid-column: span 6;
+  min-width: 0;
+}
+
+@media (min-width: 1200px) {
+  .param-field {
+    grid-column: span 4;
+  }
+}
+
+@media (max-width: 900px) {
+  .param-field {
+    grid-column: span 12;
+  }
+}
+
+.param-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.param-label {
+  color: var(--text);
+  font-weight: 800;
+  font-size: 0.92rem;
+}
+
+.param-units {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.param-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.param-input-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.param-hints {
+  min-height: 18px;
+  margin-top: 6px;
+}
+
+.param-warn {
+  color: #fbbf24;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.info-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--bg) 70%, transparent);
+  color: var(--muted);
+  font-weight: 900;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.info-btn:focus {
+  outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(420px, 86vw);
+  background: color-mix(in oklab, var(--bg) 30%, #000 70%);
+  border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  z-index: 50;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.tooltip-wrap:hover .tooltip,
+.tooltip-wrap:focus-within .tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.tooltip-title {
+  color: var(--text);
+  font-weight: 900;
+  margin-bottom: 6px;
+}
+
+.tooltip-body {
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 10px;
+  line-height: 1.35;
+}
+
+.tooltip-meta {
+  color: color-mix(in oklab, var(--muted) 80%, transparent);
+  font-size: 0.82rem;
+  font-weight: 700;
+  display: grid;
+  gap: 4px;
+}
+
+.tooltip-when {
+  margin-top: 6px;
+}
+
+.tooltip-risk {
+  margin-top: 6px;
+  color: #fbbf24;
+}
+
+.settings-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  background: color-mix(in oklab, var(--bg) 55%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  box-shadow: 0 -10px 25px rgba(0, 0, 0, 0.25);
+}
+
+.settings-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.apply-toast {
+  color: rgb(74, 222, 128);
+  font-weight: 900;
 }

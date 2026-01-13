@@ -195,13 +195,12 @@ Refresh mechanism:
 
 ### WebGPU Dynamic Switching
 
-**Status: Detected but not used**
+**Status: Enabled when available (feature-gated)**
 
 - WebGPU availability is detected via `navigator.gpu` check
-- Currently displays status: "WebGPU: available (not yet used by braine)" or "WebGPU: not available (CPU only)"
-- Brain core uses CPU Scalar tier always
-- Dynamic switching not possible without architectural changes to the core substrate
-- Future: Could implement WebGPU backend for parallel unit updates
+- When built with the web `gpu` feature, the brain will request the GPU execution tier when WebGPU is present
+- If WebGPU is unavailable (or initialization fails), it falls back to CPU automatically
+- Current GPU acceleration targets the dense dynamics update; learning/plasticity updates remain CPU
 
 ### About Page Reorganization
 

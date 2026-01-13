@@ -201,8 +201,38 @@ pub fn draw_brain_connectivity_sphere(
         .dyn_into::<CanvasRenderingContext2d>()
         .map_err(|_| "cast failed")?;
 
-    let w = canvas.width() as f64;
-    let h = canvas.height() as f64;
+    // Keep the canvas backing store in sync with its CSS box, with DPR scaling.
+    // This prevents stretching/skewing on mobile and keeps visuals crisp.
+    let rect = canvas.get_bounding_client_rect();
+    let mut css_w = rect.width();
+    let mut css_h = rect.height();
+    if css_w < 2.0 || css_h < 2.0 {
+        css_w = canvas.width() as f64;
+        css_h = canvas.height() as f64;
+    }
+    css_w = css_w.max(1.0);
+    css_h = css_h.max(1.0);
+
+    let dpr = web_sys::window()
+        .map(|w| w.device_pixel_ratio())
+        .unwrap_or(1.0)
+        .max(1.0)
+        .min(2.0);
+
+    let target_w = (css_w * dpr).round().max(1.0) as u32;
+    let target_h = (css_h * dpr).round().max(1.0) as u32;
+    if canvas.width() != target_w {
+        canvas.set_width(target_w);
+    }
+    if canvas.height() != target_h {
+        canvas.set_height(target_h);
+    }
+    ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0)
+        .map_err(|_| "set_transform failed".to_string())?;
+
+    // From here on, all coordinates are in CSS pixels.
+    let w = css_w;
+    let h = css_h;
     let zoom = (opts.zoom as f64).clamp(0.25, 8.0);
     let cx = (w / 2.0) + (opts.pan_x as f64);
     let cy = (h / 2.0) + (opts.pan_y as f64);
@@ -557,8 +587,37 @@ pub fn draw_causal_graph(
         .dyn_into::<CanvasRenderingContext2d>()
         .map_err(|_| "cast failed")?;
 
-    let w = canvas.width() as f64;
-    let h = canvas.height() as f64;
+    // Keep the canvas backing store in sync with its CSS box, with DPR scaling.
+    let rect = canvas.get_bounding_client_rect();
+    let mut css_w = rect.width();
+    let mut css_h = rect.height();
+    if css_w < 2.0 || css_h < 2.0 {
+        css_w = canvas.width() as f64;
+        css_h = canvas.height() as f64;
+    }
+    css_w = css_w.max(1.0);
+    css_h = css_h.max(1.0);
+
+    let dpr = web_sys::window()
+        .map(|w| w.device_pixel_ratio())
+        .unwrap_or(1.0)
+        .max(1.0)
+        .min(2.0);
+
+    let target_w = (css_w * dpr).round().max(1.0) as u32;
+    let target_h = (css_h * dpr).round().max(1.0) as u32;
+    if canvas.width() != target_w {
+        canvas.set_width(target_w);
+    }
+    if canvas.height() != target_h {
+        canvas.set_height(target_h);
+    }
+    ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0)
+        .map_err(|_| "set_transform failed".to_string())?;
+
+    // From here on, all coordinates are in CSS pixels.
+    let w = css_w;
+    let h = css_h;
     let zoom = (opts.zoom as f64).clamp(0.25, 8.0);
     let cx = (w / 2.0) + (opts.pan_x as f64);
     let cy = (h / 2.0) + (opts.pan_y as f64);
