@@ -716,34 +716,39 @@ fn App() -> impl IntoView {
     let (exec_tier_effective, set_exec_tier_effective) =
         signal(runtime.with_value(|r| r.brain.effective_execution_tier()));
 
-    // If WebGPU is present and this build has the core `gpu` feature, initialize
+    // If WebGPU is present and this build has the web `gpu` feature, initialize
     // the GPU context asynchronously. By default we auto-enable GPU on first load,
     // but if the user explicitly selected CPU we do not auto-switch.
-    let should_try_enable_gpu =
-        webgpu_available && cfg!(feature = "gpu") && exec_tier_pref != Some(ExecutionTier::Scalar);
-    if should_try_enable_gpu {
-        let runtime = runtime.clone();
-        let explicit_gpu_pref = exec_tier_pref == Some(ExecutionTier::Gpu);
-        spawn_local(async move {
-            set_gpu_status.set("WebGPU: initializing…");
-            match braine::gpu::init_gpu_context(65_536).await {
-                Ok(()) => {
-                    runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
-                    set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
-                    push_toast(ToastLevel::Success, "WebGPU enabled".to_string());
-                }
-                Err(e) => {
-                    if explicit_gpu_pref {
-                        // Keep the user's preference as "GPU" selected; effective tier will fall back.
-                        set_gpu_status.set("WebGPU: init failed (CPU fallback)");
-                    } else {
-                        runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Scalar));
-                        set_gpu_status.set("WebGPU: init failed (CPU mode)");
+    #[cfg(feature = "gpu")]
+    {
+        let should_try_enable_gpu =
+            webgpu_available && exec_tier_pref != Some(ExecutionTier::Scalar);
+        if should_try_enable_gpu {
+            let runtime = runtime.clone();
+            let explicit_gpu_pref = exec_tier_pref == Some(ExecutionTier::Gpu);
+            spawn_local(async move {
+                set_gpu_status.set("WebGPU: initializing…");
+                match braine::gpu::init_gpu_context(65_536).await {
+                    Ok(()) => {
+                        runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
+                        set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
+                        push_toast(ToastLevel::Success, "WebGPU enabled".to_string());
                     }
-                    push_toast(ToastLevel::Error, format!("WebGPU init failed: {e}"));
+                    Err(e) => {
+                        if explicit_gpu_pref {
+                            // Keep the user's preference as "GPU" selected; effective tier will fall back.
+                            set_gpu_status.set("WebGPU: init failed (CPU fallback)");
+                        } else {
+                            runtime.update_value(|r| {
+                                r.brain.set_execution_tier(ExecutionTier::Scalar)
+                            });
+                            set_gpu_status.set("WebGPU: init failed (CPU mode)");
+                        }
+                        push_toast(ToastLevel::Error, format!("WebGPU init failed: {e}"));
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     let refresh_ui_from_runtime = {
@@ -4093,29 +4098,48 @@ fn App() -> impl IntoView {
                                                     push_toast(ToastLevel::Error, "WebGPU not available in this browser/context".to_string());
                                                     return;
                                                 }
-                                                if !cfg!(feature = "gpu") {
-                                                    push_toast(ToastLevel::Error, "This build does not include the `gpu` feature".to_string());
+
+                                                #[cfg(not(feature = "gpu"))]
+                                                {
+                                                    push_toast(
+                                                        ToastLevel::Error,
+                                                        "This build does not include the web `gpu` feature".to_string(),
+                                                    );
                                                     return;
                                                 }
 
-                                                local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "gpu");
-                                                runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
+                                                #[cfg(feature = "gpu")]
+                                                {
+                                                    local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "gpu");
+                                                    runtime.update_value(|r| {
+                                                        r.brain.set_execution_tier(ExecutionTier::Gpu);
+                                                    });
 
-                                                let runtime = runtime.clone();
-                                                spawn_local(async move {
-                                                    set_gpu_status.set("WebGPU: initializing…");
-                                                    match braine::gpu::init_gpu_context(65_536).await {
-                                                        Ok(()) => {
-                                                            runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
-                                                            set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
-                                                            push_toast(ToastLevel::Success, "Execution tier: GPU".to_string());
+                                                    let runtime = runtime.clone();
+                                                    spawn_local(async move {
+                                                        set_gpu_status.set("WebGPU: initializing…");
+                                                        match braine::gpu::init_gpu_context(65_536).await {
+                                                            Ok(()) => {
+                                                                runtime.update_value(|r| {
+                                                                    r.brain.set_execution_tier(ExecutionTier::Gpu);
+                                                                });
+                                                                set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
+                                                                push_toast(
+                                                                    ToastLevel::Success,
+                                                                    "Execution tier: GPU".to_string(),
+                                                                );
+                                                            }
+                                                            Err(e) => {
+                                                                set_gpu_status
+                                                                    .set("WebGPU: init failed (CPU fallback)");
+                                                                push_toast(
+                                                                    ToastLevel::Error,
+                                                                    format!("WebGPU init failed: {e}"),
+                                                                );
+                                                            }
                                                         }
-                                                        Err(e) => {
-                                                            set_gpu_status.set("WebGPU: init failed (CPU fallback)");
-                                                            push_toast(ToastLevel::Error, format!("WebGPU init failed: {e}"));
-                                                        }
-                                                    }
-                                                });
+                                                    });
+                                                }
                                             }
                                         >
                                             "GPU"

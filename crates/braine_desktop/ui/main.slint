@@ -10,6 +10,36 @@ import { SpotCanvas, BanditCanvas, PongCanvas, SpotXYCanvas } from "canvases.sli
 import { GameHeader, HudPanel, LearningPanel, BrainPanel } from "panels.slint";
 import { AboutPanel } from "about.slint";
 
+component TierPill inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <color> active-color: Theme.accent-blue;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 20px;
+    min-width: 42px;
+    border-radius: 10px;
+    background: enabled ? (active ? active-color : #ffffff12) : #ffffff08;
+    border-width: 1px;
+    border-color: enabled ? (active ? active-color : #ffffff33) : #ffffff1a;
+    opacity: enabled ? 1.0 : 0.6;
+
+    TouchArea {
+        enabled: parent.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.label;
+        color: Theme.text-primary;
+        font-size: 12px;
+        font-weight: root.active ? 700 : 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Main Window
 // ═══════════════════════════════════════════════════════════════════════════
@@ -354,16 +384,20 @@ export component MainWindow inherits Window {
 
                         Rectangle { horizontal-stretch: 1; background: transparent; }
 
-                        Button {
-                            text: "CPU";
-                            height: 18px;
-                            enabled: true;
+                        TierPill {
+                            label: "CPU";
+                            active:
+                                (root.brain-stats.execution-tier-selected == "scalar" || root.brain-stats.execution-tier-selected == "Scalar") ||
+                                (root.brain-stats.execution-tier-selected == "" && (root.brain-stats.execution-tier == "scalar" || root.brain-stats.execution-tier == "Scalar"));
+                            active-color: Theme.accent-blue;
                             clicked => { root.set-execution-tier("scalar"); }
                         }
-                        Button {
-                            text: "GPU";
-                            height: 18px;
-                            enabled: true;
+                        TierPill {
+                            label: "GPU";
+                            active:
+                                (root.brain-stats.execution-tier-selected == "gpu" || root.brain-stats.execution-tier-selected == "Gpu") ||
+                                (root.brain-stats.execution-tier-selected == "" && (root.brain-stats.execution-tier == "gpu" || root.brain-stats.execution-tier == "Gpu"));
+                            active-color: Theme.accent-green;
                             clicked => { root.set-execution-tier("gpu"); }
                         }
                     }
