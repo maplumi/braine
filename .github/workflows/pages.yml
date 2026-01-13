@@ -1,15 +1,10 @@
 name: Deploy Web (GitHub Pages)
 
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - 'crates/braine_web/**'
-      - 'crates/core/**'
-      - 'crates/shared/braine_games/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/pages.yml'
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
@@ -27,8 +22,19 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: >-
+      ${
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main'
+        )
+      }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Pages
         id: pages
