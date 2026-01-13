@@ -1,7 +1,7 @@
 // Braine Desktop - Main Window (Modular)
 // Imports components from separate files for maintainability
 
-import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox, ScrollView, LineEdit } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupBox, ScrollView, LineEdit, Palette } from "std-widgets.slint";
 
 // Import modular components
 import { Theme } from "theme.slint";
@@ -21,6 +21,18 @@ export component MainWindow inherits Window {
     min-width: 860px;
     min-height: 600px;
     background: Theme.bg-dark;
+
+    // Ensure standard widgets (including TabWidget tab labels) use a dark palette.
+    // We do this with a one-shot timer because global properties are assigned via
+    // imperative `=` (not `:` bindings) in Slint.
+    Timer {
+        interval: 1ms;
+        running: true;
+        triggered => {
+            Palette.color-scheme = ColorScheme.dark;
+            self.stop();
+        }
+    }
     
     // State from Rust
     in property <HudData> hud;
@@ -297,11 +309,22 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if root.experts-status != "": Text {
-                    text: root.experts-status;
-                    color: Theme.text-secondary;
-                    vertical-alignment: center;
-                    font-size: 12px;
+                // Prevent long status strings from pushing controls past the right edge.
+                if root.experts-status != "": Rectangle {
+                    width: 260px;
+                    height: 20px;
+                    clip: true;
+                    background: transparent;
+
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.experts-status;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        font-size: 12px;
+                    }
                 }
                 
                 Button {
@@ -1243,10 +1266,13 @@ export component MainWindow inherits Window {
                                                 viewbox-width: parent.width / 1px;
                                                 viewbox-height: parent.height / 1px;
                                                 fill: transparent;
-                                                stroke: e.positive ? Theme.accent-green : Theme.accent-red;
-                                                stroke-width: (0.0006 + 0.0040 * e.thickness01) * min(parent.width, parent.height);
+                                                // Brighter edge colors for visibility on dark background.
+                                                stroke: e.positive ? #4ade80 : #fb7185;
+                                                // Keep a visible baseline width; thickness01 still encodes strength.
+                                                stroke-width: (0.0025 + 0.0100 * e.thickness01) * min(parent.width, parent.height);
                                                 stroke-line-cap: round;
-                                                opacity: 0.05 + 0.85 * e.strength01;
+                                                // Ensure even weak edges are visible; strength01 increases prominence.
+                                                opacity: 0.35 + 0.65 * e.strength01;
                                             }
 
                                             for n in graph-nodes: Rectangle {

@@ -622,9 +622,11 @@ pub fn draw_causal_graph(
 
         pos3d.insert(node.id, (xr, yr, zr2));
 
-        // Size based on base count (normalized) - same scale as substrate
+        // Size based on base count (normalized).
+        // Keep this comparable to the substrate view's default node sizing so
+        // causal symbols don't dominate the visualization.
         let norm_count = (node.base_count / max_count) as f64;
-        let size = 4.0 + 8.0 * norm_count.sqrt();
+        let size = 1.4 + 3.6 * norm_count.sqrt();
         node_sizes.insert(node.id, size);
     }
 
@@ -720,7 +722,12 @@ pub fn draw_causal_graph(
         let pulse = ((anim_time * pulse_freq + (node.id as f64) * 0.5).sin() * 0.5 + 0.5)
             * norm_count.sqrt();
         let pulse_size = 1.0 + pulse * 0.15;
-        let final_size = size * pulse_size * zoom.sqrt();
+        let mut final_size = size * pulse_size * zoom.sqrt();
+
+        // Keep a similar cap to the substrate view so zooming/large counts don't
+        // create oversized bubbles.
+        let max_size = 9.0 * zoom.sqrt();
+        final_size = final_size.clamp(1.2, max_size);
 
         // Alpha based on depth and frequency
         let depth = (z3d + 1.0) * 0.5;
@@ -740,7 +747,7 @@ pub fn draw_causal_graph(
             name: node.name.clone(),
             x: px,
             y: py,
-            r: final_size.max(3.0),
+            r: final_size.max(2.0),
             base_count: node.base_count,
         });
     }

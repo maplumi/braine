@@ -1631,7 +1631,7 @@ fn App() -> impl IntoView {
                     pan_y,
                     rotation: rot_y,
                     rotation_x: rot_x,
-                    draw_outline: true,
+                    draw_outline: false,
                     anim_time,
                 };
                 if let Ok(hits) = charts::draw_causal_graph(

@@ -2239,9 +2239,9 @@ fn main() -> Result<(), slint::PlatformError> {
                         let strength01 = (e.weight.abs() * inv).clamp(0.0, 1.0);
                         let positive = e.weight >= 0.0;
 
-                        // Make weak edges very thin and strong edges stand out.
-                        // Nonlinear mapping gives more visual separation.
-                        let thickness01 = strength01.powf(1.8).clamp(0.0, 1.0);
+                        // Nonlinear mapping: preserve relative differences without making
+                        // most edges effectively invisible.
+                        let thickness01 = strength01.powf(1.2).clamp(0.0, 1.0);
 
                         segs.push(GraphEdgeSeg {
                             x1,
