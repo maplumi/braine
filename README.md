@@ -6,7 +6,7 @@ A research prototype for a **brain-like** cognitive substrate based on **sparse 
 
 **Terminology**: "Braine" = the system/project. "Brain" = the cognitive substrate (`Brain` struct).
 
-Web demo: https://maplumi.github.io/braine/crates/braine_web/dist/
+Web demo: https://maplumi.github.io/braine/
 
 ## Framing (vs familiar baselines)
 
