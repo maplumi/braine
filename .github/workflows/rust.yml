@@ -220,4 +220,4 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-web-
       - name: cargo check (wasm)
-        run: cargo check -p braine_web --target wasm32-unknown-unknown --features web
+        run: cargo check -p braine_web --target wasm32-unknown-unknown --features gpu

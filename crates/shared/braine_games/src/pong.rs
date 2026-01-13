@@ -100,6 +100,11 @@ pub struct PongSim {
     distractor_active: bool,
 }
 
+// The UI renders the ball with a non-zero radius, but the sim uses center-only coordinates.
+// Without compensating for radius, the ball can visually touch the paddle while the center is
+// just outside the paddle range, which looks like a "no-bounce" bug.
+const BALL_RADIUS_Y_MARGIN: f32 = 0.045;
+
 impl PongSim {
     pub fn new(seed: u64) -> Self {
         let mut sim = Self {
@@ -297,7 +302,7 @@ impl PongSim {
                     self.state.ball_x = 0.0;
                     // Decide hit/miss at the moment of impact.
                     let hit = (self.state.ball_y - self.state.paddle_y).abs()
-                        <= self.params.paddle_half_height;
+                        <= (self.params.paddle_half_height + BALL_RADIUS_Y_MARGIN);
                     if hit {
                         self.pending_event_reward += 1.0;
                         self.apply_paddle_bounce_primary();
@@ -390,7 +395,7 @@ impl PongSim {
                 Boundary::Left => {
                     self.state.ball2_x = 0.0;
                     let hit = (self.state.ball2_y - self.state.paddle_y).abs()
-                        <= self.params.paddle_half_height;
+                        <= (self.params.paddle_half_height + BALL_RADIUS_Y_MARGIN);
                     if hit {
                         self.apply_paddle_bounce_distractor();
                     } else {
@@ -549,5 +554,24 @@ mod tests {
         let x_before = sim.state.ball_x;
         let _ = sim.update(0.01);
         assert!(sim.state.ball_x < x_before);
+    }
+
+    #[test]
+    fn paddle_hit_allows_small_radius_margin() {
+        let mut sim = PongSim::new(7);
+        sim.params.paddle_half_height = 0.10;
+        sim.state.paddle_y = 0.0;
+
+        // Force the ball to collide with the left boundary this tick.
+        sim.state.ball_x = 0.01;
+        sim.state.ball_vx = -1.0;
+        sim.state.ball_vy = 0.0;
+
+        // Center is slightly outside the paddle half-height, but within radius margin.
+        sim.state.ball_y = sim.params.paddle_half_height + (BALL_RADIUS_Y_MARGIN * 0.8);
+
+        let ev = sim.update(0.05);
+        assert_eq!(ev, PongEvent::Hit);
+        assert!(sim.state.ball_vx > 0.0);
     }
 }

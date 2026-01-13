@@ -104,6 +104,10 @@ impl PongWebGame {
                 self.sim.params.paddle_bounce_y = value.clamp(0.0, 2.5);
                 Ok(())
             }
+            "respawn_delay_s" => {
+                self.sim.params.respawn_delay_s = value.clamp(0.0, 1.0);
+                Ok(())
+            }
             "distractor_enabled" => {
                 self.sim.params.distractor_enabled = value >= 0.5;
                 Ok(())
@@ -113,7 +117,7 @@ impl PongWebGame {
                 Ok(())
             }
             _ => Err(format!(
-                "Unknown Pong param '{key}'. Use paddle_speed|paddle_half_height|ball_speed|paddle_bounce_y|distractor_enabled|distractor_speed_scale"
+                "Unknown Pong param '{key}'. Use paddle_speed|paddle_half_height|ball_speed|paddle_bounce_y|respawn_delay_s|distractor_enabled|distractor_speed_scale"
             )),
         }
     }

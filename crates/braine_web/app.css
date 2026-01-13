@@ -205,6 +205,8 @@ button {
   padding: 20px;
   overflow: auto;
   border-right: 1px solid var(--border);
+  position: relative;
+  z-index: 1;
 }
 
 .dashboard {
@@ -212,7 +214,10 @@ button {
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  overflow: hidden;
+  /* Allow tooltips/popovers to overlap the left panel when needed. */
+  overflow: visible;
+  position: relative;
+  z-index: 2;
 }
 
 .dashboard-tabs {

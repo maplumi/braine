@@ -148,7 +148,7 @@ jobs:
       - name: Build web app
         run: |
           cd crates/braine_web
-          trunk build --release --features web
+          trunk build --release --features gpu
 
       - name: Upload web artifacts
         uses: actions/upload-artifact@v4

@@ -352,6 +352,10 @@ fn App() -> impl IntoView {
     let (pong_paddle_speed, set_pong_paddle_speed) = signal(0.0f32);
     let (pong_paddle_half_height, set_pong_paddle_half_height) = signal(0.0f32);
     let (pong_ball_speed, set_pong_ball_speed) = signal(0.0f32);
+    let (pong_paddle_bounce_y, set_pong_paddle_bounce_y) = signal(0.0f32);
+    let (pong_respawn_delay_s, set_pong_respawn_delay_s) = signal(0.0f32);
+    let (pong_distractor_enabled, set_pong_distractor_enabled) = signal(false);
+    let (pong_distractor_speed_scale, set_pong_distractor_speed_scale) = signal(0.0f32);
 
     let (sequence_state, set_sequence_state) = signal::<Option<SequenceUiState>>(None);
     let (text_state, set_text_state) = signal::<Option<TextUiState>>(None);
@@ -817,6 +821,10 @@ fn App() -> impl IntoView {
             set_pong_paddle_speed.set(snap.pong_paddle_speed);
             set_pong_paddle_half_height.set(snap.pong_paddle_half_height);
             set_pong_ball_speed.set(snap.pong_ball_speed);
+            set_pong_paddle_bounce_y.set(snap.pong_paddle_bounce_y);
+            set_pong_respawn_delay_s.set(snap.pong_respawn_delay_s);
+            set_pong_distractor_enabled.set(snap.pong_distractor_enabled);
+            set_pong_distractor_speed_scale.set(snap.pong_distractor_speed_scale);
             set_sequence_state.set(snap.sequence_state);
             set_text_state.set(snap.text_state);
             set_replay_state.set(snap.replay_state);
@@ -3270,7 +3278,53 @@ fn App() -> impl IntoView {
                                 </div>
 
                                 // Parameter sliders in a compact card
-                                <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; padding: 16px 20px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px;">
+                                <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px;">
+                                    <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                                        <div style="display: flex; flex-direction: column; gap: 2px;">
+                                            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Difficulty presets"</div>
+                                            <div style="font-size: 0.85rem; color: var(--text); font-weight: 700;">"Make Pong easier"</div>
+                                        </div>
+                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                            <button class="btn sm" on:click=move |_| {
+                                                // Easy: big paddle, slower ball, gentler bounce, longer respawn.
+                                                do_pong_set_param("paddle_half_height", 0.28);
+                                                do_pong_set_param("ball_speed", 0.6);
+                                                do_pong_set_param("paddle_speed", 2.0);
+                                                do_pong_set_param("paddle_bounce_y", 0.55);
+                                                do_pong_set_param("respawn_delay_s", 0.25);
+                                                do_pong_set_param("distractor_enabled", 0.0);
+                                                // Faster control cadence helps learning and reduces paddle "teleport" per action.
+                                                set_trial_period_ms.set(80);
+                                            }>
+                                                "Easy"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| {
+                                                // Default-ish.
+                                                do_pong_set_param("paddle_half_height", 0.15);
+                                                do_pong_set_param("ball_speed", 1.0);
+                                                do_pong_set_param("paddle_speed", 1.3);
+                                                do_pong_set_param("paddle_bounce_y", 0.9);
+                                                do_pong_set_param("respawn_delay_s", 0.18);
+                                                do_pong_set_param("distractor_enabled", 0.0);
+                                                set_trial_period_ms.set(100);
+                                            }>
+                                                "Normal"
+                                            </button>
+                                            <button class="btn sm" on:click=move |_| {
+                                                // Hard: smaller paddle, faster ball, steeper bounces.
+                                                do_pong_set_param("paddle_half_height", 0.11);
+                                                do_pong_set_param("ball_speed", 1.4);
+                                                do_pong_set_param("paddle_speed", 1.2);
+                                                do_pong_set_param("paddle_bounce_y", 1.2);
+                                                do_pong_set_param("respawn_delay_s", 0.12);
+                                                set_trial_period_ms.set(120);
+                                            }>
+                                                "Hard"
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
                                     <div style="display: flex; flex-direction: column; gap: 4px; min-width: 90px;">
                                         <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Paddle Speed"</span>
                                         <input
@@ -3324,6 +3378,61 @@ fn App() -> impl IntoView {
                                             }
                                         />
                                         <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.1}×", pong_ball_speed.get())}</span>
+                                    </div>
+
+                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
+                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Bounce Angle"</span>
+                                        <input
+                                            type="range"
+                                            min="0.0"
+                                            max="2.0"
+                                            step="0.05"
+                                            style="width: 100%; accent-color: #fbbf24;"
+                                            prop:value=move || format!("{:.2}", pong_paddle_bounce_y.get())
+                                            on:input=move |ev| {
+                                                let v = event_target_value(&ev);
+                                                if let Ok(x) = v.parse::<f32>() {
+                                                    do_pong_set_param("paddle_bounce_y", x);
+                                                }
+                                            }
+                                        />
+                                        <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.2}", pong_paddle_bounce_y.get())}</span>
+                                    </div>
+
+                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
+                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Respawn Delay"</span>
+                                        <input
+                                            type="range"
+                                            min="0.0"
+                                            max="0.6"
+                                            step="0.01"
+                                            style="width: 100%; accent-color: #7aa2ff;"
+                                            prop:value=move || format!("{:.2}", pong_respawn_delay_s.get())
+                                            on:input=move |ev| {
+                                                let v = event_target_value(&ev);
+                                                if let Ok(x) = v.parse::<f32>() {
+                                                    do_pong_set_param("respawn_delay_s", x);
+                                                }
+                                            }
+                                        />
+                                        <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.2}s", pong_respawn_delay_s.get())}</span>
+                                    </div>
+
+                                    <div style="display: flex; flex-direction: column; gap: 6px; min-width: 120px; align-items: center; justify-content: center;">
+                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Distractor"</span>
+                                        <label class="label" style="flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border);">
+                                            <input
+                                                type="checkbox"
+                                                prop:checked=move || pong_distractor_enabled.get()
+                                                on:change=move |ev| {
+                                                    let v = event_target_checked(&ev);
+                                                    do_pong_set_param("distractor_enabled", if v { 1.0 } else { 0.0 });
+                                                }
+                                            />
+                                            <span style="font-size: 0.85rem; font-weight: 700;">{move || if pong_distractor_enabled.get() { "On" } else { "Off" }}</span>
+                                        </label>
+                                        <span style="font-size: 0.75rem; color: var(--muted); text-align: center;">"Adds a 2nd ball (no reward)"</span>
+                                    </div>
                                     </div>
                                 </div>
                             </div>
@@ -5842,6 +5951,10 @@ impl WebGame {
                 pong_paddle_speed: g.sim.params.paddle_speed,
                 pong_paddle_half_height: g.sim.params.paddle_half_height,
                 pong_ball_speed: g.sim.params.ball_speed,
+                pong_paddle_bounce_y: g.sim.params.paddle_bounce_y,
+                pong_respawn_delay_s: g.sim.params.respawn_delay_s,
+                pong_distractor_enabled: g.sim.params.distractor_enabled,
+                pong_distractor_speed_scale: g.sim.params.distractor_speed_scale,
                 ..GameUiSnapshot::default()
             },
             WebGame::Sequence(g) => GameUiSnapshot {
@@ -5896,6 +6009,10 @@ struct GameUiSnapshot {
     pong_paddle_speed: f32,
     pong_paddle_half_height: f32,
     pong_ball_speed: f32,
+    pong_paddle_bounce_y: f32,
+    pong_respawn_delay_s: f32,
+    pong_distractor_enabled: bool,
+    pong_distractor_speed_scale: f32,
 
     sequence_state: Option<SequenceUiState>,
     text_state: Option<TextUiState>,

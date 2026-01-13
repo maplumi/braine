@@ -59,7 +59,7 @@ jobs:
           # For project pages the base path is '/<repo>/'
           TRUNK_PUBLIC_URL: /${{ github.event.repository.name }}/
         run: |
-          trunk build --release --features web --public-url "$TRUNK_PUBLIC_URL"
+          trunk build --release --features gpu --public-url "$TRUNK_PUBLIC_URL"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
