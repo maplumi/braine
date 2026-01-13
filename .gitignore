@@ -15,3 +15,6 @@
 
 # Local agent/editor state
 /.ai/
+
+# Local tooling (e.g., actionlint)
+/.tools/
