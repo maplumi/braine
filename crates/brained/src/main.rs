@@ -402,6 +402,13 @@ enum Request {
         ms: u32,
     },
 
+    /// Set the brain execution tier ("scalar", "simd", "parallel", "gpu").
+    ///
+    /// Note: The effective tier may fall back (e.g. GPU unavailable).
+    SetExecutionTier {
+        tier: String,
+    },
+
     // Experts (child brains)
     SetExpertsEnabled {
         enabled: bool,
@@ -612,6 +619,8 @@ struct StateSnapshot {
     running: bool,
     mode: String,
     frame: u64,
+    #[serde(default)]
+    last_error: String,
     target_fps: u32,
     game: GameState,
     hud: HudData,
@@ -881,6 +890,10 @@ struct BrainStats {
     max_units_limit: usize,
     #[serde(default)]
     execution_tier: String,
+    #[serde(default)]
+    execution_tier_selected: String,
+    #[serde(default)]
+    execution_tier_effective: String,
     connection_count: usize,
     pruned_last_step: usize,
     births_last_step: usize,
@@ -912,6 +925,7 @@ struct DaemonState {
     replay_dataset: ReplayDataset,
     running: bool,
     frame: u64,
+    last_error: String,
     last_reward: f32,
     paths: AppPaths,
     exploration_eps: f32,
@@ -1022,6 +1036,7 @@ impl DaemonState {
             replay_dataset: ReplayDataset::builtin_left_right_spot(),
             running: false,
             frame: 0,
+            last_error: String::new(),
             last_reward: 0.0,
             paths,
             // Exploration controls *random action rate* (epsilon-greedy).
@@ -1568,7 +1583,9 @@ impl DaemonState {
                             self.last_autosave_trial = trials;
                         }
                         Err(e) => {
-                            error!("✗ Auto-save FAILED at trial {}: {}", trials, e);
+                            let msg = format!("Auto-save FAILED at trial {trials}: {e}");
+                            self.last_error = msg.clone();
+                            error!("✗ {}", msg);
                         }
                     }
                 }
@@ -1669,6 +1686,7 @@ impl DaemonState {
             running: self.running,
             mode: "braine".to_string(),
             frame: self.frame,
+            last_error: self.last_error.clone(),
             target_fps: self.target_fps,
             game,
             hud: HudData {
@@ -1683,31 +1701,50 @@ impl DaemonState {
                 learned_at_trial: stats.learned_at_trial.map(|v| v as i32).unwrap_or(-1),
                 mastered_at_trial: stats.mastered_at_trial.map(|v| v as i32).unwrap_or(-1),
             },
-            brain_stats: BrainStats {
-                unit_count: diag.unit_count,
-                max_units_limit: self.max_units_limit,
-                execution_tier: match view_brain.effective_execution_tier() {
-                    braine::substrate::ExecutionTier::Scalar => "Scalar",
-                    braine::substrate::ExecutionTier::Simd => "SIMD",
-                    braine::substrate::ExecutionTier::Parallel => "Parallel",
-                    braine::substrate::ExecutionTier::Gpu => "GPU",
+            brain_stats: {
+                let selected = view_brain.execution_tier();
+                let effective = view_brain.effective_execution_tier();
+
+                BrainStats {
+                    unit_count: diag.unit_count,
+                    max_units_limit: self.max_units_limit,
+                    execution_tier: match effective {
+                        braine::substrate::ExecutionTier::Scalar => "Scalar",
+                        braine::substrate::ExecutionTier::Simd => "SIMD",
+                        braine::substrate::ExecutionTier::Parallel => "Parallel",
+                        braine::substrate::ExecutionTier::Gpu => "GPU",
+                    }
+                    .to_string(),
+                    execution_tier_selected: match selected {
+                        braine::substrate::ExecutionTier::Scalar => "Scalar",
+                        braine::substrate::ExecutionTier::Simd => "SIMD",
+                        braine::substrate::ExecutionTier::Parallel => "Parallel",
+                        braine::substrate::ExecutionTier::Gpu => "GPU",
+                    }
+                    .to_string(),
+                    execution_tier_effective: match effective {
+                        braine::substrate::ExecutionTier::Scalar => "Scalar",
+                        braine::substrate::ExecutionTier::Simd => "SIMD",
+                        braine::substrate::ExecutionTier::Parallel => "Parallel",
+                        braine::substrate::ExecutionTier::Gpu => "GPU",
+                    }
+                    .to_string(),
+                    connection_count: diag.connection_count,
+                    pruned_last_step: diag.pruned_last_step,
+                    births_last_step: diag.births_last_step,
+                    saturated: view_brain.should_grow(0.35),
+                    avg_amp: diag.avg_amp,
+                    avg_weight: diag.avg_weight,
+                    osc_x,
+                    osc_y,
+                    osc_mag,
+                    memory_bytes: diag.memory_bytes,
+                    causal_base_symbols: causal.base_symbols,
+                    causal_edges: causal.edges,
+                    causal_last_directed_edge_updates: causal.last_directed_edge_updates,
+                    causal_last_cooccur_edge_updates: causal.last_cooccur_edge_updates,
+                    age_steps: view_brain.age_steps(),
                 }
-                .to_string(),
-                connection_count: diag.connection_count,
-                pruned_last_step: diag.pruned_last_step,
-                births_last_step: diag.births_last_step,
-                saturated: view_brain.should_grow(0.35),
-                avg_amp: diag.avg_amp,
-                avg_weight: diag.avg_weight,
-                osc_x,
-                osc_y,
-                osc_mag,
-                memory_bytes: diag.memory_bytes,
-                causal_base_symbols: causal.base_symbols,
-                causal_edges: causal.edges,
-                causal_last_directed_edge_updates: causal.last_directed_edge_updates,
-                causal_last_cooccur_edge_updates: causal.last_cooccur_edge_updates,
-                age_steps: view_brain.age_steps(),
             },
             unit_plot: view_brain.unit_plot_points(128),
             action_scores: view_brain.action_score_breakdown(stimulus, self.meaning_alpha),
@@ -2559,6 +2596,16 @@ impl DaemonState {
     fn reset_brain(&mut self) {
         *self = Self::new(self.paths.clone());
         info!("Brain reset to initial state");
+    }
+}
+
+fn parse_execution_tier(s: &str) -> Option<braine::substrate::ExecutionTier> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "scalar" | "cpu" => Some(braine::substrate::ExecutionTier::Scalar),
+        "simd" => Some(braine::substrate::ExecutionTier::Simd),
+        "parallel" => Some(braine::substrate::ExecutionTier::Parallel),
+        "gpu" => Some(braine::substrate::ExecutionTier::Gpu),
+        _ => None,
     }
 }
 
@@ -3444,6 +3491,29 @@ async fn handle_client(
                 info!("Trial period set to {} ms", clamped);
                 Response::Success {
                     message: format!("Trial period set to {} ms", clamped),
+                }
+            }
+
+            Request::SetExecutionTier { tier } => {
+                match parse_execution_tier(&tier) {
+                    None => Response::Error {
+                        message: format!(
+                            "Invalid execution tier: {} (expected scalar|simd|parallel|gpu)",
+                            tier
+                        ),
+                    },
+                    Some(t) => {
+                        let mut s = state.write().await;
+                        s.brain.set_execution_tier(t);
+                        let eff = s.brain.effective_execution_tier();
+                        info!("Execution tier set to {:?} (effective {:?})", t, eff);
+                        Response::Success {
+                            message: format!(
+                                "Execution tier set to {:?} (effective {:?})",
+                                t, eff
+                            ),
+                        }
+                    }
                 }
             }
 

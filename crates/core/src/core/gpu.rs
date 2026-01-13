@@ -14,21 +14,87 @@ thread_local! {
     static GPU_CTX: std::cell::OnceCell<Option<GpuContext>> = const { std::cell::OnceCell::new() };
 }
 
+/// Initialize the shared GPU context.
+///
+/// - On native targets this may block (device/adapter creation).
+/// - On `wasm32` this is async and **must not block**.
+///
+/// Returns `Ok(())` when a usable GPU context is ready; otherwise `Err(msg)`.
+#[cfg(feature = "gpu")]
+pub async fn init_gpu_context(max_units: usize) -> Result<(), String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // If already initialized (success or failure), return current state.
+        if GPU_CTX.with(|cell| cell.get().is_some()) {
+            return if GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some()) {
+                Ok(())
+            } else {
+                Err("GPU init previously failed".to_string())
+            };
+        }
+
+        let ctx = GpuContext::new_async(max_units).await;
+        GPU_CTX.with(|cell| {
+            // Ignore double-set races; wasm is single-threaded, but be defensive.
+            let _ = cell.set(ctx);
+        });
+
+        if GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some()) {
+            Ok(())
+        } else {
+            Err("WebGPU adapter/device unavailable".to_string())
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let ok = with_gpu_context(max_units, |ctx| ctx.is_some());
+        if ok {
+            Ok(())
+        } else {
+            Err("GPU adapter/device unavailable".to_string())
+        }
+    }
+}
+
 /// Access the shared GPU context (lazily initialized).
 ///
 /// The context is cached per-thread for simplicity.
 pub fn with_gpu_context<T>(max_units: usize, f: impl FnOnce(Option<&GpuContext>) -> T) -> T {
-    GPU_CTX.with(|cell| {
-        let ctx = cell.get_or_init(|| GpuContext::new(max_units));
-        f(ctx.as_ref())
-    })
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = max_units;
+        GPU_CTX.with(|cell| match cell.get() {
+            Some(ctx) => f(ctx.as_ref()),
+            None => f(None),
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        GPU_CTX.with(|cell| {
+            let ctx = cell.get_or_init(|| GpuContext::new(max_units));
+            f(ctx.as_ref())
+        })
+    }
 }
 
 /// Returns true if a GPU context can be created.
 ///
 /// Note: this may initialize the GPU context and can be expensive.
 pub fn gpu_available(max_units: usize) -> bool {
-    with_gpu_context(max_units, |ctx| ctx.is_some())
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = max_units;
+        // On wasm, GPU initialization must be done asynchronously.
+        // This function only reports whether the shared context is ready.
+        GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        with_gpu_context(max_units, |ctx| ctx.is_some())
+    }
 }
 
 /// GPU-friendly unit representation (aligned to 16 bytes).
@@ -105,6 +171,7 @@ pub struct GpuContext {
 
 impl GpuContext {
     /// Create a new GPU context. Blocks until GPU is ready.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(max_units: usize) -> Option<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -170,6 +237,110 @@ impl GpuContext {
                     count: None,
                 },
                 // Params uniform
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Dynamics Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Dynamics Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        Some(Self {
+            device,
+            queue,
+            pipeline,
+            bind_group_layout,
+            max_units,
+        })
+    }
+
+    /// Create a new GPU context asynchronously (WebGPU).
+    #[cfg(target_arch = "wasm32")]
+    pub async fn new_async(max_units: usize) -> Option<Self> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::BROWSER_WEBGPU,
+            ..Default::default()
+        });
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await?;
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("Braine WebGPU"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                },
+                None,
+            )
+            .await
+            .ok()?;
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Dynamics Shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(DYNAMICS_SHADER)),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Dynamics Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::COMPUTE,

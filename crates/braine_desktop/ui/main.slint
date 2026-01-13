@@ -78,6 +78,9 @@ export component MainWindow inherits Window {
     in-out property <bool> paused: false;
     in-out property <bool> running: false;
 
+    // System error banner (daemon-reported). Empty string means no active error.
+    in-out property <string> system_error: "";
+
     in-out property <string> selected-game-kind: "spot";
     property <string> effective-game-kind: running ? game.kind : selected-game-kind;
 
@@ -140,6 +143,7 @@ export component MainWindow inherits Window {
     callback human-key-released(string);
     callback set-framerate(int);
     callback set-trial-period-ms(int);
+    callback set-execution-tier(string);
     callback set-game-param(string, string, float);
     callback auto-snapshot-settings-changed(bool, int);
     callback experts-enabled-changed(bool);
@@ -336,12 +340,31 @@ export component MainWindow inherits Window {
 
                     HorizontalBox {
                         padding-left: 8px;
-                        padding-right: 8px;
+                        padding-right: 6px;
+                        spacing: 6px;
+
                         Text {
-                            text: "Tier: " + root.brain-stats.execution-tier;
+                            text: (root.brain-stats.execution-tier-selected != "" && root.brain-stats.execution-tier-effective != "") ?
+                                  ("Tier: sel=" + root.brain-stats.execution-tier-selected + " eff=" + root.brain-stats.execution-tier-effective) :
+                                  ("Tier: " + root.brain-stats.execution-tier);
                             color: Theme.text-primary;
                             vertical-alignment: center;
                             font-size: 12px;
+                        }
+
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                        Button {
+                            text: "CPU";
+                            height: 18px;
+                            enabled: true;
+                            clicked => { root.set-execution-tier("scalar"); }
+                        }
+                        Button {
+                            text: "GPU";
+                            height: 18px;
+                            enabled: true;
+                            clicked => { root.set-execution-tier("gpu"); }
                         }
                     }
                 }
@@ -364,6 +387,42 @@ export component MainWindow inherits Window {
                     min-width: 320px;
                     spacing: 8px;
                     vertical-stretch: 1;
+
+                    if root.system_error != "": Rectangle {
+                        background: #ff3b3018;
+                        border-color: #ff3b3055;
+                        border-width: 1px;
+                        border-radius: 8px;
+                        preferred-height: 58px;
+
+                        HorizontalBox {
+                            padding: 10px;
+                            spacing: 10px;
+
+                            VerticalBox {
+                                spacing: 2px;
+                                Text {
+                                    text: "Error";
+                                    color: #ffb4ad;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                }
+                                Text {
+                                    text: root.system_error;
+                                    color: Theme.text-primary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                            Button {
+                                text: "Dismiss";
+                                clicked => { root.system_error = ""; }
+                            }
+                        }
+                    }
 
                     GameHeader {
                         kind: root.effective-game-kind;

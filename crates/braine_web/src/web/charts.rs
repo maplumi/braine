@@ -216,8 +216,7 @@ pub fn draw_brain_connectivity_sphere(
     let dpr = web_sys::window()
         .map(|w| w.device_pixel_ratio())
         .unwrap_or(1.0)
-        .max(1.0)
-        .min(2.0);
+        .clamp(1.0, 2.0);
 
     let target_w = (css_w * dpr).round().max(1.0) as u32;
     let target_h = (css_h * dpr).round().max(1.0) as u32;
@@ -601,8 +600,7 @@ pub fn draw_causal_graph(
     let dpr = web_sys::window()
         .map(|w| w.device_pixel_ratio())
         .unwrap_or(1.0)
-        .max(1.0)
-        .min(2.0);
+        .clamp(1.0, 2.0);
 
     let target_w = (css_w * dpr).round().max(1.0) as u32;
     let target_h = (css_h * dpr).round().max(1.0) as u32;

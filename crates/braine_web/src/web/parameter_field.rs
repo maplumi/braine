@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use std::rc::Rc;
 
 use super::settings_schema::{ParamSpec, RecommendedRange, Risk};
 
@@ -69,18 +70,18 @@ pub fn ParameterField(
         }
     });
 
-    let set_valid = {
+    let set_valid: Rc<dyn Fn(bool)> = {
         let key = key.clone();
-        move |ok: bool| {
+        Rc::new(move |ok: bool| {
             validity_map.update(|m| {
                 m.insert(key.clone(), ok);
             });
-        }
+        })
     };
 
     // Initialize validity as true once.
     Effect::new({
-        let set_valid = set_valid.clone();
+        let set_valid = Rc::clone(&set_valid);
         move |_| {
             set_valid(true);
         }
@@ -93,9 +94,7 @@ pub fn ParameterField(
             if v < spec.min || v > spec.max {
                 return None;
             }
-            let Some(rec) = spec.recommended else {
-                return None;
-            };
+            let rec = spec.recommended?;
             if v < rec.min || v > rec.max {
                 Some(match spec.risk {
                     Risk::High => "May destabilize learning",
@@ -159,7 +158,7 @@ pub fn ParameterField(
                     }
                     on:focus=move |_| editing.set(true)
                     on:input={
-                        let set_valid = set_valid.clone();
+                        let set_valid = Rc::clone(&set_valid);
                         move |ev| {
                             let raw = event_target_value(&ev);
                             text.set(raw.clone());
@@ -178,7 +177,7 @@ pub fn ParameterField(
                         }
                     }
                     on:blur={
-                        let set_valid = set_valid.clone();
+                        let set_valid = Rc::clone(&set_valid);
                         move |_| {
                             editing.set(false);
                             let raw = text.get_untracked();
@@ -202,7 +201,7 @@ pub fn ParameterField(
                     type="button"
                     class="btn link"
                     on:click={
-                        let set_valid = set_valid.clone();
+                        let set_valid = Rc::clone(&set_valid);
                         move |_| {
                             set_value.set(spec.default);
                             text.set(format_float(spec.default, spec.step));

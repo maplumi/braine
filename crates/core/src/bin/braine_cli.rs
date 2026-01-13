@@ -50,6 +50,10 @@ enum Request {
         ms: u32,
     },
 
+    SetExecutionTier {
+        tier: String,
+    },
+
     // Experts (child brains)
     SetExpertsEnabled {
         enabled: bool,
@@ -485,6 +489,7 @@ fn usage() -> ! {
     eprintln!("  shutdown                    Save and exit daemon");
     eprintln!("  fps <1-1000>                Set simulation framerate");
     eprintln!("  trialms <10-60000>          Set trial period in milliseconds");
+    eprintln!("  tier <scalar|simd|parallel|gpu>  Set execution tier (effective may fall back)");
     eprintln!("  experts <on|off|cull>        Control expert (child brain) mechanism");
     eprintln!("  experts policy <parent_learning> <max_children> <child_reward_scale> <episode_trials> <consolidate_topk> [allow_nested] [max_depth] [persist_mode]");
     eprintln!("                               allow_nested: true|false (default false)");
@@ -756,6 +761,13 @@ fn main() {
                 .parse()
                 .unwrap_or_else(|_| make_error("trialms must be a number (10-60000)"));
             Request::SetTrialPeriodMs { ms }
+        }
+        "tier" => {
+            if args.len() < 2 {
+                usage();
+            }
+            let tier = args[1].clone();
+            Request::SetExecutionTier { tier }
         }
         "experts" => {
             if args.len() < 2 {

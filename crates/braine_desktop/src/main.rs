@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -194,6 +195,39 @@ fn force_layout_step(
 
 slint::include_modules!();
 
+fn exec_tier_pref_path() -> Option<PathBuf> {
+    // Minimal XDG config support without extra deps.
+    // ~/.config/braine_desktop/exec_tier.txt
+    let base = if let Ok(v) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(v)
+    } else {
+        let home = std::env::var("HOME").ok()?;
+        PathBuf::from(home).join(".config")
+    };
+    Some(base.join("braine_desktop").join("exec_tier.txt"))
+}
+
+fn load_exec_tier_pref() -> Option<String> {
+    let path = exec_tier_pref_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v = raw.trim().to_string();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+fn save_exec_tier_pref(tier: &str) {
+    let Some(path) = exec_tier_pref_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, tier);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Protocol (mirrors brained daemon)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -277,6 +311,10 @@ enum Request {
     },
     SetTrialPeriodMs {
         ms: u32,
+    },
+
+    SetExecutionTier {
+        tier: String,
     },
 
     // Advisor / LLM integration (bounded, slow loop)
@@ -371,6 +409,8 @@ struct DaemonStateSnapshot {
     running: bool,
     mode: String,
     frame: u64,
+    #[serde(default)]
+    last_error: String,
     #[serde(default)]
     target_fps: u32,
     game: DaemonGameState,
@@ -917,6 +957,10 @@ struct DaemonBrainStats {
     max_units_limit: usize,
     #[serde(default)]
     execution_tier: String,
+    #[serde(default)]
+    execution_tier_selected: String,
+    #[serde(default)]
+    execution_tier_effective: String,
     connection_count: usize,
     #[serde(default)]
     pruned_last_step: usize,
@@ -955,6 +999,7 @@ struct DaemonClient {
     advisor_context_json: Arc<Mutex<String>>,
     advisor_report_json: Arc<Mutex<String>>,
     advisor_status: Arc<Mutex<String>>,
+    system_error: Arc<Mutex<String>>,
 }
 
 impl DaemonClient {
@@ -966,17 +1011,22 @@ impl DaemonClient {
         let advisor_context_json = Arc::new(Mutex::new(String::new()));
         let advisor_report_json = Arc::new(Mutex::new(String::new()));
         let advisor_status = Arc::new(Mutex::new(String::new()));
+        let system_error = Arc::new(Mutex::new(String::new()));
         let snap_clone = Arc::clone(&snapshot);
         let graph_clone = Arc::clone(&graph);
         let params_clone = Arc::clone(&game_params);
         let advisor_ctx_clone = Arc::clone(&advisor_context_json);
         let advisor_report_clone = Arc::clone(&advisor_report_json);
         let advisor_status_clone = Arc::clone(&advisor_status);
+        let system_error_clone = Arc::clone(&system_error);
 
         // Background worker: manages TCP connection and request/response loop
         thread::spawn(move || loop {
             match TcpStream::connect("127.0.0.1:9876") {
                 Ok(mut stream) => {
+                    if let Ok(mut s) = system_error_clone.lock() {
+                        *s = "".to_string();
+                    }
                     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     loop {
@@ -1057,11 +1107,17 @@ impl DaemonClient {
                                 if let Ok(mut s) = advisor_status_clone.lock() {
                                     *s = message;
                                 }
+                                if let Ok(mut s) = system_error_clone.lock() {
+                                    *s = "".to_string();
+                                }
                             }
                             Ok(Response::Error { message }) => {
                                 eprintln!("Daemon error: {}", message);
                                 if let Ok(mut s) = advisor_status_clone.lock() {
                                     *s = format!("Error: {}", message);
+                                }
+                                if let Ok(mut s) = system_error_clone.lock() {
+                                    *s = message;
                                 }
                             }
                             Err(e) => eprintln!("Bad response: {}", e),
@@ -1070,6 +1126,9 @@ impl DaemonClient {
                 }
                 Err(e) => {
                     eprintln!("Unable to connect to brained: {}. Retrying in 1s...", e);
+                    if let Ok(mut s) = system_error_clone.lock() {
+                        *s = format!("Daemon unreachable: {e}");
+                    }
                     thread::sleep(Duration::from_secs(1));
                 }
             }
@@ -1083,6 +1142,7 @@ impl DaemonClient {
             advisor_context_json,
             advisor_report_json,
             advisor_status,
+            system_error,
         }
     }
 
@@ -1125,6 +1185,13 @@ impl DaemonClient {
             .map(|s| s.clone())
             .unwrap_or_default()
     }
+
+    fn system_error(&self) -> String {
+        self.system_error
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1134,6 +1201,11 @@ impl DaemonClient {
 fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
     let client = Rc::new(DaemonClient::new());
+
+    // Apply persisted execution-tier preference early (best-effort).
+    if let Some(tier) = load_exec_tier_pref() {
+        client.send(Request::SetExecutionTier { tier });
+    }
 
     // Prime knob schema so Game Settings uses daemon-defined ranges.
     client.send(Request::GetGameParams {
@@ -1629,6 +1701,17 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // Execution tier control (CPU/GPU toggle)
+    {
+        let c = client.clone();
+        ui.on_set_execution_tier(move |tier| {
+            save_exec_tier_pref(tier.as_str());
+            c.send(Request::SetExecutionTier {
+                tier: tier.to_string(),
+            })
+        });
+    }
+
     // Initial graph fetch (small defaults)
     {
         *last_graph_req.borrow_mut() = Instant::now();
@@ -1830,10 +1913,27 @@ fn main() -> Result<(), slint::PlatformError> {
                     learned_at_trial: snap.hud.learned_at_trial,
                     mastered_at_trial: snap.hud.mastered_at_trial,
                 });
+
+                // System error banner: prefer connection/protocol errors; otherwise show daemon-reported error.
+                let mut se = c.system_error();
+                if se.is_empty() {
+                    se = snap.last_error.clone();
+                }
+                ui.set_system_error(se.into());
                 ui.set_brain_stats(BrainStats {
                     unit_count: snap.brain_stats.unit_count as i32,
                     max_units_limit: snap.brain_stats.max_units_limit as i32,
                     execution_tier: snap.brain_stats.execution_tier.clone().into(),
+                    execution_tier_selected: snap
+                        .brain_stats
+                        .execution_tier_selected
+                        .clone()
+                        .into(),
+                    execution_tier_effective: snap
+                        .brain_stats
+                        .execution_tier_effective
+                        .clone()
+                        .into(),
                     connection_count: snap.brain_stats.connection_count as i32,
                     pruned_last_step: snap.brain_stats.pruned_last_step as i32,
                     births_last_step: snap.brain_stats.births_last_step as i32,

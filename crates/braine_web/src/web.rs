@@ -1,6 +1,8 @@
 #![allow(clippy::clone_on_copy)]
 
-use braine::substrate::{Brain, BrainConfig, CausalGraphViz, Stimulus, UnitPlotPoint};
+use braine::substrate::{
+    Brain, BrainConfig, CausalGraphViz, ExecutionTier, Stimulus, UnitPlotPoint,
+};
 use braine_games::{
     bandit::BanditGame,
     replay::{ReplayDataset, ReplayGame},
@@ -26,6 +28,36 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+type ErrorSink = std::cell::RefCell<Option<Box<dyn Fn(String)>>>;
+
+thread_local! {
+    static ERROR_SINK: ErrorSink = const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToastLevel {
+    Info,
+    Success,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+struct Toast {
+    id: u64,
+    level: ToastLevel,
+    message: String,
+}
+
+fn report_error(msg: impl Into<String>) {
+    let msg = msg.into();
+    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&msg));
+    ERROR_SINK.with(|s| {
+        if let Some(cb) = s.borrow().as_ref() {
+            cb(msg);
+        }
+    });
+}
+
 use parameter_field::ParameterField;
 use settings_schema::ParamSection;
 
@@ -37,6 +69,7 @@ const IDB_KEY_GAME_ACCURACY: &str = "game_accuracy";
 const LOCALSTORAGE_THEME_KEY: &str = "braine_theme";
 const LOCALSTORAGE_GAME_STATS_PREFIX: &str = "braine_game_stats_v1.";
 const LOCALSTORAGE_SETTINGS_KEY: &str = "braine_settings_v1";
+const LOCALSTORAGE_EXEC_TIER_KEY: &str = "braine_exec_tier_v1";
 
 const STYLE_CARD: &str = "padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;";
 
@@ -153,6 +186,34 @@ const ABOUT_LLM_ADVISOR_CONTEXT_RESP: &str = r#"{\n  \"type\": \"AdvisorContext\
 const ABOUT_LLM_ADVISOR_APPLY_REQ: &str = r#"{\n  \"type\": \"AdvisorApply\",\n  \"advice\": {\n    \"exploration_eps\": 0.12,\n    \"meaning_alpha\": 0.75,\n    \"ttl_trials\": 200,\n    \"rationale\": \"Increase meaning weight to sharpen context-conditioned discrimination; reduce exploration once stability is improving.\"\n  }\n}"#;
 
 pub fn start() {
+    // Convert Rust panics + JS "error" events into a UI-visible banner.
+    // This avoids the "lots of console errors but blank UI" failure mode.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.to_string();
+        report_error(format!("panic: {msg}"));
+    }));
+
+    if let Some(window) = web_sys::window() {
+        // window.onerror
+        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+            let _ = e;
+            report_error("window error".to_string());
+        });
+        let _ = window.add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref());
+        on_error.forget();
+
+        // window.onunhandledrejection
+        let on_rejection = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
+            let _ = e;
+            report_error("unhandled rejection".to_string());
+        });
+        let _ = window.add_event_listener_with_callback(
+            "unhandledrejection",
+            on_rejection.as_ref().unchecked_ref(),
+        );
+        on_rejection.forget();
+    }
+
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id("app"))
@@ -169,6 +230,47 @@ pub fn start() {
 #[component]
 fn App() -> impl IntoView {
     let runtime = StoredValue::new(AppRuntime::new());
+
+    let (system_error, set_system_error) = signal::<Option<String>>(None);
+
+    let toasts: RwSignal<Vec<Toast>> = RwSignal::new(Vec::new());
+    let next_toast_id: StoredValue<u64> = StoredValue::new(1);
+    let push_toast = {
+        move |level: ToastLevel, message: String| {
+            let id = {
+                let mut id = 0u64;
+                next_toast_id.update_value(|n| {
+                    id = *n;
+                    *n = (*n).saturating_add(1);
+                });
+                id
+            };
+            toasts.update(|ts| ts.push(Toast { id, level, message }));
+
+            // Auto-dismiss after a few seconds (except errors, which stay until dismissed).
+            if level != ToastLevel::Error {
+                if let Some(win) = web_sys::window() {
+                    let cb = Closure::wrap(Box::new(move || {
+                        toasts.update(|ts| ts.retain(|t| t.id != id));
+                    }) as Box<dyn FnMut()>);
+                    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        cb.as_ref().unchecked_ref(),
+                        3500,
+                    );
+                    cb.forget();
+                }
+            }
+        }
+    };
+
+    // Register UI sink for global error reporter.
+    ERROR_SINK.with(|s| {
+        *s.borrow_mut() = Some(Box::new(move |msg| {
+            let msg_toast = msg.clone();
+            set_system_error.set(Some(msg));
+            push_toast(ToastLevel::Error, msg_toast);
+        }));
+    });
 
     let (theme, set_theme) = signal(Theme::Dark);
 
@@ -300,8 +402,11 @@ fn App() -> impl IntoView {
 
             if let Some(e) = err {
                 set_status.set(format!("Config error: {e}"));
+                push_toast(ToastLevel::Error, format!("Config error: {e}"));
             } else {
                 set_status.set("Braine config applied".to_string());
+
+                push_toast(ToastLevel::Success, "Settings applied".to_string());
 
                 set_config_applied.set(true);
                 if let Some(win) = web_sys::window() {
@@ -339,6 +444,7 @@ fn App() -> impl IntoView {
                 set_cfg_causal_decay.set(cfg.causal_decay);
             });
             set_status.set("Config reset to current".to_string());
+            push_toast(ToastLevel::Info, "Settings reset".to_string());
         }
     };
 
@@ -573,19 +679,31 @@ fn App() -> impl IntoView {
             .unwrap_or(false)
     };
 
-    #[cfg(feature = "gpu")]
-    {
-        if webgpu_available {
-            runtime.update_value(|r| {
-                r.brain
-                    .set_execution_tier(braine::substrate::ExecutionTier::Gpu)
-            });
-        }
+    // Execution tier preference (persisted): if the user chose CPU/GPU, we should
+    // honor it on reload and avoid auto-switching tiers.
+    let exec_tier_pref_raw = local_storage_get_string(LOCALSTORAGE_EXEC_TIER_KEY);
+    let exec_tier_pref = exec_tier_pref_raw
+        .as_deref()
+        .and_then(parse_exec_tier_pref)
+        .inspect(|t| {
+            runtime.update_value(|r| r.brain.set_execution_tier(*t));
+        });
+    // If an invalid value was stored, clear it so we can fall back to defaults.
+    if exec_tier_pref_raw.is_some() && exec_tier_pref.is_none() {
+        local_storage_remove(LOCALSTORAGE_EXEC_TIER_KEY);
     }
 
-    let (gpu_status, _set_gpu_status) = signal(if webgpu_available {
+    // WebGPU support on wasm32:
+    // The core GPU backend must be initialized asynchronously (no blocking waits),
+    // then the brain can be switched to `ExecutionTier::Gpu`.
+
+    let (gpu_status, set_gpu_status) = signal(if webgpu_available {
         if cfg!(feature = "gpu") {
-            "WebGPU: detected (GPU dynamics enabled; learning is CPU)"
+            match exec_tier_pref {
+                Some(ExecutionTier::Scalar) => "WebGPU: detected (CPU selected)",
+                Some(ExecutionTier::Gpu) => "WebGPU: detected (initializing…)",
+                _ => "WebGPU: detected (initializing…)",
+            }
         } else {
             "WebGPU: detected (CPU build; enable the web `gpu` feature)"
         }
@@ -593,10 +711,47 @@ fn App() -> impl IntoView {
         "WebGPU: not available (CPU mode)"
     });
 
+    let (exec_tier_selected, set_exec_tier_selected) =
+        signal(runtime.with_value(|r| r.brain.execution_tier()));
+    let (exec_tier_effective, set_exec_tier_effective) =
+        signal(runtime.with_value(|r| r.brain.effective_execution_tier()));
+
+    // If WebGPU is present and this build has the core `gpu` feature, initialize
+    // the GPU context asynchronously. By default we auto-enable GPU on first load,
+    // but if the user explicitly selected CPU we do not auto-switch.
+    let should_try_enable_gpu =
+        webgpu_available && cfg!(feature = "gpu") && exec_tier_pref != Some(ExecutionTier::Scalar);
+    if should_try_enable_gpu {
+        let runtime = runtime.clone();
+        let explicit_gpu_pref = exec_tier_pref == Some(ExecutionTier::Gpu);
+        spawn_local(async move {
+            set_gpu_status.set("WebGPU: initializing…");
+            match braine::gpu::init_gpu_context(65_536).await {
+                Ok(()) => {
+                    runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
+                    set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
+                    push_toast(ToastLevel::Success, "WebGPU enabled".to_string());
+                }
+                Err(e) => {
+                    if explicit_gpu_pref {
+                        // Keep the user's preference as "GPU" selected; effective tier will fall back.
+                        set_gpu_status.set("WebGPU: init failed (CPU fallback)");
+                    } else {
+                        runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Scalar));
+                        set_gpu_status.set("WebGPU: init failed (CPU mode)");
+                    }
+                    push_toast(ToastLevel::Error, format!("WebGPU init failed: {e}"));
+                }
+            }
+        });
+    }
+
     let refresh_ui_from_runtime = {
         let runtime = runtime.clone();
         move || {
             set_diag.set(runtime.with_value(|r| r.brain.diagnostics()));
+            set_exec_tier_selected.set(runtime.with_value(|r| r.brain.execution_tier()));
+            set_exec_tier_effective.set(runtime.with_value(|r| r.brain.effective_execution_tier()));
             let stats = runtime.with_value(|r| r.game.stats().clone());
             set_trials.set(stats.trials);
             let rate = stats.last_100_rate();
@@ -1826,6 +1981,47 @@ fn App() -> impl IntoView {
                     </button>
                 </div>
             </header>
+
+            <div class="toast-stack" aria-live="polite" aria-relevant="additions removals">
+                <For
+                    each=move || toasts.get()
+                    key=|t| t.id
+                    children=move |t| {
+                        let id = t.id;
+                        let class = match t.level {
+                            ToastLevel::Info => "toast info",
+                            ToastLevel::Success => "toast success",
+                            ToastLevel::Error => "toast error",
+                        };
+                        view! {
+                            <div class=class>
+                                <div style="flex: 1; white-space: pre-wrap;">{t.message}</div>
+                                <button
+                                    class="toast-close"
+                                    title="Dismiss"
+                                    on:click=move |_| toasts.update(|ts| ts.retain(|x| x.id != id))
+                                >
+                                    "×"
+                                </button>
+                            </div>
+                        }
+                    }
+                />
+            </div>
+
+            <Show when=move || system_error.get().is_some()>
+                <div style="margin-bottom: 10px; padding: 10px 12px; background: #ff3b3018; border: 1px solid #ff3b3055; border-radius: 10px;">
+                    <div style="display:flex; gap: 10px; align-items: center; justify-content: space-between;">
+                        <div style="color: #ffb4ad; font-weight: 600;">"Error"</div>
+                        <button style="padding: 6px 10px;" on:click=move |_| set_system_error.set(None)>
+                            "Dismiss"
+                        </button>
+                    </div>
+                    <div style="margin-top: 6px; color: var(--text); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px;">
+                        {move || system_error.get().unwrap_or_default()}
+                    </div>
+                </div>
+            </Show>
 
             // Game tabs navigation (with About as first tab on left)
             <nav class="app-nav">
@@ -3206,6 +3402,114 @@ fn App() -> impl IntoView {
                                 </div>
                             </div>
                         </Show>
+
+                        // Replay game - Dataset-driven trial inspector
+                        <Show when=move || game_kind.get() == GameKind::Replay>
+                            <div class="game-shell" style="max-width: 520px;">
+                                <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, rgba(34, 211, 238, 0.10), rgba(0,0,0,0.30)); border: 1px solid var(--border); border-radius: 16px;">
+                                    <div>
+                                        <h2 style="margin: 0; font-size: 1.2rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px;">
+                                            <span style="font-size: 1.4rem;">"📼"</span>
+                                            "Replay Dataset"
+                                        </h2>
+                                        <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Deterministic trials for evaluation + advisor boundary tests"</p>
+                                    </div>
+                                    <div style="padding: 8px 14px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; background: rgba(34, 211, 238, 0.12); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.25);">
+                                        {move || {
+                                            replay_state
+                                                .get()
+                                                .map(|s| s.dataset)
+                                                .unwrap_or_else(|| "(not running)".to_string())
+                                        }}
+                                    </div>
+                                </div>
+
+                                <div style="margin-top: 14px; padding: 16px 18px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 12px;">
+                                    <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                                        <div style="color: var(--muted); font-size: 0.8rem;">
+                                            "Trial"
+                                            <div style="margin-top: 4px; color: var(--text); font-weight: 700;">
+                                                {move || {
+                                                    replay_state
+                                                        .get()
+                                                        .map(|s| {
+                                                            let idx = s.index.saturating_add(1);
+                                                            format!("{idx} / {}", s.total)
+                                                        })
+                                                        .unwrap_or_else(|| "—".to_string())
+                                                }}
+                                            </div>
+                                        </div>
+
+                                        <div style="color: var(--muted); font-size: 0.8rem;">
+                                            "Trial ID"
+                                            <div style="margin-top: 4px; color: var(--text); font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
+                                                {move || replay_state.get().map(|s| s.trial_id).unwrap_or_else(|| "—".to_string())}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-top: 12px; height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.20); overflow: hidden;">
+                                        <div style=move || {
+                                            let pct = replay_state
+                                                .get()
+                                                .and_then(|s| {
+                                                    if s.total == 0 {
+                                                        None
+                                                    } else {
+                                                        let idx = s.index.saturating_add(1).min(s.total);
+                                                        Some(idx as f32 / s.total as f32)
+                                                    }
+                                                })
+                                                .unwrap_or(0.0);
+                                            format!(
+                                                "height: 100%; width: {:.1}%; background: linear-gradient(90deg, #22d3ee, #7aa2ff);",
+                                                (pct.clamp(0.0, 1.0) * 100.0)
+                                            )
+                                        }></div>
+                                    </div>
+
+                                    <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: rgba(0,0,0,0.25); border: 1px solid rgba(148, 163, 184, 0.18); border-radius: 10px;">
+                                        <div style="color: var(--muted); font-size: 0.85rem;">"Braine chose:"</div>
+                                        <div style="color: var(--text); font-weight: 800;">
+                                            {move || {
+                                                let a = last_action.get();
+                                                if a.is_empty() { "—".to_string() } else { a }
+                                            }}
+                                        </div>
+                                        <div style="flex: 1;"></div>
+                                        <div style=move || {
+                                            let r = last_reward.get();
+                                            let (bg, fg) = if r > 0.0 {
+                                                ("rgba(34, 197, 94, 0.18)", "#4ade80")
+                                            } else if r < 0.0 {
+                                                ("rgba(239, 68, 68, 0.18)", "#f87171")
+                                            } else {
+                                                ("rgba(100, 116, 139, 0.18)", "#94a3b8")
+                                            };
+                                            format!(
+                                                "padding: 6px 10px; border-radius: 8px; background: {bg}; color: {fg}; font-weight: 800; font-size: 0.85rem;"
+                                            )
+                                        }>
+                                            {move || {
+                                                let r = last_reward.get();
+                                                if r > 0.0 {
+                                                    "✓ Correct"
+                                                } else if r < 0.0 {
+                                                    "✗ Wrong"
+                                                } else {
+                                                    "—"
+                                                }
+                                            }}
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-top: 10px; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
+                                        "Tip: Use Step/Run to consume dataset trials. Replay is ideal for stable context (replay::<dataset>) when evaluating parameter changes or advisor nudges."
+                                    </div>
+                                </div>
+                            </div>
+                        </Show>
                         </div>
                     </Show>
                     </div>
@@ -3744,7 +4048,79 @@ fn App() -> impl IntoView {
                                 </div>
 
                                 <div style="padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 6px; text-align: center;">
-                                    <span style="font-size: 0.75rem; color: var(--muted);">{move || gpu_status.get()}</span>
+                                    <div style="font-size: 0.75rem; color: var(--muted);">{move || gpu_status.get()}</div>
+                                    <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">
+                                        {move || {
+                                            let sel = exec_tier_selected.get();
+                                            let eff = exec_tier_effective.get();
+                                            format!("Tier: selected={sel:?}  effective={eff:?}")
+                                        }}
+                                    </div>
+
+                                    <div class="row end wrap" style="justify-content: center; gap: 8px; margin-top: 8px;">
+                                        <button
+                                            class=move || {
+                                                if exec_tier_selected.get() == ExecutionTier::Scalar {
+                                                    "btn sm primary"
+                                                } else {
+                                                    "btn sm"
+                                                }
+                                            }
+                                            on:click=move |_| {
+                                                runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Scalar));
+                                                local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "scalar");
+                                                if webgpu_available {
+                                                    set_gpu_status.set("WebGPU: detected (CPU selected)");
+                                                } else {
+                                                    set_gpu_status.set("WebGPU: not available (CPU mode)");
+                                                }
+                                                push_toast(ToastLevel::Info, "Execution tier: CPU".to_string());
+                                            }
+                                        >
+                                            "CPU"
+                                        </button>
+
+                                        <button
+                                            class=move || {
+                                                if exec_tier_selected.get() == ExecutionTier::Gpu {
+                                                    "btn sm primary"
+                                                } else {
+                                                    "btn sm"
+                                                }
+                                            }
+                                            on:click=move |_| {
+                                                if !webgpu_available {
+                                                    push_toast(ToastLevel::Error, "WebGPU not available in this browser/context".to_string());
+                                                    return;
+                                                }
+                                                if !cfg!(feature = "gpu") {
+                                                    push_toast(ToastLevel::Error, "This build does not include the `gpu` feature".to_string());
+                                                    return;
+                                                }
+
+                                                local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "gpu");
+                                                runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
+
+                                                let runtime = runtime.clone();
+                                                spawn_local(async move {
+                                                    set_gpu_status.set("WebGPU: initializing…");
+                                                    match braine::gpu::init_gpu_context(65_536).await {
+                                                        Ok(()) => {
+                                                            runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
+                                                            set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
+                                                            push_toast(ToastLevel::Success, "Execution tier: GPU".to_string());
+                                                        }
+                                                        Err(e) => {
+                                                            set_gpu_status.set("WebGPU: init failed (CPU fallback)");
+                                                            push_toast(ToastLevel::Error, format!("WebGPU init failed: {e}"));
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                        >
+                                            "GPU"
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </Show>
@@ -4381,40 +4757,45 @@ fn App() -> impl IntoView {
                                             each=move || settings_schema::sections_ordered().into_iter()
                                             key=|s| s.title
                                             children=move |sec| {
-                                                (!matches!(sec.section, ParamSection::BraineSettings | ParamSection::Neurogenesis)).then(|| {
-                                                    view! {
-                                                        <div class="card">
-                                                            <h3 class="card-title">{sec.title}</h3>
-                                                            <p class="subtle">{sec.blurb}</p>
-                                                            <div class="param-grid">
-                                                                <For
-                                                                    each=move || {
-                                                                        let show_adv = settings_advanced.get();
-                                                                        settings_specs
-                                                                            .get_value()
-                                                                            .into_iter()
-                                                                            .filter(|p| p.section == sec.section)
-                                                                            .filter(move |p| show_adv || !p.advanced)
-                                                                            .collect::<Vec<_>>()
+                                                if matches!(sec.section, ParamSection::BraineSettings | ParamSection::Neurogenesis) {
+                                                    return view! { <span style="display:none;"></span> }.into_any();
+                                                }
+
+                                                view! {
+                                                    <div class="card">
+                                                        <h3 class="card-title">{sec.title}</h3>
+                                                        <p class="subtle">{sec.blurb}</p>
+                                                        <div class="param-grid">
+                                                            <For
+                                                                each=move || {
+                                                                    let show_adv = settings_advanced.get();
+                                                                    settings_specs
+                                                                        .get_value()
+                                                                        .into_iter()
+                                                                        .filter(|p| p.section == sec.section)
+                                                                        .filter(move |p| show_adv || !p.advanced)
+                                                                        .collect::<Vec<_>>()
+                                                                }
+                                                                key=|p| p.key
+                                                                children=move |p| {
+                                                                    let Some((v, set_v)) = bind(p.key) else {
+                                                                        return view! { <span style="display:none;"></span> }.into_any();
+                                                                    };
+                                                                    view! {
+                                                                        <ParameterField
+                                                                            spec=p
+                                                                            value=v
+                                                                            set_value=set_v
+                                                                            validity_map=settings_validity_map
+                                                                        />
                                                                     }
-                                                                    key=|p| p.key
-                                                                    children=move |p| {
-                                                                        bind(p.key).map(|(v, set_v)| {
-                                                                            view! {
-                                                                                <ParameterField
-                                                                                    spec=p
-                                                                                    value=v
-                                                                                    set_value=set_v
-                                                                                    validity_map=settings_validity_map
-                                                                                />
-                                                                            }
-                                                                        })
-                                                                    }
-                                                                />
-                                                            </div>
+                                                                    .into_any()
+                                                                }
+                                                            />
                                                         </div>
-                                                    }
-                                                })
+                                                    </div>
+                                                }
+                                                .into_any()
                                             }
                                         />
 
@@ -5570,6 +5951,14 @@ fn local_storage_set_string(key: &str, value: &str) {
 fn local_storage_remove(key: &str) {
     if let Some(s) = local_storage() {
         let _ = s.remove_item(key);
+    }
+}
+
+fn parse_exec_tier_pref(v: &str) -> Option<ExecutionTier> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "scalar" | "cpu" => Some(ExecutionTier::Scalar),
+        "gpu" => Some(ExecutionTier::Gpu),
+        _ => None,
     }
 }
 
