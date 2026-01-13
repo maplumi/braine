@@ -4347,7 +4347,7 @@ fn App() -> impl IntoView {
                                                 </button>
                                             </div>
 
-                                            <Show when=move || grow_units_n.get() > 256>
+                                            <Show when=move || { grow_units_n.get() > 256 }>
                                                 <div class="callout" style="margin-top: 10px; border-color: rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.08);">
                                                     <p style="margin: 0;">"Large growth may stutter the UI and significantly increase memory."</p>
                                                 </div>
@@ -4358,43 +4358,40 @@ fn App() -> impl IntoView {
                                             each=move || settings_schema::sections_ordered().into_iter()
                                             key=|s| s.title
                                             children=move |sec| {
-                                                if matches!(sec.section, ParamSection::BraineSettings | ParamSection::Neurogenesis) {
-                                                    return view! { <></> }.into_view();
-                                                }
-
-                                                view! {
-                                                    <div class="card">
-                                                        <h3 class="card-title">{sec.title}</h3>
-                                                        <p class="subtle">{sec.blurb}</p>
-                                                        <div class="param-grid">
-                                                            <For
-                                                                each=move || {
-                                                                    let show_adv = settings_advanced.get();
-                                                                    settings_specs
-                                                                        .get_value()
-                                                                        .into_iter()
-                                                                        .filter(|p| p.section == sec.section)
-                                                                        .filter(move |p| show_adv || !p.advanced)
-                                                                        .collect::<Vec<_>>()
-                                                                }
-                                                                key=|p| p.key
-                                                                children=move |p| {
-                                                                    let Some((v, set_v)) = bind(p.key) else {
-                                                                        return view! { <></> }.into_view();
-                                                                    };
-                                                                    view! {
-                                                                        <ParameterField
-                                                                            spec=p
-                                                                            value=v
-                                                                            set_value=set_v
-                                                                            validity_map=settings_validity_map
-                                                                        />
+                                                (!matches!(sec.section, ParamSection::BraineSettings | ParamSection::Neurogenesis)).then(|| {
+                                                    view! {
+                                                        <div class="card">
+                                                            <h3 class="card-title">{sec.title}</h3>
+                                                            <p class="subtle">{sec.blurb}</p>
+                                                            <div class="param-grid">
+                                                                <For
+                                                                    each=move || {
+                                                                        let show_adv = settings_advanced.get();
+                                                                        settings_specs
+                                                                            .get_value()
+                                                                            .into_iter()
+                                                                            .filter(|p| p.section == sec.section)
+                                                                            .filter(move |p| show_adv || !p.advanced)
+                                                                            .collect::<Vec<_>>()
                                                                     }
-                                                                }
-                                                            />
+                                                                    key=|p| p.key
+                                                                    children=move |p| {
+                                                                        bind(p.key).map(|(v, set_v)| {
+                                                                            view! {
+                                                                                <ParameterField
+                                                                                    spec=p
+                                                                                    value=v
+                                                                                    set_value=set_v
+                                                                                    validity_map=settings_validity_map
+                                                                                />
+                                                                            }
+                                                                        })
+                                                                    }
+                                                                />
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                }
+                                                    }
+                                                })
                                             }
                                         />
 

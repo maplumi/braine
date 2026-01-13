@@ -79,8 +79,11 @@ pub fn ParameterField(
     };
 
     // Initialize validity as true once.
-    Effect::new(move |_| {
-        set_valid(true);
+    Effect::new({
+        let set_valid = set_valid.clone();
+        move |_| {
+            set_valid(true);
+        }
     });
 
     let warning_text = Memo::new({
@@ -155,36 +158,42 @@ pub fn ParameterField(
                         (v < spec.min || v > spec.max).to_string()
                     }
                     on:focus=move |_| editing.set(true)
-                    on:input=move |ev| {
-                        let raw = event_target_value(&ev);
-                        text.set(raw.clone());
-                        let raw_trim = raw.trim();
-                        if raw_trim.is_empty() {
-                            set_valid(false);
-                            return;
-                        }
-                        match raw_trim.parse::<f32>() {
-                            Ok(v) => {
-                                set_value.set(v);
-                                set_valid(v >= spec.min && v <= spec.max);
+                    on:input={
+                        let set_valid = set_valid.clone();
+                        move |ev| {
+                            let raw = event_target_value(&ev);
+                            text.set(raw.clone());
+                            let raw_trim = raw.trim();
+                            if raw_trim.is_empty() {
+                                set_valid(false);
+                                return;
                             }
-                            Err(_) => set_valid(false),
+                            match raw_trim.parse::<f32>() {
+                                Ok(v) => {
+                                    set_value.set(v);
+                                    set_valid(v >= spec.min && v <= spec.max);
+                                }
+                                Err(_) => set_valid(false),
+                            }
                         }
                     }
-                    on:blur=move |_| {
-                        editing.set(false);
-                        let raw = text.get_untracked();
-                        let raw_trim = raw.trim();
-                        if let Ok(v0) = raw_trim.parse::<f32>() {
-                            let v = v0.clamp(spec.min, spec.max);
-                            set_value.set(v);
-                            text.set(format_float(v, spec.step));
-                            set_valid(true);
-                        } else {
-                            // Revert to the current numeric value.
-                            let v = value.get_untracked();
-                            text.set(format_float(v, spec.step));
-                            set_valid(v >= spec.min && v <= spec.max);
+                    on:blur={
+                        let set_valid = set_valid.clone();
+                        move |_| {
+                            editing.set(false);
+                            let raw = text.get_untracked();
+                            let raw_trim = raw.trim();
+                            if let Ok(v0) = raw_trim.parse::<f32>() {
+                                let v = v0.clamp(spec.min, spec.max);
+                                set_value.set(v);
+                                text.set(format_float(v, spec.step));
+                                set_valid(true);
+                            } else {
+                                // Revert to the current numeric value.
+                                let v = value.get_untracked();
+                                text.set(format_float(v, spec.step));
+                                set_valid(v >= spec.min && v <= spec.max);
+                            }
                         }
                     }
                 />
@@ -192,10 +201,13 @@ pub fn ParameterField(
                 <button
                     type="button"
                     class="btn link"
-                    on:click=move |_| {
-                        set_value.set(spec.default);
-                        text.set(format_float(spec.default, spec.step));
-                        set_valid(true);
+                    on:click={
+                        let set_valid = set_valid.clone();
+                        move |_| {
+                            set_value.set(spec.default);
+                            text.set(format_float(spec.default, spec.step));
+                            set_valid(true);
+                        }
                     }
                 >
                     "Reset"
