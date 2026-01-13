@@ -4298,8 +4298,13 @@ fn App() -> impl IntoView {
                                         <div class="card">
                                             <div class="settings-header">
                                                 <div>
-                                                    <h3 class="card-title">"⚙️ Settings"</h3>
-                                                    <p class="subtle">"Schema-driven tuning for live dynamics and maintenance. Values clamp to safe limits on blur; warnings indicate non-standard ranges."</p>
+                                                    <h3 class="card-title">"⚙️ Brain Configuration"</h3>
+                                                    <p class="subtle">
+                                                        "Fine-tune substrate dynamics, learning rates, and maintenance thresholds. "
+                                                        "All values are validated and clamped to safe ranges. "
+                                                        <span style="color: #fbbf24;">"⚠ Warnings"</span>
+                                                        " appear when values fall outside recommended ranges."
+                                                    </p>
                                                 </div>
                                                 <label class="label settings-advanced">
                                                     <input
@@ -4316,42 +4321,60 @@ fn App() -> impl IntoView {
 
                                         <div class="card">
                                             <h3 class="card-title">"🧬 Neurogenesis"</h3>
-                                            <p class="subtle">"Adds new units to increase capacity (no gradients/backprop). Expect more compute and memory use."</p>
+                                            <p class="subtle">"Add new computational units to expand substrate capacity. This increases memory usage and compute requirements proportionally."</p>
 
-                                            <div class="row end wrap" style="gap: 10px;">
-                                                <label class="label stack" style="min-width: 160px;">
-                                                    <span>"Grow units by"</span>
+                                            <div class="row end wrap" style="gap: 12px; margin-top: 12px;">
+                                                <label class="label stack" style="min-width: 180px;">
+                                                    <span>"Number of units to add"</span>
                                                     <input
                                                         class="input compact"
                                                         type="number"
                                                         min="1"
+                                                        max="1024"
                                                         step="1"
                                                         prop:value=move || grow_units_n.get().to_string()
                                                         on:input=move |ev| {
                                                             if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                                set_grow_units_n.set(v.max(1));
+                                                                set_grow_units_n.set(v.clamp(1, 1024));
                                                             }
                                                         }
+                                                        aria-label="Number of units to grow"
                                                     />
                                                 </label>
 
                                                 <div class="preset-row">
-                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(16)>"16"</button>
-                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(32)>"32"</button>
-                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(64)>"64"</button>
-                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(128)>"128"</button>
+                                                    <span style="font-size: 0.85rem; color: var(--muted); font-weight: 700; margin-right: 4px;">"Quick presets:"</span>
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(16) title="Add 16 units (small growth)">"16"</button>
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(32) title="Add 32 units">"32"</button>
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(64) title="Add 64 units">"64"</button>
+                                                    <button class="btn sm" on:click=move |_| set_grow_units_n.set(128) title="Add 128 units (moderate growth)">"128"</button>
                                                 </div>
 
-                                                <button class="btn primary" on:click=move |_| do_grow_units()>
-                                                    "➕ Grow"
+                                                <button
+                                                    class="btn primary"
+                                                    on:click=move |_| do_grow_units()
+                                                    title="Add the specified number of units to the brain"
+                                                >
+                                                    "➕ Grow Substrate"
                                                 </button>
                                             </div>
 
                                             <Show when=move || { grow_units_n.get() > 256 }>
-                                                <div class="callout" style="margin-top: 10px; border-color: rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.08);">
-                                                    <p style="margin: 0;">"Large growth may stutter the UI and significantly increase memory."</p>
+                                                <div class="callout" style="margin-top: 12px; border-color: rgba(251, 191, 36, 0.40); background: rgba(251, 191, 36, 0.10);">
+                                                    <p style="margin: 0; font-size: 0.88rem; display: flex; align-items: center; gap: 8px;">
+                                                        <span style="font-size: 1.2rem;">"⚠"</span>
+                                                        <span><strong>"Warning:"</strong>" Large growth (>256 units) may cause UI stuttering and significantly increase memory usage. Consider growing in smaller increments."</span>
+                                                    </p>
                                                 </div>
                                             </Show>
+
+                                            <div class="callout" style="margin-top: 12px; background: rgba(122, 162, 255, 0.08); border-color: rgba(122, 162, 255, 0.25);">
+                                                <p style="margin: 0; font-size: 0.85rem; line-height: 1.5;">
+                                                    <strong>"What neurogenesis does:"</strong>
+                                                    " Adds new oscillator units to the substrate. These units are initially unconnected and will form associations through local learning dynamics. "
+                                                    "Use this when the brain runs out of capacity for new patterns or concepts."
+                                                </p>
+                                            </div>
                                         </div>
 
                                         <For
