@@ -146,8 +146,8 @@ pub(super) fn Sidebar(
                     }
                     on:click=move |_| open_docs.run(())
                 >
-                    <span class="sidebar-ico">"ℹ️"</span>
                     <span class="sidebar-label">"Docs"</span>
+                    <span class="sidebar-ico">"ℹ️"</span>
                 </button>
             </div>
 

@@ -775,6 +775,26 @@ fn App() -> impl IntoView {
     // Game information modal (opened from the left menu).
     let (game_info_modal_kind, set_game_info_modal_kind) = signal::<Option<GameKind>>(None);
 
+    // Defer closing game info modal so we don't unmount the modal mid-event dispatch.
+    // This avoids "closure invoked recursively or after being dropped" errors.
+    let close_game_info_modal = {
+        let set_game_info_modal_kind = set_game_info_modal_kind.clone();
+        move || {
+            if let Some(win) = web_sys::window() {
+                let cb = Closure::wrap(Box::new(move || {
+                    set_game_info_modal_kind.set(None);
+                }) as Box<dyn FnMut()>);
+                let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(),
+                    0,
+                );
+                cb.forget();
+            } else {
+                set_game_info_modal_kind.set(None);
+            }
+        }
+    };
+
     let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
     let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
     let brainviz_degree_by_id = StoredValue::new(std::collections::HashMap::<u32, usize>::new());
@@ -2381,7 +2401,10 @@ fn App() -> impl IntoView {
                 <div
                     class="modal-overlay"
                     style="z-index: 99999;"
-                    on:click=move |_| set_game_info_modal_kind.set(None)
+                    on:click={
+                        let close = close_game_info_modal.clone();
+                        move |_| close()
+                    }
                 >
                     <div
                         class="modal"
@@ -2389,25 +2412,32 @@ fn App() -> impl IntoView {
                         aria-modal="true"
                         on:click=move |ev| ev.stop_propagation()
                     >
+                        // Modal header with close button - outside the reactive map
+                        <div class="modal-head">
+                            <div class="modal-title">
+                                {move || game_info_modal_kind.get().map(|k| format!("{} {}", k.icon(), k.display_name())).unwrap_or_default()}
+                                <span class="subtle" style="margin-left: 10px; font-weight: 700;">
+                                    {move || game_info_modal_kind.get().map(|k| k.label()).unwrap_or_default()}
+                                </span>
+                            </div>
+                            <button
+                                class="icon-btn"
+                                title="Close"
+                                on:click={
+                                    let close = close_game_info_modal.clone();
+                                    move |_| close()
+                                }
+                            >
+                                "×"
+                            </button>
+                        </div>
+
+                        // Modal content - reactive based on game kind
                         {move || {
                             game_info_modal_kind
                                 .get()
                                 .map(|kind| {
                                     view! {
-                                        <div class="modal-head">
-                                            <div class="modal-title">
-                                                {format!("{} {}", kind.icon(), kind.display_name())}
-                                                <span class="subtle" style="margin-left: 10px; font-weight: 700;">{kind.label()}</span>
-                                            </div>
-                                            <button
-                                                class="icon-btn"
-                                                title="Close"
-                                                on:click=move |_| set_game_info_modal_kind.set(None)
-                                            >
-                                                "×"
-                                            </button>
-                                        </div>
-
                                         <div class="modal-content">
                                             <div class="modal-section">
                                                 <div class="modal-section-title">"Overview"</div>

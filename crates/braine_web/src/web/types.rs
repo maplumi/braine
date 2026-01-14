@@ -62,6 +62,9 @@ pub(super) struct PongUiState {
     pub(super) paddle_y: f32,
     pub(super) paddle_half_height: f32,
     pub(super) ball_visible: bool,
+    pub(super) ball2_x: f32,
+    pub(super) ball2_y: f32,
+    pub(super) ball2_visible: bool,
 }
 
 pub(super) fn game_stats_storage_key(kind: GameKind) -> String {

@@ -287,6 +287,28 @@ pub(super) fn draw_pong(
         ctx.fill();
     }
 
+    // Distractor ball (ball2) - different color to distinguish
+    if s.ball2_visible {
+        let b2x = map_x(s.ball2_x);
+        let b2y = map_y(s.ball2_y);
+
+        ctx.set_fill_style_str("#a78bfa"); // purple for distractor
+        ctx.begin_path();
+        let _ = ctx.arc(b2x, b2y, ball_r, 0.0, std::f64::consts::PI * 2.0);
+        ctx.fill();
+
+        ctx.set_fill_style_str("rgba(255, 255, 255, 0.45)");
+        ctx.begin_path();
+        let _ = ctx.arc(
+            b2x - ball_r * 0.35,
+            b2y - ball_r * 0.35,
+            ball_r * 0.45,
+            0.0,
+            std::f64::consts::PI * 2.0,
+        );
+        ctx.fill();
+    }
+
     // Score zone indicator (right edge)
     ctx.set_fill_style_str("rgba(239, 68, 68, 0.12)");
     ctx.fill_rect(field_right - 6.0, field_top, 6.0, field_bottom - field_top);
