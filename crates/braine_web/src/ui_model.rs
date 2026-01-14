@@ -8,8 +8,6 @@ pub enum DashboardTab {
     Learning,
     #[default]
     GameDetails,
-    Stats,
-    Analytics,
     BrainViz,
     Settings,
 }
@@ -19,8 +17,6 @@ impl DashboardTab {
         match self {
             DashboardTab::GameDetails => "Game Details",
             DashboardTab::Learning => "Learning",
-            DashboardTab::Stats => "Stats",
-            DashboardTab::Analytics => "Analytics",
             DashboardTab::BrainViz => "BrainViz",
             DashboardTab::Settings => "Settings",
         }
@@ -30,8 +26,6 @@ impl DashboardTab {
         match self {
             DashboardTab::GameDetails => "🧩",
             DashboardTab::Learning => "🧠",
-            DashboardTab::Stats => "📊",
-            DashboardTab::Analytics => "📈",
             DashboardTab::BrainViz => "🕸️",
             DashboardTab::Settings => "⚙️",
         }
@@ -42,8 +36,6 @@ impl DashboardTab {
             DashboardTab::BrainViz,
             DashboardTab::Learning,
             DashboardTab::GameDetails,
-            DashboardTab::Stats,
-            DashboardTab::Analytics,
             DashboardTab::Settings,
         ]
     }
@@ -52,7 +44,6 @@ impl DashboardTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnalyticsPanel {
     #[default]
-    Performance,
     Reward,
     Choices,
     UnitPlot,
@@ -61,7 +52,6 @@ pub enum AnalyticsPanel {
 impl AnalyticsPanel {
     pub fn label(self) -> &'static str {
         match self {
-            AnalyticsPanel::Performance => "Performance",
             AnalyticsPanel::Reward => "Reward",
             AnalyticsPanel::Choices => "Choices",
             AnalyticsPanel::UnitPlot => "Unit Plot",
@@ -70,7 +60,6 @@ impl AnalyticsPanel {
 
     pub fn all() -> &'static [AnalyticsPanel] {
         &[
-            AnalyticsPanel::Performance,
             AnalyticsPanel::Reward,
             AnalyticsPanel::Choices,
             AnalyticsPanel::UnitPlot,
@@ -235,14 +224,13 @@ mod tests {
     fn dashboard_tabs_include_settings() {
         let all = DashboardTab::all();
         assert!(all.contains(&DashboardTab::Settings));
-        assert!(all.contains(&DashboardTab::Analytics));
-        assert!(all.contains(&DashboardTab::Stats));
+        assert!(all.contains(&DashboardTab::BrainViz));
+        assert!(all.contains(&DashboardTab::GameDetails));
     }
 
     #[test]
     fn analytics_panels_inventory_is_stable() {
         let all = AnalyticsPanel::all();
-        assert!(all.contains(&AnalyticsPanel::Performance));
         assert!(all.contains(&AnalyticsPanel::Reward));
         assert!(all.contains(&AnalyticsPanel::Choices));
         assert!(all.contains(&AnalyticsPanel::UnitPlot));

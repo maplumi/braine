@@ -261,17 +261,25 @@ const ABOUT_MEMORY_STRUCTURE_DIAGRAM: &str = r#"flowchart LR
 "#;
 
 const ABOUT_CURRENT_ARCHITECTURE_DIAGRAM: &str = r#"flowchart LR
-    Desktop[Desktop UI]
-    CLI[CLI]
-    Daemon[Daemon]
-    File[Brain image file]
-    Web[Web app]
-    IDB[Browser storage]
+    subgraph Desktop[Desktop / local machine]
+        UI[braine_desktop]
+        CLI[braine-cli]
+    end
 
-    Desktop <--> Daemon
+    subgraph Daemon[brained (daemon)]
+        BrainD[Brain (authoritative)]
+        File[braine.bbi (filesystem)]
+    end
+
+    subgraph Web[Web (WASM)]
+        BrainW[Brain (in-tab)]
+        IDB[IndexedDB]
+    end
+
+    UI <--> Daemon
     CLI <--> Daemon
-    Daemon --> File
-    Web --> IDB
+    BrainD --> File
+    BrainW --> IDB
 "#;
 
 const ABOUT_FUTURE_ARCHITECTURE_DIAGRAM: &str = r#"flowchart TB
@@ -511,7 +519,35 @@ fn App() -> impl IntoView {
     let (last_reward, set_last_reward) = signal::<f32>(0.0);
 
     // Analytics panel subtab.
-    let (analytics_panel, set_analytics_panel) = signal(AnalyticsPanel::Performance);
+    let (analytics_panel, set_analytics_panel) = signal(AnalyticsPanel::Reward);
+
+    // In-game top dashboard state (replaces right-panel Stats/Analytics tabs).
+    let (game_stats_open, set_game_stats_open) = signal(false);
+    let (analytics_modal_open, set_analytics_modal_open) = signal(false);
+
+    // Analytics floating window (small, draggable/resizable).
+    let (analytics_win_x, set_analytics_win_x) = signal(24.0f64);
+    let (analytics_win_y, set_analytics_win_y) = signal(92.0f64);
+    let (analytics_drag, set_analytics_drag) = signal::<Option<(i32, f64, f64, f64, f64)>>(None);
+
+    // Defer closing so we don't unmount the window mid-event dispatch.
+    let close_analytics_window = {
+        let set_analytics_modal_open = set_analytics_modal_open.clone();
+        move || {
+            if let Some(win) = web_sys::window() {
+                let cb = Closure::wrap(Box::new(move || {
+                    set_analytics_modal_open.set(false);
+                }) as Box<dyn FnMut()>);
+                let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(),
+                    0,
+                );
+                cb.forget();
+            } else {
+                set_analytics_modal_open.set(false);
+            }
+        }
+    };
 
     // Settings UI state.
     let (settings_advanced, set_settings_advanced) = signal(false);
@@ -673,7 +709,6 @@ fn App() -> impl IntoView {
 
     // Performance history for charting
     let perf_history = StoredValue::new(RollingHistory::new(200));
-    let (perf_history_version, set_perf_history_version) = signal(0u32);
 
     // Neuromodulator (reward) history
     let neuromod_history = StoredValue::new(RollingHistory::new(50));
@@ -730,6 +765,12 @@ fn App() -> impl IntoView {
         signal::<CausalGraphViz>(CausalGraphViz::default());
     let (brainviz_display_nodes, set_brainviz_display_nodes) = signal::<usize>(0);
     let (brainviz_display_edges, set_brainviz_display_edges) = signal::<usize>(0);
+
+    // Research disclaimer: shown on every load/refresh (not persisted).
+    let (show_research_disclaimer, set_show_research_disclaimer) = signal(true);
+
+    // Game information modal (opened from the left menu).
+    let (game_info_modal_kind, set_game_info_modal_kind) = signal::<Option<GameKind>>(None);
     let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
     let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
     let brainviz_degree_by_id = StoredValue::new(std::collections::HashMap::<u32, usize>::new());
@@ -993,7 +1034,6 @@ fn App() -> impl IntoView {
 
             // Update performance history
             perf_history.update_value(|h| h.push(rate));
-            set_perf_history_version.update(|v| *v = v.wrapping_add(1));
 
             // Update learning milestones
             if rate >= 0.95 {
@@ -1091,7 +1131,6 @@ fn App() -> impl IntoView {
             if let Some(state) = load_persisted_stats_state(kind) {
                 runtime.update_value(|r| r.game.set_stats(state.stats.clone().into_game_stats()));
                 perf_history.update_value(|h| h.set_data(state.perf_history.clone()));
-                set_perf_history_version.update(|v| *v = v.wrapping_add(1));
                 neuromod_history.update_value(|h| h.set_data(state.neuromod_history.clone()));
                 set_neuromod_version.update(|v| *v = v.wrapping_add(1));
                 choice_events.update_value(|v| *v = state.choice_events.clone());
@@ -1101,7 +1140,6 @@ fn App() -> impl IntoView {
             } else {
                 runtime.update_value(|r| r.game.set_stats(braine_games::stats::GameStats::new()));
                 perf_history.update_value(|h| h.clear());
-                set_perf_history_version.update(|v| *v = v.wrapping_add(1));
                 neuromod_history.update_value(|h| h.clear());
                 set_neuromod_version.update(|v| *v = v.wrapping_add(1));
                 choice_events.update_value(|v| v.clear());
@@ -1184,13 +1222,11 @@ fn App() -> impl IntoView {
 
     let open_analytics = Callback::new({
         let set_show_about_page = set_show_about_page.clone();
-        let set_dashboard_tab = set_dashboard_tab.clone();
-        let set_dashboard_open = set_dashboard_open.clone();
         let set_sidebar_open = set_sidebar_open.clone();
         move |()| {
             set_show_about_page.set(false);
-            set_dashboard_tab.set(DashboardTab::Analytics);
-            set_dashboard_open.set(true);
+            set_analytics_panel.set(AnalyticsPanel::Reward);
+            set_analytics_modal_open.set(true);
             set_sidebar_open.set(false);
         }
     });
@@ -1977,20 +2013,12 @@ fn App() -> impl IntoView {
         }
     });
 
-    // Performance chart canvas
-    let perf_chart_ref = NodeRef::<leptos::html::Canvas>::new();
-    Effect::new(move |_| {
-        let _ = perf_history_version.get(); // Subscribe to updates
-        let Some(canvas) = perf_chart_ref.get() else {
-            return;
-        };
-        let data: Vec<f32> = perf_history.with_value(|h| h.data().to_vec());
-        let _ = charts::draw_line_chart(&canvas, &data, 0.0, 1.0, "#7aa2ff", "#0a0f1a", "#1a2540");
-    });
-
     // Neuromod (reward) chart canvas
     let neuromod_chart_ref = NodeRef::<leptos::html::Canvas>::new();
     Effect::new(move |_| {
+        if !analytics_modal_open.get() || analytics_panel.get() != AnalyticsPanel::Reward {
+            return;
+        }
         let _ = neuromod_version.get();
         let Some(canvas) = neuromod_chart_ref.get() else {
             return;
@@ -2004,7 +2032,7 @@ fn App() -> impl IntoView {
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
-            if analytics_panel.get() != AnalyticsPanel::Choices {
+            if !analytics_modal_open.get() || analytics_panel.get() != AnalyticsPanel::Choices {
                 return;
             }
             let _ = choices_version.get();
@@ -2049,26 +2077,12 @@ fn App() -> impl IntoView {
         }
     });
 
-    // Accuracy gauge canvas
-    let gauge_ref = NodeRef::<leptos::html::Canvas>::new();
-    Effect::new(move |_| {
-        let rate = recent_rate.get();
-        let Some(canvas) = gauge_ref.get() else {
-            return;
-        };
-        let color = if rate >= 0.85 {
-            "#4ade80"
-        } else if rate >= 0.70 {
-            "#fbbf24"
-        } else {
-            "#7aa2ff"
-        };
-        let _ = charts::draw_gauge(&canvas, rate, 0.0, 1.0, "Accuracy", color, "#0a0f1a");
-    });
-
     // Unit plot 3D-style canvas for Graph page
     let unit_plot_ref = NodeRef::<leptos::html::Canvas>::new();
     Effect::new(move |_| {
+        if !analytics_modal_open.get() || analytics_panel.get() != AnalyticsPanel::UnitPlot {
+            return;
+        }
         let points = unit_plot.get();
         let Some(canvas) = unit_plot_ref.get() else {
             return;
@@ -2333,6 +2347,97 @@ fn App() -> impl IntoView {
     view! {
         <TooltipPortal store=tooltip_store />
         <div class="app">
+            <Show when=move || show_research_disclaimer.get()>
+                <div class="launch-modal-overlay">
+                    <div class="launch-modal" role="dialog" aria-modal="true">
+                        <div class="launch-modal-title">"⚠️ Research Disclaimer"</div>
+                        <div class="launch-modal-body">
+                            <p style="margin: 0; line-height: 1.7;">
+                                "This system was developed with the assistance of Large Language Models (LLMs) under human guidance. "
+                                "It is provided as a "<strong>"research demonstration"</strong>" to explore biologically-inspired learning substrates. "
+                                "Braine is "<strong>"not production-ready"</strong>" and should not be used for real-world deployment, safety-critical applications, "
+                                "or any scenario requiring reliability guarantees. Use at your own discretion for educational and experimental purposes only."
+                            </p>
+                        </div>
+                        <div class="row end wrap" style="justify-content: space-between; gap: 10px;">
+                            <div class="subtle">"Shown every refresh."</div>
+                            <button
+                                class="btn primary"
+                                autofocus
+                                on:click=move |_| set_show_research_disclaimer.set(false)
+                            >
+                                "I understand"
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </Show>
+
+            <Show when=move || game_info_modal_kind.get().is_some()>
+                <div
+                    class="modal-overlay"
+                    on:click=move |_| set_game_info_modal_kind.set(None)
+                >
+                    <div
+                        class="modal"
+                        role="dialog"
+                        aria-modal="true"
+                        on:click=move |ev| ev.stop_propagation()
+                    >
+                        {move || {
+                            game_info_modal_kind
+                                .get()
+                                .map(|kind| {
+                                    view! {
+                                        <div class="modal-head">
+                                            <div class="modal-title">
+                                                {format!("{} {}", kind.icon(), kind.display_name())}
+                                                <span class="subtle" style="margin-left: 10px; font-weight: 700;">{kind.label()}</span>
+                                            </div>
+                                            <button
+                                                class="icon-btn"
+                                                title="Close"
+                                                on:click=move |_| set_game_info_modal_kind.set(None)
+                                            >
+                                                "×"
+                                            </button>
+                                        </div>
+
+                                        <div class="modal-content">
+                                            <div class="modal-section">
+                                                <div class="modal-section-title">"Overview"</div>
+                                                <div class="modal-pre">{kind.description()}</div>
+                                            </div>
+
+                                            <div class="modal-section">
+                                                <div class="modal-section-title">"What it tests"</div>
+                                                <div class="modal-pre">{kind.what_it_tests()}</div>
+                                            </div>
+
+                                            <div class="modal-section">
+                                                <div class="modal-section-title">"Inputs / Actions"</div>
+                                                <div class="modal-pre">{kind.inputs_info()}</div>
+                                            </div>
+
+                                            <div class="modal-section">
+                                                <div class="modal-section-title">"Reward"</div>
+                                                <div class="modal-pre">{kind.reward_info()}</div>
+                                            </div>
+
+                                            <div class="modal-section">
+                                                <div class="modal-section-title">"Learning objectives"</div>
+                                                <div class="modal-pre">{kind.learning_objectives()}</div>
+                                            </div>
+                                        </div>
+                                    }
+                                    .into_any()
+                                })
+                                .unwrap_or_else(|| ().into_any())
+                        }}
+                    </div>
+                </div>
+            </Show>
+
             <Topbar
                 sidebar_open=sidebar_open
                 set_sidebar_open=set_sidebar_open
@@ -2357,6 +2462,9 @@ fn App() -> impl IntoView {
                     game_kind=game_kind
                     set_game=set_game
                     open_docs=open_docs
+                    open_game_info=Callback::new(move |kind: GameKind| {
+                        set_game_info_modal_kind.set(Some(kind));
+                    })
                 />
 
                 <div class="game-area">
@@ -2432,17 +2540,6 @@ fn App() -> impl IntoView {
                                             "The substrate runs continuously: stimuli excite dynamics, actions are read out, and a scalar reward (neuromodulator) gates local learning. Persistence and telemetry are "
                                             <strong>"slow paths"</strong>" that should not block the realtime step loop."
                                         </p>
-
-                                        // Research Disclaimer
-                                        <div style="padding: 14px; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 12px;">
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: #fbbf24;">"⚠️ Research Disclaimer"</h3>
-                                            <p style="margin: 0; color: var(--text); font-size: 0.85rem; line-height: 1.7;">
-                                                "This system was developed with the assistance of Large Language Models (LLMs) under human guidance. "
-                                                "It is provided as a "<strong>"research demonstration"</strong>" to explore biologically-inspired learning substrates. "
-                                                "Braine is "<strong>"not production-ready"</strong>" and should not be used for real-world deployment, safety-critical applications, "
-                                                "or any scenario requiring reliability guarantees. Use at your own discretion for educational and experimental purposes only."
-                                            </p>
-                                        </div>
                                     </Show>
 
                                 // Dynamics tab
@@ -3023,6 +3120,405 @@ fn App() -> impl IntoView {
                             />
                         </label>
                     </div>
+
+                    <div class="game-topdash">
+                        <div class="game-topdash-bar">
+                            <div class="game-topdash-metrics">
+                                <div class="metric-chip">
+                                    <span class="metric-k">"Steps"</span>
+                                    <span class="metric-v mono">{move || steps.get().to_string()}</span>
+                                </div>
+                                <div class="metric-chip">
+                                    <span class="metric-k">"Trials"</span>
+                                    <span class="metric-v mono">{move || trials.get().to_string()}</span>
+                                </div>
+                                <div class="metric-chip">
+                                    <span class="metric-k">"Last-100"</span>
+                                    <span class=move || {
+                                        let r = recent_rate.get();
+                                        if r >= 0.85 {
+                                            "metric-v good"
+                                        } else if r >= 0.70 {
+                                            "metric-v warn"
+                                        } else {
+                                            "metric-v accent"
+                                        }
+                                    }>
+                                        {move || format!("{:.0}%", recent_rate.get() * 100.0)}
+                                    </span>
+                                </div>
+                                <div class="metric-chip">
+                                    <span class="metric-k">"Action"</span>
+                                    <span class="metric-v mono">{move || {
+                                        let a = last_action.get();
+                                        if a.is_empty() { "—".to_string() } else { a.to_uppercase() }
+                                    }}</span>
+                                </div>
+                                <div class="metric-chip">
+                                    <span class="metric-k">"Reward"</span>
+                                    <span class=move || {
+                                        let r = last_reward.get();
+                                        if r > 0.0 {
+                                            "metric-v good"
+                                        } else if r < 0.0 {
+                                            "metric-v bad"
+                                        } else {
+                                            "metric-v muted"
+                                        }
+                                    }>
+                                        {move || format!("{:+.2}", last_reward.get())}
+                                    </span>
+                                </div>
+
+                                <button
+                                    class=move || if game_stats_open.get() { "btn sm primary" } else { "btn sm" }
+                                    on:click=move |_| set_game_stats_open.update(|v| *v = !*v)
+                                    title="Show/hide full stats + persistence"
+                                >
+                                    {move || if game_stats_open.get() { "Stats ▴" } else { "Stats ▾" }}
+                                </button>
+                            </div>
+
+                            <div class="game-topdash-actions">
+                                <div class="subtle" style="margin-right: 6px;">"Analytics:"</div>
+                                {AnalyticsPanel::all()
+                                    .iter()
+                                    .copied()
+                                    .map(|p| {
+                                        view! {
+                                            <button
+                                                class="btn sm"
+                                                on:click=move |_| {
+                                                    set_analytics_panel.set(p);
+                                                    set_analytics_modal_open.set(true);
+                                                }
+                                            >
+                                                {p.label()}
+                                            </button>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </div>
+                        </div>
+
+                        <Show when=move || game_stats_open.get()>
+                            <div class="game-topdash-details">
+                                <div class="topdash-grid">
+                                    <div class="card topdash-card">
+                                        <h3 class="card-title">"📊 Statistics"</h3>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Steps"</span>
+                                            <span class="stat-value">{move || steps.get().to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Trials"</span>
+                                            <span class="stat-value">{move || trials.get().to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Correct"</span>
+                                            <span class="stat-value good">{move || correct_count.get().to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Incorrect"</span>
+                                            <span class="stat-value bad">{move || incorrect_count.get().to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Success Rate"</span>
+                                            <span class=move || {
+                                                let r = recent_rate.get();
+                                                if r >= 0.85 {
+                                                    "stat-value good value-strong"
+                                                } else if r >= 0.70 {
+                                                    "stat-value warn value-strong"
+                                                } else {
+                                                    "stat-value value-strong"
+                                                }
+                                            }>
+                                                {move || format!("{:.1}%", recent_rate.get() * 100.0)}
+                                            </span>
+                                        </div>
+                                        <div class="divider"></div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Last Action"</span>
+                                            <span class="stat-value accent value-strong">{move || {
+                                                let a = last_action.get();
+                                                if a.is_empty() { "—".to_string() } else { a.to_uppercase() }
+                                            }}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Last Reward"</span>
+                                            <span class=move || {
+                                                let r = last_reward.get();
+                                                if r > 0.0 {
+                                                    "stat-value good value-strong"
+                                                } else if r < 0.0 {
+                                                    "stat-value bad value-strong"
+                                                } else {
+                                                    "stat-value muted value-strong"
+                                                }
+                                            }>
+                                                {move || format!("{:+.2}", last_reward.get())}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div class="card topdash-card">
+                                        <h3 class="card-title">"🧠 Brain Substrate"</h3>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Age (steps)"</span>
+                                            <span class="stat-value">{move || brain_age.get().to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Units"</span>
+                                            <span class="stat-value">{move || diag.get().unit_count.to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Connections"</span>
+                                            <span class="stat-value">{move || diag.get().connection_count.to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Avg Weight"</span>
+                                            <span class="stat-value">{move || format!("{:.4}", diag.get().avg_weight)}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Avg Amplitude"</span>
+                                            <span class="stat-value">{move || format!("{:.4}", diag.get().avg_amp)}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Pruned (last)"</span>
+                                            <span class="stat-value">{move || diag.get().pruned_last_step.to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Memory"</span>
+                                            <span class="stat-value">{move || format!("{}KB", diag.get().memory_bytes / 1024)}</span>
+                                        </div>
+                                        <div class="divider"></div>
+                                        <h4 style="margin: 8px 0 4px 0; font-size: 0.85rem; color: var(--muted);">"Causal Memory"</h4>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Symbols"</span>
+                                            <span class="stat-value">{move || causal_symbols.get().to_string()}</span>
+                                        </div>
+                                        <div class="stat-row">
+                                            <span class="stat-label">"Edges"</span>
+                                            <span class="stat-value">{move || causal_edges.get().to_string()}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </Show>
+                    </div>
+
+                    <Show when=move || analytics_modal_open.get()>
+                        <div class="floating-layer">
+                            <div
+                                class="floating-window"
+                                style=move || format!(
+                                    "left: {}px; top: {}px;",
+                                    analytics_win_x.get(),
+                                    analytics_win_y.get()
+                                )
+                            >
+                                <div class="floating-head">
+                                    <div class="floating-titlebar">
+                                        <div
+                                            class="floating-drag"
+                                            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                                if ev.button() != 0 {
+                                                    return;
+                                                }
+
+                                                ev.prevent_default();
+                                                let pid = ev.pointer_id();
+                                                let sx = ev.client_x() as f64;
+                                                let sy = ev.client_y() as f64;
+
+                                                set_analytics_drag.set(Some((
+                                                    pid,
+                                                    sx,
+                                                    sy,
+                                                    analytics_win_x.get_untracked(),
+                                                    analytics_win_y.get_untracked(),
+                                                )));
+
+                                                if let Some(t) = ev.current_target() {
+                                                    if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                                                        let _ = el.set_pointer_capture(pid);
+                                                    }
+                                                }
+                                            }
+                                            on:pointermove=move |ev: web_sys::PointerEvent| {
+                                            let Some((pid, sx, sy, ox, oy)) =
+                                                analytics_drag.get_untracked()
+                                            else {
+                                                return;
+                                            };
+                                            if ev.pointer_id() != pid {
+                                                return;
+                                            }
+
+                                            ev.prevent_default();
+                                            let mut nx = ox + (ev.client_x() as f64 - sx);
+                                            let mut ny = oy + (ev.client_y() as f64 - sy);
+
+                                            // Keep the window reachable (don't allow dragging it fully off-screen).
+                                            if let Some(win) = web_sys::window() {
+                                                let vw = win
+                                                    .inner_width()
+                                                    .ok()
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0);
+                                                let vh = win
+                                                    .inner_height()
+                                                    .ok()
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0);
+                                                let max_x = (vw - 120.0).max(0.0);
+                                                let max_y = (vh - 60.0).max(0.0);
+                                                nx = nx.clamp(0.0, max_x);
+                                                ny = ny.clamp(0.0, max_y);
+                                            } else {
+                                                nx = nx.max(0.0);
+                                                ny = ny.max(0.0);
+                                            }
+
+                                            set_analytics_win_x.set(nx);
+                                            set_analytics_win_y.set(ny);
+                                            }
+                                            on:pointerup=move |ev: web_sys::PointerEvent| {
+                                            let Some((pid, ..)) = analytics_drag.get_untracked() else {
+                                                return;
+                                            };
+                                            if ev.pointer_id() != pid {
+                                                return;
+                                            }
+
+                                            set_analytics_drag.set(None);
+                                            if let Some(t) = ev.current_target() {
+                                                if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                                                    let _ = el.release_pointer_capture(pid);
+                                                }
+                                            }
+                                            }
+                                            on:pointercancel=move |ev: web_sys::PointerEvent| {
+                                            let Some((pid, ..)) = analytics_drag.get_untracked() else {
+                                                return;
+                                            };
+                                            if ev.pointer_id() != pid {
+                                                return;
+                                            }
+
+                                            set_analytics_drag.set(None);
+                                            if let Some(t) = ev.current_target() {
+                                                if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                                                    let _ = el.release_pointer_capture(pid);
+                                                }
+                                            }
+                                            }
+                                        >
+                                            <div class="floating-title">
+                                                {move || format!("📈 Analytics — {}", analytics_panel.get().label())}
+                                            </div>
+                                        </div>
+
+                                        <button class="btn sm" on:click=move |_| close_analytics_window()>
+                                            "Close"
+                                        </button>
+                                    </div>
+
+                                    <div class="floating-tabs">
+                                        {AnalyticsPanel::all()
+                                            .iter()
+                                            .copied()
+                                            .map(|p| {
+                                                view! {
+                                                    <button
+                                                        class=move || {
+                                                            if analytics_panel.get() == p {
+                                                                "btn sm primary"
+                                                            } else {
+                                                                "btn sm"
+                                                            }
+                                                        }
+                                                        on:click=move |_| {
+                                                            set_analytics_panel.set(p);
+                                                            set_analytics_modal_open.set(true);
+                                                        }
+                                                    >
+                                                        {p.label()}
+                                                    </button>
+                                                }
+                                            })
+                                            .collect_view()}
+                                    </div>
+                                </div>
+
+                                <div class="floating-body">
+                                    <Show when=move || analytics_panel.get() == AnalyticsPanel::Reward>
+                                        <div class="card">
+                                            <h3 class="card-title">"⚡ Reward Trace"</h3>
+                                            <p class="subtle">"Last 50 reward signals"</p>
+                                            <canvas node_ref=neuromod_chart_ref width="600" height="80" class="canvas"></canvas>
+                                        </div>
+                                    </Show>
+
+                                    <Show when=move || analytics_panel.get() == AnalyticsPanel::Choices>
+                                        <div class="card">
+                                            <h3 class="card-title">"🎛️ Choices Over Time"</h3>
+                                            <p class="subtle">"Rolling probability of each action (empirical)"</p>
+
+                                            <div class="row end wrap">
+                                                <label class="label">
+                                                    <span>"Window"</span>
+                                                    <input
+                                                        class="input compact"
+                                                        type="number"
+                                                        min="1"
+                                                        max="200"
+                                                        step="1"
+                                                        prop:value=move || choice_window.get().to_string()
+                                                        on:input=move |ev| {
+                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                set_choice_window.set(v.clamp(1, 200));
+                                                            }
+                                                        }
+                                                    />
+                                                </label>
+                                            </div>
+
+                                            <canvas node_ref=choices_chart_ref width="700" height="180" class="canvas"></canvas>
+                                            <p class="subtle">"Tip: lower ε to see exploitation; raise ε to see exploration noise."</p>
+                                        </div>
+                                    </Show>
+
+                                    <Show when=move || analytics_panel.get() == AnalyticsPanel::UnitPlot>
+                                        <div class="card">
+                                            <h3 class="card-title">"🧬 Unit Activity Plot"</h3>
+                                            <p class="subtle">"Sampled unit activations showing amplitude and type distribution"</p>
+                                            <canvas node_ref=unit_plot_ref width="800" height="360" class="canvas tall"></canvas>
+                                            <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.75rem;">
+                                                <div style="display: flex; align-items: center; gap: 4px;">
+                                                    <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(122, 162, 255);"></div>
+                                                    <span style="color: var(--muted);">"Sensors (input)"</span>
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 4px;">
+                                                    <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(74, 222, 128);"></div>
+                                                    <span style="color: var(--muted);">"Groups (actions)"</span>
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 4px;">
+                                                    <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(251, 191, 36);"></div>
+                                                    <span style="color: var(--muted);">"Regular (free)"</span>
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 4px;">
+                                                    <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(148, 163, 184);"></div>
+                                                    <span style="color: var(--muted);">"Concepts (imprinted)"</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </Show>
+                                </div>
+                            </div>
+                        </div>
+                    </Show>
 
                     // Game-specific content area
                     <div class="canvas-container">
@@ -4093,7 +4589,7 @@ fn App() -> impl IntoView {
 
                     <div class="dashboard-content">
                         <Show when=move || dashboard_tab.get() == DashboardTab::BrainViz>
-                            <div class="stack">
+                            <div class="stack tight brainviz-stack">
                                 <div class="dashboard-pinned brainviz-dock">
                                     <div class="dashboard-pinned-head">
                                         <div class="dashboard-pinned-title">"🧠 BrainViz"</div>
@@ -4749,528 +5245,6 @@ fn App() -> impl IntoView {
                             </div>
                         </Show>
 
-                        <Show when=move || dashboard_tab.get() == DashboardTab::Stats>
-                            <div class="stack tight">
-                                <div class="card">
-                                    <h3 class="card-title">"📊 Statistics"</h3>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Steps"</span>
-                                        <span class="stat-value">{move || steps.get().to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Trials"</span>
-                                        <span class="stat-value">{move || trials.get().to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Correct"</span>
-                                        <span class="stat-value good">{move || correct_count.get().to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Incorrect"</span>
-                                        <span class="stat-value bad">{move || incorrect_count.get().to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Success Rate"</span>
-                                        <span class=move || {
-                                            let r = recent_rate.get();
-                                            if r >= 0.85 {
-                                                "stat-value good value-strong"
-                                            } else if r >= 0.70 {
-                                                "stat-value warn value-strong"
-                                            } else {
-                                                "stat-value value-strong"
-                                            }
-                                        }>
-                                            {move || format!("{:.1}%", recent_rate.get() * 100.0)}
-                                        </span>
-                                    </div>
-                                    <div class="divider"></div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Last Action"</span>
-                                        <span class="stat-value accent value-strong">{move || { let a = last_action.get(); if a.is_empty() { "—".to_string() } else { a.to_uppercase() } }}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Last Reward"</span>
-                                        <span class=move || {
-                                            let r = last_reward.get();
-                                            if r > 0.0 {
-                                                "stat-value good value-strong"
-                                            } else if r < 0.0 {
-                                                "stat-value bad value-strong"
-                                            } else {
-                                                "stat-value muted value-strong"
-                                            }
-                                        }>
-                                            {move || format!("{:+.2}", last_reward.get())}
-                                        </span>
-                                    </div>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"🧠 Brain Substrate"</h3>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Age (steps)"</span>
-                                        <span class="stat-value">{move || brain_age.get().to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Units"</span>
-                                        <span class="stat-value">{move || diag.get().unit_count.to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Connections"</span>
-                                        <span class="stat-value">{move || diag.get().connection_count.to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Avg Weight"</span>
-                                        <span class="stat-value">{move || format!("{:.4}", diag.get().avg_weight)}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Avg Amplitude"</span>
-                                        <span class="stat-value">{move || format!("{:.4}", diag.get().avg_amp)}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Pruned (last)"</span>
-                                        <span class="stat-value">{move || diag.get().pruned_last_step.to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Memory"</span>
-                                        <span class="stat-value">{move || format!("{}KB", diag.get().memory_bytes / 1024)}</span>
-                                    </div>
-                                    <div class="divider"></div>
-                                    <h4 style="margin: 8px 0 4px 0; font-size: 0.85rem; color: var(--muted);">"Causal Memory"</h4>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Symbols"</span>
-                                        <span class="stat-value">{move || causal_symbols.get().to_string()}</span>
-                                    </div>
-                                    <div class="stat-row">
-                                        <span class="stat-label">"Edges"</span>
-                                        <span class="stat-value">{move || causal_edges.get().to_string()}</span>
-                                    </div>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"💾 Persistence"</h3>
-                                    <div class="stack tight">
-                                        <button class="btn" on:click=move |_| do_save()>"💾 Save (IndexedDB)"</button>
-                                        <button class="btn" on:click=move |_| do_load()>"📂 Load (IndexedDB)"</button>
-                                        <button class="btn" on:click=move |_| do_migrate_idb_format()>"🔁 Migrate stored format"</button>
-                                        <button class="btn" on:click=move |_| do_export_bbi()>"📥 Export .bbi"</button>
-                                        <button class="btn" on:click=move |_| do_import_bbi_click()>"📤 Import .bbi"</button>
-                                    </div>
-                                    <label class="checkbox-row">
-                                        <input
-                                            type="checkbox"
-                                            prop:checked=move || import_autosave.get()
-                                            on:change=move |ev| {
-                                                let v = event_target_checked(&ev);
-                                                set_import_autosave.set(v);
-                                            }
-                                        />
-                                        <span>"Auto-save imports"</span>
-                                    </label>
-                                    <label class="checkbox-row">
-                                        <input
-                                            type="checkbox"
-                                            prop:checked=move || idb_autosave.get()
-                                            on:change=move |ev| {
-                                                let v = event_target_checked(&ev);
-                                                set_idb_autosave.set(v);
-                                            }
-                                        />
-                                        <span>"Auto-save brain (every ~5s when changed)"</span>
-                                    </label>
-                                    <div class="subtle">
-                                        {move || {
-                                            if idb_loaded.get() {
-                                                "Source: IndexedDB (brain_image)".to_string()
-                                            } else {
-                                                "Source: fresh (not loaded from IndexedDB yet)".to_string()
-                                            }
-                                        }}
-                                    </div>
-                                    <div class="subtle">
-                                        {move || {
-                                            let ts = idb_last_save.get();
-                                            if ts.is_empty() {
-                                                "Last save: —".to_string()
-                                            } else {
-                                                format!("Last save: {ts}")
-                                            }
-                                        }}
-                                    </div>
-                                    <input
-                                        node_ref=import_input_ref
-                                        type="file"
-                                        accept=".bbi,application/octet-stream"
-                                        class="hidden"
-                                        on:change=do_import_bbi_change
-                                    />
-                                </div>
-
-                                <div style="padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 6px; text-align: center;">
-                                    <div style="font-size: 0.75rem; color: var(--muted);">{move || gpu_status.get()}</div>
-                                    <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">
-                                        {move || {
-                                            let sel = exec_tier_selected.get();
-                                            let eff = exec_tier_effective.get();
-                                            format!("Tier: selected={sel:?}  effective={eff:?}")
-                                        }}
-                                    </div>
-
-                                    <div class="row end wrap" style="justify-content: center; gap: 8px; margin-top: 8px;">
-                                        <button
-                                            class=move || {
-                                                if exec_tier_selected.get() == ExecutionTier::Scalar {
-                                                    "btn sm primary"
-                                                } else {
-                                                    "btn sm"
-                                                }
-                                            }
-                                            on:click=move |_| {
-                                                runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Scalar));
-                                                local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "scalar");
-                                                if webgpu_available {
-                                                    set_gpu_status.set("WebGPU: detected (CPU selected)");
-                                                } else {
-                                                    set_gpu_status.set("WebGPU: not available (CPU mode)");
-                                                }
-                                                push_toast(ToastLevel::Info, "Execution tier: CPU".to_string());
-                                            }
-                                        >
-                                            "CPU"
-                                        </button>
-
-                                        <button
-                                            class=move || {
-                                                if exec_tier_selected.get() == ExecutionTier::Gpu {
-                                                    "btn sm primary"
-                                                } else {
-                                                    "btn sm"
-                                                }
-                                            }
-                                            on:click=move |_| {
-                                                if !webgpu_available {
-                                                    push_toast(ToastLevel::Error, "WebGPU not available in this browser/context".to_string());
-                                                    return;
-                                                }
-
-                                                #[cfg(not(feature = "gpu"))]
-                                                {
-                                                    push_toast(
-                                                        ToastLevel::Error,
-                                                        "This build does not include the web `gpu` feature".to_string(),
-                                                    );
-                                                }
-
-                                                #[cfg(feature = "gpu")]
-                                                {
-                                                    local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "gpu");
-                                                    runtime.update_value(|r| {
-                                                        r.brain.set_execution_tier(ExecutionTier::Gpu);
-                                                    });
-
-                                                    let runtime = runtime.clone();
-                                                    spawn_local(async move {
-                                                        set_gpu_status.set("WebGPU: initializing…");
-                                                        match braine::gpu::init_gpu_context(65_536).await {
-                                                            Ok(()) => {
-                                                                runtime.update_value(|r| {
-                                                                    r.brain.set_execution_tier(ExecutionTier::Gpu);
-                                                                });
-                                                                let eff = runtime.with_value(|r| r.brain.effective_execution_tier());
-                                                                if eff == ExecutionTier::Gpu {
-                                                                    set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
-                                                                    push_toast(
-                                                                        ToastLevel::Success,
-                                                                        "Execution tier: GPU".to_string(),
-                                                                    );
-                                                                } else {
-                                                                    set_gpu_status.set("WebGPU: ready (CPU fallback)");
-                                                                    push_toast(
-                                                                        ToastLevel::Info,
-                                                                        "WebGPU detected, but using CPU tier".to_string(),
-                                                                    );
-                                                                }
-                                                            }
-                                                            Err(e) => {
-                                                                set_gpu_status
-                                                                    .set("WebGPU: init failed (CPU fallback)");
-                                                                push_toast(
-                                                                    ToastLevel::Error,
-                                                                    format!("WebGPU init failed: {e}"),
-                                                                );
-                                                            }
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        >
-                                            "GPU"
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </Show>
-
-                        <Show when=move || dashboard_tab.get() == DashboardTab::Analytics>
-                            <div class="stack">
-                                <div class="subtabs">
-                                    {AnalyticsPanel::all().iter().map(|p| {
-                                        let pp = *p;
-                                        view! {
-                                            <button
-                                                class=move || if analytics_panel.get() == pp { "subtab active" } else { "subtab" }
-                                                on:click=move |_| set_analytics_panel.set(pp)
-                                            >
-                                                {pp.label()}
-                                            </button>
-                                        }
-                                    }).collect_view()}
-                                </div>
-
-                                <Show when=move || analytics_panel.get() == AnalyticsPanel::Performance>
-                                    <div class="card">
-                                        <h3 class="card-title">"📈 Performance History"</h3>
-                                        <p class="subtle">"Rolling accuracy over last 200 trials"</p>
-                                        <canvas node_ref=perf_chart_ref width="500" height="120" class="canvas"></canvas>
-                                    </div>
-
-                                    <div class="card">
-                                        <h3 class="card-title">"🎯 Current Accuracy"</h3>
-                                        <div class="row">
-                                            <canvas node_ref=gauge_ref width="100" height="100" class="canvas square"></canvas>
-                                            <div>
-                                                <div class=move || {
-                                                    let r = recent_rate.get();
-                                                    if r >= 0.85 {
-                                                        "good value-strong value-xxl"
-                                                    } else if r >= 0.70 {
-                                                        "warn value-strong value-xxl"
-                                                    } else {
-                                                        "accent value-strong value-xxl"
-                                                    }
-                                                }>
-                                                    {move || format!("{:.0}%", recent_rate.get() * 100.0)}
-                                                </div>
-                                                <div class="subtle">"last 100 trials"</div>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div class=move || format!("callout tone-{}", learning_milestone_tone.get())>
-                                        <p><strong>{move || learning_milestone.get()}</strong></p>
-                                        <p>
-                                            {move || {
-                                                if let Some(t) = mastered_at_trial.get() {
-                                                    format!("🏆 Mastered at trial {}", t)
-                                                } else if let Some(t) = learned_at_trial.get() {
-                                                    format!("✓ Learned at trial {}", t)
-                                                } else {
-                                                    "Keep training...".to_string()
-                                                }
-                                            }}
-                                        </p>
-                                    </div>
-
-                                    // Learning milestones explanation
-                                    <div style="margin-top: 12px; padding: 12px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px; font-size: 0.8rem;">
-                                        <div style="font-weight: 600; color: var(--accent); margin-bottom: 8px;">"📊 Learning Milestones"</div>
-                                        <div style="display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; color: var(--text);">
-                                            <span style="color: var(--muted);">"⏳ Starting"</span>
-                                            <span>"First 20 trials — brain is exploring and imprinting"</span>
-                                            <span style="color: var(--muted);">"🔄 Training"</span>
-                                            <span>"Accuracy < 70% — brain is building associations"</span>
-                                            <span style="color: var(--muted);">"📈 Learning"</span>
-                                            <span>"Accuracy ≥ 70% — causal links forming, above chance"</span>
-                                            <span style="color: #4ade80;">"✓ Learned"</span>
-                                            <span>"Accuracy ≥ 85% — reliable performance achieved"</span>
-                                            <span style="color: #fbbf24;">"🏆 Mastered"</span>
-                                            <span>"Accuracy ≥ 95% — near-optimal behavior"</span>
-                                        </div>
-                                    </div>
-
-                                    // Game-specific info
-                                    <div style="margin-top: 12px; padding: 12px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px; font-size: 0.8rem;">
-                                        <div style="font-weight: 600; color: var(--accent); margin-bottom: 8px;">"🎮 Game Information"</div>
-                                        {move || {
-                                            let kind = game_kind.get();
-                                            match kind {
-                                                GameKind::Spot => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"Spot"</strong>" — Simple left/right discrimination"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Stimulus: 'spot_left' or 'spot_right'"</li>
-                                                            <li>"Goal: Match action to stimulus (left→left, right→right)"</li>
-                                                            <li>"Chance: 50% — Random guessing baseline"</li>
-                                                            <li>"Expected to learn: 20-50 trials"</li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                                GameKind::SpotReversal => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"Spot Reversal"</strong>" — Adaptation test"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Stimulus flips periodically (left↔right mapping inverts)"</li>
-                                                            <li>"Goal: Quickly adapt to rule changes"</li>
-                                                            <li>"Tests: Cognitive flexibility and unlearning"</li>
-                                                            <li>"Flip interval configurable via settings"</li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                                GameKind::Bandit => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"Bandit"</strong>" — Multi-armed bandit exploration"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Multiple arms with different reward probabilities"</li>
-                                                            <li>"Goal: Discover and exploit the best arm"</li>
-                                                            <li>"Explore vs exploit trade-off (ε controls exploration)"</li>
-                                                            <li>"Expected: Gradual convergence to optimal arm"</li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                                GameKind::SpotXY => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"SpotXY"</strong>" — Spatial localization"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Target appears in one of N×N grid cells"</li>
-                                                            <li>"BinaryX mode: left/right only (N=1)"</li>
-                                                            <li>"Grid mode: select specific cell (N≥2)"</li>
-                                                            <li>"Chance: 50% (BinaryX) or 1/N² (Grid)"</li>
-                                                            <li>"Tests: Spatial encoding and multi-action learning"</li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                                GameKind::Pong => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"Pong"</strong>" — Continuous tracking"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Track ball and move paddle to intercept"</li>
-                                                            <li>"Actions: up, down, stay"</li>
-                                                            <li>"Reward: +1 hit, -1 miss"</li>
-                                                            <li>"Tests: Temporal prediction and motor control"</li>
-                                                            <li>"Harder than discrete games — requires coordination"</li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                                GameKind::Sequence => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"Sequence"</strong>" — Pattern prediction"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Predict next token in repeating sequence"</li>
-                                                            <li>"Tests: Temporal memory and pattern recognition"</li>
-                                                            <li>"Shift: Pattern can flip to test relearning"</li>
-                                                            <li>"Chance: 1/vocab_size"</li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                                GameKind::Text => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"Text"</strong>" — Character prediction"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Predict next character in text corpus"</li>
-                                                            <li>"Dual corpus with periodic switching"</li>
-                                                            <li>"Tests: Language-like sequence learning"</li>
-                                                            <li>"Harder: Large action space (vocab size)"</li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                                GameKind::Replay => view! {
-                                                    <div style="color: var(--text); line-height: 1.6;">
-                                                        <div style="margin-bottom: 6px;"><strong>"Replay"</strong>" — Dataset-driven trials"</div>
-                                                        <ul style="margin: 0; padding-left: 16px; color: var(--muted);">
-                                                            <li>"Stimuli and correct actions come from a JSON dataset"</li>
-                                                            <li>"Goal: Learn the dataset mapping online"</li>
-                                                            <li>"Ideal for deterministic evaluation + LLM boundary tests"</li>
-                                                            <li>
-                                                                {move || {
-                                                                    replay_state
-                                                                        .get()
-                                                                        .map(|s| {
-                                                                            format!(
-                                                                                "Dataset: {} (trial {} / {}, id={})",
-                                                                                s.dataset,
-                                                                                s.index,
-                                                                                s.total
-                                                                                ,
-                                                                                s.trial_id
-                                                                            )
-                                                                        })
-                                                                        .unwrap_or_else(|| "Dataset: (not running)".to_string())
-                                                                }}
-                                                            </li>
-                                                        </ul>
-                                                    </div>
-                                                }.into_any(),
-                                            }
-                                        }}
-                                    </div>
-                                </Show>
-
-                                <Show when=move || analytics_panel.get() == AnalyticsPanel::Reward>
-                                    <div class="card">
-                                        <h3 class="card-title">"⚡ Reward Trace"</h3>
-                                        <p class="subtle">"Last 50 reward signals"</p>
-                                        <canvas node_ref=neuromod_chart_ref width="600" height="80" class="canvas"></canvas>
-                                    </div>
-                                </Show>
-
-                                <Show when=move || analytics_panel.get() == AnalyticsPanel::Choices>
-                                    <div class="card">
-                                        <h3 class="card-title">"🎛️ Choices Over Time"</h3>
-                                        <p class="subtle">"Rolling probability of each action (empirical)"</p>
-
-                                        <div class="row end wrap">
-                                            <label class="label">
-                                                <span>"Window"</span>
-                                                <input
-                                                    class="input compact"
-                                                    type="number"
-                                                    min="1"
-                                                    max="200"
-                                                    step="1"
-                                                    prop:value=move || choice_window.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_choice_window.set(v.clamp(1, 200));
-                                                        }
-                                                    }
-                                                />
-                                            </label>
-                                        </div>
-
-                                        <canvas node_ref=choices_chart_ref width="700" height="180" class="canvas"></canvas>
-                                        <p class="subtle">"Tip: lower ε to see exploitation; raise ε to see exploration noise."</p>
-                                    </div>
-                                </Show>
-
-                                <Show when=move || analytics_panel.get() == AnalyticsPanel::UnitPlot>
-                                    <div class="card">
-                                        <h3 class="card-title">"🧬 Unit Activity Plot"</h3>
-                                        <p class="subtle">"Sampled unit activations showing amplitude and type distribution"</p>
-                                        <canvas node_ref=unit_plot_ref width="800" height="360" class="canvas tall"></canvas>
-                                        <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.75rem;">
-                                            <div style="display: flex; align-items: center; gap: 4px;">
-                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(122, 162, 255);"></div>
-                                                <span style="color: var(--muted);">"Sensors (input)"</span>
-                                            </div>
-                                            <div style="display: flex; align-items: center; gap: 4px;">
-                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(74, 222, 128);"></div>
-                                                <span style="color: var(--muted);">"Groups (actions)"</span>
-                                            </div>
-                                            <div style="display: flex; align-items: center; gap: 4px;">
-                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(251, 191, 36);"></div>
-                                                <span style="color: var(--muted);">"Regular (free)"</span>
-                                            </div>
-                                            <div style="display: flex; align-items: center; gap: 4px;">
-                                                <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(148, 163, 184);"></div>
-                                                <span style="color: var(--muted);">"Concepts (imprinted)"</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </Show>
-                            </div>
-                        </Show>
-
                         <Show when=move || dashboard_tab.get() == DashboardTab::Settings>
                             {
                                 let bind = move |k: &str| -> Option<(ReadSignal<f32>, WriteSignal<f32>)> {
@@ -5377,6 +5351,176 @@ fn App() -> impl IntoView {
                                             </div>
                                         </div>
 
+                                        <div class="card">
+                                            <h3 class="card-title">"💾 Persistence"</h3>
+                                            <p class="subtle">"Save/load your brain locally (IndexedDB) or import/export .bbi."</p>
+                                            <div class="stack tight" style="margin-top: 10px;">
+                                                <button class="btn" on:click=move |_| do_save()>"💾 Save (IndexedDB)"</button>
+                                                <button class="btn" on:click=move |_| do_load()>"📂 Load (IndexedDB)"</button>
+                                                <button class="btn" on:click=move |_| do_migrate_idb_format()>"🔁 Migrate stored format"</button>
+                                                <button class="btn" on:click=move |_| do_export_bbi()>"📥 Export .bbi"</button>
+                                                <button class="btn" on:click=move |_| do_import_bbi_click()>"📤 Import .bbi"</button>
+                                            </div>
+
+                                            <div class="row end wrap" style="justify-content: space-between; gap: 12px; margin-top: 10px;">
+                                                <label class="checkbox-row" style="margin: 0;">
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || import_autosave.get()
+                                                        on:change=move |ev| {
+                                                            let v = event_target_checked(&ev);
+                                                            set_import_autosave.set(v);
+                                                        }
+                                                    />
+                                                    <span>"Auto-save imports"</span>
+                                                </label>
+                                                <label class="checkbox-row" style="margin: 0;">
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || idb_autosave.get()
+                                                        on:change=move |ev| {
+                                                            let v = event_target_checked(&ev);
+                                                            set_idb_autosave.set(v);
+                                                        }
+                                                    />
+                                                    <span>"Auto-save brain (~5s when changed)"</span>
+                                                </label>
+                                            </div>
+
+                                            <div class="subtle" style="margin-top: 8px;">
+                                                {move || {
+                                                    if idb_loaded.get() {
+                                                        "Source: IndexedDB (brain_image)".to_string()
+                                                    } else {
+                                                        "Source: fresh (not loaded from IndexedDB yet)".to_string()
+                                                    }
+                                                }}
+                                            </div>
+                                            <div class="subtle">
+                                                {move || {
+                                                    let ts = idb_last_save.get();
+                                                    if ts.is_empty() {
+                                                        "Last save: —".to_string()
+                                                    } else {
+                                                        format!("Last save: {ts}")
+                                                    }
+                                                }}
+                                            </div>
+
+                                            <input
+                                                node_ref=import_input_ref
+                                                type="file"
+                                                accept=".bbi,application/octet-stream"
+                                                class="hidden"
+                                                on:change=do_import_bbi_change
+                                            />
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"⚡ Execution"</h3>
+                                            <p class="subtle">"Choose CPU or GPU tier when available (WebGPU)."</p>
+                                            <div class="subtle" style="font-size: 0.80rem; margin-top: 8px;">{move || gpu_status.get()}</div>
+                                            <div class="subtle" style="font-size: 0.80rem; margin-top: 4px;">
+                                                {move || {
+                                                    let sel = exec_tier_selected.get();
+                                                    let eff = exec_tier_effective.get();
+                                                    format!("Tier: selected={sel:?}  effective={eff:?}")
+                                                }}
+                                            </div>
+
+                                            <div class="row end wrap" style="justify-content: flex-start; gap: 10px; margin-top: 12px;">
+                                                <button
+                                                    class=move || {
+                                                        if exec_tier_selected.get() == ExecutionTier::Scalar {
+                                                            "btn sm primary"
+                                                        } else {
+                                                            "btn sm"
+                                                        }
+                                                    }
+                                                    on:click=move |_| {
+                                                        runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Scalar));
+                                                        local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "scalar");
+                                                        if webgpu_available {
+                                                            set_gpu_status.set("WebGPU: detected (CPU selected)");
+                                                        } else {
+                                                            set_gpu_status.set("WebGPU: not available (CPU mode)");
+                                                        }
+                                                        push_toast(ToastLevel::Info, "Execution tier: CPU".to_string());
+                                                    }
+                                                >
+                                                    "CPU"
+                                                </button>
+
+                                                <button
+                                                    class=move || {
+                                                        if exec_tier_selected.get() == ExecutionTier::Gpu {
+                                                            "btn sm primary"
+                                                        } else {
+                                                            "btn sm"
+                                                        }
+                                                    }
+                                                    on:click=move |_| {
+                                                        if !webgpu_available {
+                                                            push_toast(ToastLevel::Error, "WebGPU not available in this browser/context".to_string());
+                                                            return;
+                                                        }
+
+                                                        #[cfg(not(feature = "gpu"))]
+                                                        {
+                                                            push_toast(
+                                                                ToastLevel::Error,
+                                                                "This build does not include the web `gpu` feature".to_string(),
+                                                            );
+                                                        }
+
+                                                        #[cfg(feature = "gpu")]
+                                                        {
+                                                            local_storage_set_string(LOCALSTORAGE_EXEC_TIER_KEY, "gpu");
+                                                            runtime.update_value(|r| {
+                                                                r.brain.set_execution_tier(ExecutionTier::Gpu);
+                                                            });
+
+                                                            let runtime = runtime.clone();
+                                                            spawn_local(async move {
+                                                                set_gpu_status.set("WebGPU: initializing…");
+                                                                match braine::gpu::init_gpu_context(65_536).await {
+                                                                    Ok(()) => {
+                                                                        runtime.update_value(|r| {
+                                                                            r.brain.set_execution_tier(ExecutionTier::Gpu);
+                                                                        });
+                                                                        let eff = runtime.with_value(|r| r.brain.effective_execution_tier());
+                                                                        if eff == ExecutionTier::Gpu {
+                                                                            set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
+                                                                            push_toast(
+                                                                                ToastLevel::Success,
+                                                                                "Execution tier: GPU".to_string(),
+                                                                            );
+                                                                        } else {
+                                                                            set_gpu_status.set("WebGPU: ready (CPU fallback)");
+                                                                            push_toast(
+                                                                                ToastLevel::Info,
+                                                                                "WebGPU detected, but using CPU tier".to_string(),
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        set_gpu_status
+                                                                            .set("WebGPU: init failed (CPU fallback)");
+                                                                        push_toast(
+                                                                            ToastLevel::Error,
+                                                                            format!("WebGPU init failed: {e}"),
+                                                                        );
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                >
+                                                    "GPU"
+                                                </button>
+                                            </div>
+                                        </div>
+
                                         <For
                                             each=move || settings_schema::sections_ordered().into_iter()
                                             key=|s| s.title
@@ -5453,10 +5597,42 @@ fn App() -> impl IntoView {
                         </Show>
 
                         <Show when=move || dashboard_tab.get() == DashboardTab::Learning>
-                            <div class="stack">
+                            <div class="stack tight learning-stack">
                                 <div class="card">
                                     <h3 class="card-title">"🧪 Learning"</h3>
                                     <p class="subtle">"Controls for learning writes, accelerated learning, and simulation cadence."</p>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"📊 Learning Milestones"</h3>
+
+                                    <div class=move || format!("callout tone-{}", learning_milestone_tone.get())>
+                                        <p style="margin: 0;"><strong>{move || learning_milestone.get()}</strong></p>
+                                        <p style="margin: 6px 0 0 0;">
+                                            {move || {
+                                                if let Some(t) = mastered_at_trial.get() {
+                                                    format!("🏆 Mastered at trial {}", t)
+                                                } else if let Some(t) = learned_at_trial.get() {
+                                                    format!("✓ Learned at trial {}", t)
+                                                } else {
+                                                    "Keep training...".to_string()
+                                                }
+                                            }}
+                                        </p>
+                                    </div>
+
+                                    <div style="display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; color: var(--text); font-size: 0.85rem; margin-top: 10px;">
+                                        <span style="color: var(--muted);">"⏳ Starting"</span>
+                                        <span>"First 20 trials — brain is exploring and imprinting"</span>
+                                        <span style="color: var(--muted);">"🔄 Training"</span>
+                                        <span>"Accuracy < 70% — brain is building associations"</span>
+                                        <span style="color: var(--muted);">"📈 Learning"</span>
+                                        <span>"Accuracy ≥ 70% — causal links forming, above chance"</span>
+                                        <span style="color: #4ade80;">"✓ Learned"</span>
+                                        <span>"Accuracy ≥ 85% — reliable performance achieved"</span>
+                                        <span style="color: #fbbf24;">"🏆 Mastered"</span>
+                                        <span>"Accuracy ≥ 95% — near-optimal behavior"</span>
+                                    </div>
                                 </div>
 
                                 <div class="card">

@@ -824,65 +824,6 @@ pub struct CausalHitNode {
     pub base_count: f32,
 }
 
-/// Draw a gauge/meter visualization
-pub fn draw_gauge(
-    canvas: &HtmlCanvasElement,
-    value: f32,
-    min_val: f32,
-    max_val: f32,
-    label: &str,
-    color: &str,
-    bg_color: &str,
-) -> Result<(), String> {
-    let ctx = canvas
-        .get_context("2d")
-        .map_err(|_| "get_context failed")?
-        .ok_or("no 2d context")?
-        .dyn_into::<CanvasRenderingContext2d>()
-        .map_err(|_| "cast failed")?;
-
-    let w = canvas.width() as f64;
-    let h = canvas.height() as f64;
-    let cx = w / 2.0;
-    let cy = h - 10.0;
-    let radius = (w.min(h) * 0.8) - 10.0;
-
-    // Background
-    ctx.set_fill_style_str(bg_color);
-    ctx.fill_rect(0.0, 0.0, w, h);
-
-    // Draw arc background
-    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.15)");
-    ctx.set_line_width(12.0);
-    ctx.begin_path();
-    ctx.arc(cx, cy, radius, std::f64::consts::PI, 0.0).ok();
-    ctx.stroke();
-
-    // Draw value arc
-    let range = (max_val - min_val).max(0.001);
-    let norm = ((value - min_val) / range).clamp(0.0, 1.0) as f64;
-    let end_angle = std::f64::consts::PI * (1.0 - norm);
-
-    ctx.set_stroke_style_str(color);
-    ctx.set_line_width(12.0);
-    ctx.begin_path();
-    ctx.arc(cx, cy, radius, std::f64::consts::PI, end_angle)
-        .ok();
-    ctx.stroke();
-
-    // Draw label and value
-    ctx.set_fill_style_str("rgba(232, 236, 255, 0.9)");
-    ctx.set_font("bold 14px system-ui, sans-serif");
-    ctx.set_text_align("center");
-    let _ = ctx.fill_text(&format!("{:.1}%", value * 100.0), cx, cy - 20.0);
-
-    ctx.set_font("11px system-ui, sans-serif");
-    ctx.set_fill_style_str("rgba(170, 180, 230, 0.8)");
-    let _ = ctx.fill_text(label, cx, cy - 5.0);
-
-    Ok(())
-}
-
 /// Draw action scores as horizontal bars
 #[allow(dead_code)]
 pub fn draw_action_scores(
@@ -1000,68 +941,6 @@ pub fn draw_neuromod_trace(
         }
     }
 
-    Ok(())
-}
-
-/// Draw a simple line chart on a canvas.
-pub fn draw_line_chart(
-    canvas: &HtmlCanvasElement,
-    data: &[f32],
-    min_val: f32,
-    max_val: f32,
-    line_color: &str,
-    bg_color: &str,
-    grid_color: &str,
-) -> Result<(), String> {
-    let ctx = canvas
-        .get_context("2d")
-        .map_err(|_| "get_context failed")?
-        .ok_or("no 2d context")?
-        .dyn_into::<CanvasRenderingContext2d>()
-        .map_err(|_| "cast failed")?;
-
-    let w = canvas.width() as f64;
-    let h = canvas.height() as f64;
-
-    // Background
-    ctx.set_fill_style_str(bg_color);
-    ctx.fill_rect(0.0, 0.0, w, h);
-
-    // Grid lines
-    ctx.set_stroke_style_str(grid_color);
-    ctx.set_line_width(0.5);
-    for i in 1..5 {
-        let y = h * (i as f64) / 5.0;
-        ctx.begin_path();
-        ctx.move_to(0.0, y);
-        ctx.line_to(w, y);
-        ctx.stroke();
-    }
-
-    if data.is_empty() {
-        return Ok(());
-    }
-
-    let range = (max_val - min_val).max(0.001);
-    let step_x = w / (data.len().max(1) as f64);
-
-    ctx.set_stroke_style_str(line_color);
-    ctx.set_line_width(2.0);
-    ctx.begin_path();
-
-    for (i, &val) in data.iter().enumerate() {
-        let norm = ((val - min_val) / range).clamp(0.0, 1.0) as f64;
-        let x = (i as f64) * step_x;
-        let y = h - norm * h;
-
-        if i == 0 {
-            ctx.move_to(x, y);
-        } else {
-            ctx.line_to(x, y);
-        }
-    }
-
-    ctx.stroke();
     Ok(())
 }
 

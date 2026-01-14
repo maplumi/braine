@@ -18,10 +18,10 @@ That means “feature parity” is not just UI work: many desktop features depen
 | Game selection | Daemon games + UI controls | Spot/Bandit/SpotReversal/SpotXY/Pong (plus Sequence added in this repo) |
 | Trial cadence | Daemon loop (trial ms, run/stop) | Local loop (trial ms, run/stop) |
 | SpotXY eval/holdout mode | Yes (suppresses learning writes) | Yes (suppresses learning writes) |
-| Graph visualization (nodes/edges) | Yes (daemon snapshot-driven; up to 1000/50k configured) | Not implemented (no graph snapshot UI) |
-| Brain plots (time series) | Yes | Not implemented |
-| Meaning inspection | Yes | Not implemented |
-| Storage/snapshots UI | Yes | Not implemented (IndexedDB only) |
+| Graph visualization (nodes/edges) | Yes (daemon snapshot-driven) | Yes (local BrainViz: substrate + causal views) |
+| Brain plots (time series) | Yes | Partial (reward + action-choice traces; sampled unit plot) |
+| Meaning inspection | Yes | Partial (limited UI; no deep edge browser yet) |
+| Storage/snapshots UI | Yes | Yes (IndexedDB + `.bbi` import/export) |
 | Expert/child-brain controls | Yes (policy + nesting knobs) | Not implemented |
 | CLI automation | Yes (`braine-cli`) | Not applicable |
 
@@ -32,7 +32,7 @@ The web app can gain parity in two different ways:
 1) **Local parity**: re-implement visualizations (graph/meaning/plots) directly over the in-process `Brain` state.
 2) **Remote parity**: implement a daemon client in the web app (WebSocket/WebTransport/HTTP bridge) and re-use the daemon’s snapshots and control protocol.
 
-Right now `braine_web` is optimized for **edge-first learning in a browser** (fast iteration + IndexedDB persistence), not daemon observability.
+Right now `braine_web` is optimized for **edge-first learning in a browser** (fast iteration + IndexedDB persistence). It includes lightweight local observability (BrainViz + a few charts), while the desktop stack remains the most complete introspection surface.
 
 ## Recommended next parity steps
 

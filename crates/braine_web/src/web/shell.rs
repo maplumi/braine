@@ -1,3 +1,4 @@
+use leptos::ev::KeyboardEvent;
 use leptos::prelude::*;
 use std::sync::Arc;
 
@@ -113,6 +114,7 @@ pub(super) fn Sidebar(
     game_kind: ReadSignal<GameKind>,
     set_game: Arc<dyn Fn(GameKind) + Send + Sync>,
     open_docs: Callback<()>,
+    open_game_info: Callback<GameKind>,
 ) -> impl IntoView {
     view! {
         // Sidebar overlay (mobile)
@@ -154,9 +156,10 @@ pub(super) fn Sidebar(
                 {GameKind::all()
                     .iter()
                     .map(|&kind| {
-                        let set_game = Arc::clone(&set_game);
+                        let set_game_click = Arc::clone(&set_game);
+                        let set_game_key = Arc::clone(&set_game);
                         view! {
-                            <button
+                            <div
                                 class=move || {
                                     if !show_about_page.get() && game_kind.get() == kind {
                                         "sidebar-item active"
@@ -164,16 +167,39 @@ pub(super) fn Sidebar(
                                         "sidebar-item"
                                     }
                                 }
+                                role="button"
+                                tabindex="0"
                                 on:click=move |_| {
                                     set_show_about_page.set(false);
-                                    set_game(kind);
+                                    set_game_click(kind);
                                     set_sidebar_open.set(false);
+                                }
+                                on:keydown=move |ev: KeyboardEvent| {
+                                    let key = ev.key();
+                                    if key == "Enter" || key == " " {
+                                        ev.prevent_default();
+                                        set_show_about_page.set(false);
+                                        set_game_key(kind);
+                                        set_sidebar_open.set(false);
+                                    }
                                 }
                             >
                                 <span class="sidebar-ico">{kind.icon()}</span>
-                                <span class="sidebar-label">{kind.display_name()}</span>
+                                <div class="sidebar-label-row">
+                                    <span class="sidebar-label">{kind.display_name()}</span>
+                                    <button
+                                        class="sidebar-info-btn"
+                                        title="Game information"
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            open_game_info.run(kind);
+                                        }
+                                    >
+                                        "ⓘ"
+                                    </button>
+                                </div>
                                 <span class="sidebar-pill">{kind.label()}</span>
-                            </button>
+                            </div>
                         }
                     })
                     .collect_view()}
