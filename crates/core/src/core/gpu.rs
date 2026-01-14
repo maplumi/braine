@@ -715,12 +715,15 @@ pub fn wasm_try_finish_step_dynamics() -> Option<Result<Vec<GpuUnit>, String>> {
                 let slice = staging.slice(..);
                 let data = slice.get_mapped_range();
                 let all: &[GpuUnit] = bytemuck::cast_slice(&data);
-                let mut out = vec![GpuUnit {
-                    amp: 0.0,
-                    phase: 0.0,
-                    bias: 0.0,
-                    decay: 0.0,
-                }; n];
+                let mut out = vec![
+                    GpuUnit {
+                        amp: 0.0,
+                        phase: 0.0,
+                        bias: 0.0,
+                        decay: 0.0,
+                    };
+                    n
+                ];
                 out.copy_from_slice(&all[..n]);
                 drop(data);
                 staging.unmap();

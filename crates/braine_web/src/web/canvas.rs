@@ -173,7 +173,10 @@ fn parse_spotxy_cell_action(action: &str, expected_n: u32) -> Option<(u32, u32)>
 }
 
 #[allow(deprecated)]
-pub(super) fn draw_pong(canvas: &web_sys::HtmlCanvasElement, s: &PongUiState) -> Result<(), String> {
+pub(super) fn draw_pong(
+    canvas: &web_sys::HtmlCanvasElement,
+    s: &PongUiState,
+) -> Result<(), String> {
     let ctx = canvas
         .get_context("2d")
         .map_err(|_| "canvas: get_context threw".to_string())?

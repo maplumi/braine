@@ -1,8 +1,6 @@
 #![allow(clippy::clone_on_copy)]
 
-use braine::substrate::{
-    Brain, CausalGraphViz, ExecutionTier, Stimulus, UnitPlotPoint,
-};
+use braine::substrate::{Brain, CausalGraphViz, ExecutionTier, Stimulus, UnitPlotPoint};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use std::sync::Arc;
@@ -12,14 +10,14 @@ mod sequence_web;
 mod text_web;
 use charts::RollingHistory;
 use text_web::TextWebGame;
-mod parameter_field;
-mod settings_schema;
 mod brain_factory;
 mod canvas;
 mod files;
 mod indexeddb;
 mod math;
+mod parameter_field;
 mod runtime;
+mod settings_schema;
 mod shell;
 mod storage;
 mod tokens;
@@ -566,8 +564,7 @@ fn App() -> impl IntoView {
     let (brainviz_display_edges, set_brainviz_display_edges) = signal::<usize>(0);
     let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
     let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
-    let brainviz_degree_by_id =
-        StoredValue::new(std::collections::HashMap::<u32, usize>::new());
+    let brainviz_degree_by_id = StoredValue::new(std::collections::HashMap::<u32, usize>::new());
     let brainviz_dragging = StoredValue::new(false);
     let brainviz_last_drag_xy = StoredValue::new((0.0f64, 0.0f64));
     let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
@@ -2108,12 +2105,7 @@ fn App() -> impl IntoView {
                     rotation_x: rot_x,
                 };
                 if let Ok(hits) = charts::draw_brain_connectivity_sphere(
-                    &canvas,
-                    &points,
-                    &edges,
-                    rot_y,
-                    "#0a0f1a",
-                    opts_full,
+                    &canvas, &points, &edges, rot_y, "#0a0f1a", opts_full,
                 ) {
                     brainviz_hit_nodes.set_value(hits);
                 }
@@ -5749,6 +5741,3 @@ fn App() -> impl IntoView {
         </div>
     }
 }
-
-
-
