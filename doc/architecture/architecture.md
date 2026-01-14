@@ -103,7 +103,7 @@ flowchart TD
 	end
 
 	subgraph Daemon["brained (daemon)"]
-		TCP["TCP JSON protocol\n(127.0.0.1:9876)"]
+		TCP["TCP JSON protocol (127.0.0.1:9876)"]
 		Loop["Game task loop"]
 		EM["ExpertManager"]
 

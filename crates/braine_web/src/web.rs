@@ -184,23 +184,33 @@ impl AboutSubTab {
 }
 
 const ABOUT_LLM_DATAFLOW: &str = r#"flowchart TD
-    Env[Frame / environment]
+    Env[Frame]
     Stim[Stimuli]
     Brain[Brain dynamics]
     Act[Action]
-    Reward[Reward / neuromodulator]
+    Reward[Reward]
     Learn[Local learning]
 
-    Env -->|encode| Stim --> Brain -->|readout| Act --> Env
-    Env -->|reward| Reward -->|gates| Learn -->|updates couplings| Brain
+    Env -->|encode| Stim
+    Stim --> Brain
+    Brain -->|readout| Act
+    Act --> Env
 
-    Snap[Brain + HUD snapshot]
-    Ctx[AdvisorContext (Braine to LLM)]
-    LLM[External LLM (untrusted)]
-    Advice[AdvisorAdvice (LLM to Braine)]
-    Clamp[Daemon clamps + applies (exploration_eps, meaning_alpha, ttl)]
+    Env -->|reward| Reward
+    Reward -->|gates| Learn
+    Learn -->|updates| Brain
 
-    Snap --> Ctx --> LLM --> Advice --> Clamp
+    Snap[Snapshot]
+    Ctx[AdvisorContext]
+    LLM[External LLM]
+    Advice[AdvisorAdvice]
+    Clamp[Daemon clamps]
+
+    Brain -->|snapshot| Snap
+    Snap --> Ctx
+    Ctx --> LLM
+    LLM --> Advice
+    Advice --> Clamp
     Clamp -. nudges .-> Brain
 "#;
 
@@ -237,31 +247,30 @@ const ABOUT_LEARNING_HIERARCHY_DIAGRAM: &str = r#"flowchart LR
 "#;
 
 const ABOUT_MEMORY_STRUCTURE_DIAGRAM: &str = r#"flowchart LR
-    Persisted[Structural state (persisted)]
-    Runtime[Runtime state (transient)]
+    Persisted[Persisted state]
+    Runtime[Runtime state]
 
-    Persisted --> P1[Units + sparse connections]
-    Persisted --> P2[Sensor/action groups]
+    Persisted --> P1[Units and sparse connections]
+    Persisted --> P2[Sensor and action groups]
     Persisted --> P3[Symbol table]
     Persisted --> P4[Causal memory edges]
 
-    Runtime --> R1[Pending input current]
+    Runtime --> R1[Pending input]
     Runtime --> R2[Telemetry buffers]
     Runtime --> R3[Transient vectors]
 "#;
 
 const ABOUT_CURRENT_ARCHITECTURE_DIAGRAM: &str = r#"flowchart LR
-    Desktop[braine_desktop (Slint UI)]
-    CLI[braine-cli (commands)]
-    D[brained (Substrate + TCP server)]
-    File[braine.bbi (file system)]
+    Desktop[Desktop UI]
+    CLI[CLI]
+    Daemon[Daemon]
+    File[Brain image file]
+    Web[Web app]
+    IDB[Browser storage]
 
-    Web[braine_web (WASM) - in-memory]
-    IDB[IndexedDB (browser storage)]
-
-    Desktop <--> D
-    CLI <--> D
-    D --> File
+    Desktop <--> Daemon
+    CLI <--> Daemon
+    Daemon --> File
     Web --> IDB
 "#;
 

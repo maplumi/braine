@@ -61,41 +61,32 @@ Below is a concrete “Braine + LLM + KGF (+ SHACL)” mental model that scales.
 
 ```mermaid
 flowchart LR
-  subgraph FastLoop[Fast Loop (ms): continuous dynamics]
-    Env[Environment / External System]
-    D[brained daemon
-(owns Brain state)]
-    B[Braine core
-(oscillator substrate)]
-    Env -->|stimuli, reward, time| D
-    D -->|apply stimulus/neuromod
-step/commit| B
-    B -->|snapshot/metrics
-meaning gaps, novelty| D
+  subgraph FastLoop[Fast loop]
+    Env[Environment]
+    D[brained daemon]
+    B[Braine core]
+    Env -->|stimuli and reward| D
+    D -->|step and commit| B
+    B -->|snapshot and metrics| D
   end
 
-  subgraph SlowLoop[Slow Loop (100ms–seconds): grounded reasoning]
-    UI[UI / App]
-    CP[ContextPack service
-(retrieval + policy + budget)]
-    KGF[KGF / graph store]
+  subgraph SlowLoop[Slow loop]
+    UI[UI]
+    CP[ContextPack service]
+    KGF[KGF graph store]
     SHACL[SHACL validation]
-    LLM[LLM service
-(untrusted advisor)]
+    LLM[LLM service]
   end
 
-  UI -->|user intent, queries,
-feedback| CP
+  UI -->|intent and feedback| CP
   CP -->|read| KGF
   KGF -->|validate writes| SHACL
   SHACL -->|accept/reject| KGF
 
   D -->|compact daemon summary| CP
   CP -->|ContextPack| LLM
-  LLM -->|Advice JSON
-(TTL + tags + modulation)| D
-  UI <-->|poll/stream state,
-request advice| D
+  LLM -->|Advice JSON (TTL tags modulation)| D
+  UI <-->|status and requests| D
 ```
 
 Key safety property:

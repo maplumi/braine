@@ -14,7 +14,25 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const SAMPLE_REPLAY_DATASET_JSON: &str = include_str!("../../../data/replay/spot_lr_small.json");
+const SAMPLE_REPLAY_DATASET_JSON: &str = r#"{
+    \"name\": \"spot_lr_small\",
+    \"trials\": [
+        {\"id\": \"L1\", \"stimuli\": [{\"name\": \"spot_left\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"left\"},
+        {\"id\": \"R1\", \"stimuli\": [{\"name\": \"spot_right\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"right\"},
+
+        {\"id\": \"L2\", \"stimuli\": [{\"name\": \"spot_left\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"left\"},
+        {\"id\": \"R2\", \"stimuli\": [{\"name\": \"spot_right\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"right\"},
+
+        {\"id\": \"L3\", \"stimuli\": [{\"name\": \"spot_left\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"left\"},
+        {\"id\": \"R3\", \"stimuli\": [{\"name\": \"spot_right\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"right\"},
+
+        {\"id\": \"L4\", \"stimuli\": [{\"name\": \"spot_left\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"left\"},
+        {\"id\": \"R4\", \"stimuli\": [{\"name\": \"spot_right\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"right\"},
+
+        {\"id\": \"L5\", \"stimuli\": [{\"name\": \"spot_left\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"left\"},
+        {\"id\": \"R5\", \"stimuli\": [{\"name\": \"spot_right\", \"strength\": 1.0}], \"allowed_actions\": [\"left\", \"right\"], \"correct_action\": \"right\"}
+    ]
+}\n"#;
 
 fn parse_replay_dataset_json(json: &str) -> Result<Value, String> {
     serde_json::from_str::<Value>(json).map_err(|e| format!("Invalid replay dataset JSON: {e}"))
