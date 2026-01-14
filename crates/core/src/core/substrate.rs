@@ -3073,8 +3073,9 @@ impl Brain {
             self.telemetry.last_reinforced_actions.clear();
         }
 
-        // Dispatch based on execution tier.
-        match self.tier {
+        // Dispatch based on the effective execution tier.
+        // This honors compile-time feature gates and runtime GPU availability.
+        match self.effective_execution_tier() {
             ExecutionTier::Scalar => self.step_dynamics_scalar(),
             ExecutionTier::Simd => self.step_dynamics_simd(),
             ExecutionTier::Parallel => self.step_dynamics_parallel(),
@@ -3090,7 +3091,7 @@ impl Brain {
         // Note: SIMD/GPU learning uses scalar path as Hebbian update operates on sparse
         // graph structure with irregular memory access. The SIMD/GPU gains come from
         // the vectorized dynamics update phase.
-        match self.tier {
+        match self.effective_execution_tier() {
             ExecutionTier::Scalar | ExecutionTier::Simd | ExecutionTier::Gpu => {
                 self.learn_hebbian_scalar()
             }
@@ -3114,7 +3115,7 @@ impl Brain {
             self.telemetry.last_reinforced_actions.clear();
         }
 
-        match self.tier {
+        match self.effective_execution_tier() {
             ExecutionTier::Scalar => self.step_dynamics_scalar(),
             ExecutionTier::Simd => self.step_dynamics_simd(),
             ExecutionTier::Parallel => self.step_dynamics_parallel(),
@@ -3402,7 +3403,14 @@ impl Brain {
     /// The sparse neighbor accumulation is done on CPU (irregular memory access),
     /// then the dense amp/phase update is offloaded to GPU compute shaders.
     /// Only beneficial for very large substrates (10k+ units).
-    #[cfg(feature = "gpu")]
+    // On wasm, GPU dynamics must be driven via the nonblocking path.
+    // The synchronous GPU implementation blocks on readback and can freeze the browser.
+    #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+    fn step_dynamics_gpu(&mut self) {
+        self.step_dynamics_scalar();
+    }
+
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32"))) ]
     fn step_dynamics_gpu(&mut self) {
         use crate::gpu::{GpuInfluence, GpuParams, GpuUnit};
 
@@ -3492,6 +3500,149 @@ impl Brain {
     #[cfg(not(feature = "gpu"))]
     fn step_dynamics_gpu(&mut self) {
         self.step_dynamics_scalar();
+    }
+
+    /// Returns true if a WebGPU (wasm) dynamics step is currently in flight.
+    #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+    pub fn wasm_gpu_step_in_flight(&self) -> bool {
+        self.effective_execution_tier() == ExecutionTier::Gpu && crate::gpu::wasm_gpu_step_in_flight()
+    }
+
+    #[cfg(not(all(feature = "gpu", target_arch = "wasm32")))]
+    pub fn wasm_gpu_step_in_flight(&self) -> bool {
+        false
+    }
+
+    /// Advance the simulation by one timestep without blocking the browser.
+    ///
+    /// - On non-wasm targets, this just calls `step()` and returns true.
+    /// - On wasm with GPU tier effective, this runs a two-phase GPU step:
+    ///   start work on first call (returns false), finish/apply on a later call (returns true).
+    #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+    pub fn step_nonblocking(&mut self) -> bool {
+        use crate::gpu::{GpuInfluence, GpuParams, GpuUnit};
+
+        if self.effective_execution_tier() != ExecutionTier::Gpu {
+            self.step();
+            return true;
+        }
+
+        // If a GPU step is already in flight, try to finish it.
+        if crate::gpu::wasm_gpu_step_in_flight() {
+            match crate::gpu::wasm_try_finish_step_dynamics() {
+                None => return false,
+                Some(Err(_e)) => {
+                    crate::gpu::wasm_cancel_pending_step();
+                    self.step();
+                    return true;
+                }
+                Some(Ok(gpu_units)) => {
+                    self.pruned_last_step = 0;
+                    self.age_steps = self.age_steps.wrapping_add(1);
+                    if self.telemetry.enabled {
+                        self.telemetry.last_stimuli.clear();
+                        self.telemetry.last_actions.clear();
+                        self.telemetry.last_reinforced_actions.clear();
+                    }
+
+                    let salience_decay = self.cfg.salience_decay;
+                    let salience_gain = self.cfg.salience_gain;
+                    let salience_threshold = self.cfg.coactive_threshold;
+                    for (i, gu) in gpu_units.into_iter().enumerate() {
+                        self.units[i].amp = gu.amp;
+                        self.units[i].phase = gu.phase;
+
+                        let activation = (gu.amp - salience_threshold).max(0.0);
+                        self.units[i].salience = (1.0 - salience_decay) * self.units[i].salience
+                            + salience_gain * activation;
+                        self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
+                    }
+
+                    for x in &mut self.pending_input {
+                        *x = 0.0;
+                    }
+
+                    // Learning stays on CPU.
+                    self.learn_hebbian_scalar();
+                    self.forget_and_prune();
+                    return true;
+                }
+            }
+        }
+
+        // Otherwise: start a GPU step for the current state (stimuli already applied).
+        let n = self.units.len();
+        if n == 0 {
+            return true;
+        }
+
+        let max_units = n.max(65_536);
+        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / n as f32;
+        let inhibition = self.cfg.global_inhibition * avg_amp;
+
+        let mut influences: Vec<GpuInfluence> = Vec::with_capacity(n);
+        for i in 0..n {
+            let u_phase = self.units[i].phase;
+            let mut inf_amp = 0.0f32;
+            let mut inf_phase = 0.0f32;
+
+            for (target, weight) in self.neighbors(i) {
+                let v = &self.units[target];
+                inf_amp += weight * v.amp;
+                inf_phase += weight * angle_diff(v.phase, u_phase);
+            }
+
+            influences.push(GpuInfluence {
+                amp: inf_amp,
+                phase: inf_phase,
+                noise_amp: self
+                    .rng
+                    .gen_range_f32(-self.cfg.noise_amp, self.cfg.noise_amp),
+                noise_phase: self
+                    .rng
+                    .gen_range_f32(-self.cfg.noise_phase, self.cfg.noise_phase),
+            });
+        }
+
+        let gpu_units: Vec<GpuUnit> = self
+            .units
+            .iter()
+            .map(|u| GpuUnit {
+                amp: u.amp,
+                phase: u.phase,
+                bias: u.bias,
+                decay: u.decay,
+            })
+            .collect();
+
+        let params = GpuParams {
+            dt: self.cfg.dt,
+            base_freq: self.cfg.base_freq,
+            inhibition,
+            unit_count: n as u32,
+        };
+
+        let started = crate::gpu::with_gpu_context(max_units, |ctx| {
+            if let Some(gpu) = ctx {
+                gpu.wasm_begin_step_dynamics(&gpu_units, &influences, &self.pending_input, params)
+                    .is_ok()
+            } else {
+                false
+            }
+        });
+
+        if started {
+            false
+        } else {
+            self.step();
+            true
+        }
+    }
+
+    #[cfg(not(all(feature = "gpu", target_arch = "wasm32")))]
+    pub fn step_nonblocking(&mut self) -> bool {
+        self.step();
+        true
     }
 
     /// Select an action based on current unit activations.

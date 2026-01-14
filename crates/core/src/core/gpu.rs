@@ -14,6 +14,19 @@ thread_local! {
     static GPU_CTX: std::cell::OnceCell<Option<GpuContext>> = const { std::cell::OnceCell::new() };
 }
 
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+thread_local! {
+    static GPU_PENDING: std::cell::RefCell<Option<PendingGpuReadback>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+struct PendingGpuReadback {
+    n: usize,
+    staging: wgpu::Buffer,
+    ready: std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>>,
+}
+
 /// Initialize the shared GPU context.
 ///
 /// - On native targets this may block (device/adapter creation).
@@ -522,6 +535,213 @@ impl GpuContext {
         units.copy_from_slice(result);
         Ok(())
     }
+
+    /// Begin a GPU dynamics update on wasm **without blocking**.
+    ///
+    /// This submits work and starts an async mapping request. Call
+    /// [`wasm_try_finish_step_dynamics`] later to apply the results.
+    #[cfg(target_arch = "wasm32")]
+    pub fn wasm_begin_step_dynamics(
+        &self,
+        units: &[GpuUnit],
+        influences: &[GpuInfluence],
+        inputs: &[f32],
+        params: GpuParams,
+    ) -> Result<(), GpuError> {
+        let n = units.len();
+        if n == 0 {
+            return Ok(());
+        }
+        if n > self.max_units {
+            return Err(GpuError::SizeExceeded {
+                requested: n,
+                max: self.max_units,
+            });
+        }
+
+        // Create buffers
+        let units_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Units Buffer"),
+                contents: bytemuck::cast_slice(units),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            });
+
+        let influences_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Influences Buffer"),
+                contents: bytemuck::cast_slice(influences),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+        // Pack inputs with padding
+        let inputs_padded: Vec<GpuInput> = inputs
+            .iter()
+            .map(|&v| GpuInput {
+                value: v,
+                _padding: [0.0; 3],
+            })
+            .collect();
+        let inputs_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Inputs Buffer"),
+                contents: bytemuck::cast_slice(&inputs_padded),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Params Buffer"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        // Staging buffer for readback
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Staging Buffer"),
+            size: std::mem::size_of_val(units) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Dynamics Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: units_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: influences_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: inputs_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Dynamics Encoder"),
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Dynamics Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(n.div_ceil(64) as u32, 1, 1);
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &units_buffer,
+            0,
+            &staging_buffer,
+            0,
+            std::mem::size_of_val(units) as u64,
+        );
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Install the pending readback into a thread-local slot.
+        let ready: std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let ready_cb = ready.clone();
+
+        let buffer_slice = staging_buffer.slice(..);
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let mut slot = ready_cb.borrow_mut();
+            *slot = Some(result.map_err(|e| format!("GPU map_async failed: {e:?}")));
+        });
+        // Non-blocking poll.
+        self.device.poll(wgpu::Maintain::Poll);
+
+        GPU_PENDING.with(|p| {
+            *p.borrow_mut() = Some(PendingGpuReadback {
+                n,
+                staging: staging_buffer,
+                ready,
+            });
+        });
+
+        Ok(())
+    }
+}
+
+/// Returns true if a wasm GPU dynamics step is in flight.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+pub fn wasm_gpu_step_in_flight() -> bool {
+    GPU_PENDING.with(|p| p.borrow().is_some())
+}
+
+/// Try to finish the in-flight wasm GPU dynamics step.
+///
+/// Returns:
+/// - `None` if no step is in flight or the mapping hasn't completed yet.
+/// - `Some(Ok(vec))` when results are ready.
+/// - `Some(Err(msg))` when the GPU operation failed.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+pub fn wasm_try_finish_step_dynamics() -> Option<Result<Vec<GpuUnit>, String>> {
+    GPU_PENDING.with(|p| {
+        let mut guard = p.borrow_mut();
+        let status: Result<(), String> = {
+            let pending = guard.as_ref()?;
+            let ready = pending.ready.borrow();
+            match ready.as_ref() {
+                None => return None,
+                Some(s) => s.clone(),
+            }
+        };
+
+        // Mapping completed: consume the pending state.
+        let PendingGpuReadback { n, staging, .. } = guard.take()?;
+
+        match status {
+            Ok(()) => {
+                let slice = staging.slice(..);
+                let data = slice.get_mapped_range();
+                let all: &[GpuUnit] = bytemuck::cast_slice(&data);
+                let mut out = vec![GpuUnit {
+                    amp: 0.0,
+                    phase: 0.0,
+                    bias: 0.0,
+                    decay: 0.0,
+                }; n];
+                out.copy_from_slice(&all[..n]);
+                drop(data);
+                staging.unmap();
+                Some(Ok(out))
+            }
+            Err(e) => {
+                staging.unmap();
+                Some(Err(e.clone()))
+            }
+        }
+    })
+}
+
+/// Cancel any in-flight wasm GPU step.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+pub fn wasm_cancel_pending_step() {
+    GPU_PENDING.with(|p| {
+        if let Some(pending) = p.borrow_mut().take() {
+            pending.staging.unmap();
+        }
+    });
 }
 
 /// WGSL compute shader for dynamics update.

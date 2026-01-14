@@ -87,6 +87,7 @@ export component MainWindow inherits Window {
 
     in property <[GraphNodeDot]> graph-nodes;
     in property <[GraphEdgeSeg]> graph-edge-segs;
+    in property <string> graph-stats: "";
     in-out property <LearningState> learning;
     
     // Game param schema properties (set by Rust from daemon)
@@ -1296,6 +1297,12 @@ export component MainWindow inherits Window {
                                             horizontal-stretch: 1;
                                         }
                                         Text { text: root.graph-interval-ms; color: Theme.text-secondary; vertical-alignment: center; }
+                                    }
+
+                                    Text {
+                                        text: root.graph-stats;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
                                     }
 
                                     Rectangle {

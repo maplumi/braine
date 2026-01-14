@@ -1,32 +1,48 @@
 #![allow(clippy::clone_on_copy)]
 
 use braine::substrate::{
-    Brain, BrainConfig, CausalGraphViz, ExecutionTier, Stimulus, UnitPlotPoint,
-};
-use braine_games::{
-    bandit::BanditGame,
-    replay::{ReplayDataset, ReplayGame},
-    spot::SpotGame,
-    spot_reversal::SpotReversalGame,
-    spot_xy::SpotXYGame,
+    Brain, CausalGraphViz, ExecutionTier, Stimulus, UnitPlotPoint,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod charts;
 mod pong_web;
-use pong_web::PongWebGame;
 mod sequence_web;
-use sequence_web::SequenceWebGame;
 mod text_web;
 use charts::RollingHistory;
 use text_web::TextWebGame;
 mod parameter_field;
 mod settings_schema;
+mod brain_factory;
+mod canvas;
+mod files;
+mod indexeddb;
+mod math;
+mod runtime;
+mod shell;
+mod storage;
+mod tokens;
+mod types;
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+use crate::ui_model::{AnalyticsPanel, DashboardTab, GameKind};
+
+use canvas::{clear_canvas, draw_pong, draw_spotxy};
+use files::{download_bytes, read_file_bytes};
+use indexeddb::{idb_get_bytes, idb_put_bytes, load_game_accuracies, save_game_accuracies};
+use math::softmax_temp;
+use runtime::{AppRuntime, TickConfig, TickResult, WebGame};
+use shell::{Sidebar, SystemErrorBanner, ToastStack, Topbar};
+use storage::{
+    apply_theme_to_document, clear_persisted_stats_state, load_persisted_settings,
+    load_persisted_stats_state, local_storage_get_string, local_storage_remove,
+    local_storage_set_string, parse_exec_tier_pref, save_persisted_settings,
+    save_persisted_stats_state, PersistedGameStats, PersistedSettings, PersistedStatsState,
+};
+use tokens::{choose_text_token_sensor, display_token_from_action, token_action_name_from_sensor};
+use types::{PongUiState, ReplayUiState, SequenceUiState, TextUiState};
 
 type ErrorSink = std::cell::RefCell<Option<Box<dyn Fn(String)>>>;
 
@@ -281,66 +297,8 @@ fn App() -> impl IntoView {
     let (dashboard_tab, set_dashboard_tab) = signal(DashboardTab::Learning);
     // Mobile responsive: dashboard drawer (hidden by default on small screens)
     let (dashboard_open, set_dashboard_open) = signal(false);
-    let (analytics_panel, set_analytics_panel) = signal(AnalyticsPanel::Performance);
-    let (trial_period_ms, set_trial_period_ms) = signal(500u32);
-    let (run_interval_ms, set_run_interval_ms) = signal(33u32);
-    let (exploration_eps, set_exploration_eps) = signal(0.08f32);
-    let (meaning_alpha, set_meaning_alpha) = signal(6.0f32);
-    let (reward_scale, set_reward_scale) = signal(1.0f32);
-    let (reward_bias, set_reward_bias) = signal(0.0f32);
-    let (learning_enabled, set_learning_enabled) = signal(true);
-    let (grow_units_n, set_grow_units_n) = signal(128u32);
-
-    // Settings panel UI: Basic/Advanced toggle (persisted).
-    let (settings_advanced, set_settings_advanced) = signal(false);
-
-    // BrainConfig tuning (live). These mirror `BrainConfig` fields that are safe to
-    // update on a running brain. Topology fields are shown read-only.
-    let (cfg_dt, set_cfg_dt) = signal(runtime.with_value(|r| r.brain.config().dt));
-    let (cfg_base_freq, set_cfg_base_freq) =
-        signal(runtime.with_value(|r| r.brain.config().base_freq));
-    let (cfg_noise_amp, set_cfg_noise_amp) =
-        signal(runtime.with_value(|r| r.brain.config().noise_amp));
-    let (cfg_noise_phase, set_cfg_noise_phase) =
-        signal(runtime.with_value(|r| r.brain.config().noise_phase));
-    let (cfg_global_inhibition, set_cfg_global_inhibition) =
-        signal(runtime.with_value(|r| r.brain.config().global_inhibition));
-    let (cfg_hebb_rate, set_cfg_hebb_rate) =
-        signal(runtime.with_value(|r| r.brain.config().hebb_rate));
-    let (cfg_forget_rate, set_cfg_forget_rate) =
-        signal(runtime.with_value(|r| r.brain.config().forget_rate));
-    let (cfg_prune_below, set_cfg_prune_below) =
-        signal(runtime.with_value(|r| r.brain.config().prune_below));
-    let (cfg_coactive_threshold, set_cfg_coactive_threshold) =
-        signal(runtime.with_value(|r| r.brain.config().coactive_threshold));
-    let (cfg_phase_lock_threshold, set_cfg_phase_lock_threshold) =
-        signal(runtime.with_value(|r| r.brain.config().phase_lock_threshold));
-    let (cfg_imprint_rate, set_cfg_imprint_rate) =
-        signal(runtime.with_value(|r| r.brain.config().imprint_rate));
-    let (cfg_salience_decay, set_cfg_salience_decay) =
-        signal(runtime.with_value(|r| r.brain.config().salience_decay));
-    let (cfg_salience_gain, set_cfg_salience_gain) =
-        signal(runtime.with_value(|r| r.brain.config().salience_gain));
-    let (cfg_causal_decay, set_cfg_causal_decay) =
-        signal(runtime.with_value(|r| r.brain.config().causal_decay));
-
-    let (last_action, set_last_action) = signal(String::new());
-    let (last_reward, set_last_reward) = signal(0.0f32);
-
-    let (trials, set_trials) = signal(0u32);
-    let (recent_rate, set_recent_rate) = signal(0.5f32);
-    let (status, set_status) = signal(String::new());
-
-    // Lightweight toast when config is applied.
-    let (config_applied, set_config_applied) = signal(false);
-
-    // Schema-driven Settings UI.
-    let settings_specs = StoredValue::new(settings_schema::param_specs());
-    let settings_validity_map: RwSignal<std::collections::HashMap<String, bool>> =
-        RwSignal::new(std::collections::HashMap::new());
-    let settings_apply_disabled =
-        Memo::new(move |_| settings_validity_map.get().values().any(|v| !*v));
-
+    // Mobile responsive: left sidebar (hidden by default on small screens)
+    let (sidebar_open, set_sidebar_open) = signal(false);
     let (spotxy_pos, set_spotxy_pos) = signal::<Option<(f32, f32)>>(None);
     let (_spotxy_stimulus_key, set_spotxy_stimulus_key) = signal(String::new());
     let (spotxy_eval, set_spotxy_eval) = signal(false);
@@ -355,7 +313,7 @@ fn App() -> impl IntoView {
     let (pong_paddle_bounce_y, set_pong_paddle_bounce_y) = signal(0.0f32);
     let (pong_respawn_delay_s, set_pong_respawn_delay_s) = signal(0.0f32);
     let (pong_distractor_enabled, set_pong_distractor_enabled) = signal(false);
-    let (pong_distractor_speed_scale, set_pong_distractor_speed_scale) = signal(0.0f32);
+    let (_pong_distractor_speed_scale, set_pong_distractor_speed_scale) = signal(0.0f32);
 
     let (sequence_state, set_sequence_state) = signal::<Option<SequenceUiState>>(None);
     let (text_state, set_text_state) = signal::<Option<TextUiState>>(None);
@@ -367,6 +325,66 @@ fn App() -> impl IntoView {
 
     // Spot/SpotReversal stimulus (left/right) for UI highlighting.
     let (spot_is_left, set_spot_is_left) = signal::<Option<bool>>(None);
+
+    // Status line for the header.
+    let (status, set_status) = signal(String::from("ready"));
+
+    // Core learning/runtime controls.
+    let (learning_enabled, set_learning_enabled) = signal(true);
+    let (trial_period_ms, set_trial_period_ms) = signal::<u32>(500);
+    let (run_interval_ms, set_run_interval_ms) = signal::<u32>(33);
+    let (reward_scale, set_reward_scale) = signal::<f32>(1.0);
+    let (reward_bias, set_reward_bias) = signal::<f32>(0.0);
+    let (exploration_eps, set_exploration_eps) = signal::<f32>(0.10);
+    let (meaning_alpha, set_meaning_alpha) = signal::<f32>(8.0);
+
+    // Stats signals used across dashboard pages.
+    let (trials, set_trials) = signal::<u32>(0);
+    let (recent_rate, set_recent_rate) = signal::<f32>(0.0);
+    let (last_action, set_last_action) = signal(String::new());
+    let (last_reward, set_last_reward) = signal::<f32>(0.0);
+
+    // Analytics panel subtab.
+    let (analytics_panel, set_analytics_panel) = signal(AnalyticsPanel::Performance);
+
+    // Settings UI state.
+    let (settings_advanced, set_settings_advanced) = signal(false);
+    let settings_specs = StoredValue::new(settings_schema::param_specs());
+    let settings_validity_map: RwSignal<std::collections::HashMap<String, bool>> =
+        RwSignal::new(std::collections::HashMap::new());
+    let (settings_apply_disabled, set_settings_apply_disabled) = signal(false);
+
+    // "Applied" toast / badge state.
+    let (config_applied, set_config_applied) = signal(false);
+
+    // Neurogenesis control.
+    let (grow_units_n, set_grow_units_n) = signal::<u32>(32);
+
+    // BrainConfig controls (initialized from the live runtime config).
+    let cfg0 = runtime.with_value(|r| r.brain.config().clone());
+    let (cfg_dt, set_cfg_dt) = signal::<f32>(cfg0.dt);
+    let (cfg_base_freq, set_cfg_base_freq) = signal::<f32>(cfg0.base_freq);
+    let (cfg_noise_amp, set_cfg_noise_amp) = signal::<f32>(cfg0.noise_amp);
+    let (cfg_noise_phase, set_cfg_noise_phase) = signal::<f32>(cfg0.noise_phase);
+    let (cfg_global_inhibition, set_cfg_global_inhibition) = signal::<f32>(cfg0.global_inhibition);
+    let (cfg_hebb_rate, set_cfg_hebb_rate) = signal::<f32>(cfg0.hebb_rate);
+    let (cfg_forget_rate, set_cfg_forget_rate) = signal::<f32>(cfg0.forget_rate);
+    let (cfg_prune_below, set_cfg_prune_below) = signal::<f32>(cfg0.prune_below);
+    let (cfg_coactive_threshold, set_cfg_coactive_threshold) =
+        signal::<f32>(cfg0.coactive_threshold);
+    let (cfg_phase_lock_threshold, set_cfg_phase_lock_threshold) =
+        signal::<f32>(cfg0.phase_lock_threshold);
+    let (cfg_imprint_rate, set_cfg_imprint_rate) = signal::<f32>(cfg0.imprint_rate);
+    let (cfg_salience_decay, set_cfg_salience_decay) = signal::<f32>(cfg0.salience_decay);
+    let (cfg_salience_gain, set_cfg_salience_gain) = signal::<f32>(cfg0.salience_gain);
+    let (cfg_causal_decay, set_cfg_causal_decay) = signal::<f32>(cfg0.causal_decay);
+
+    // Derived "apply" disabled state (any invalid param disables apply).
+    Effect::new(move |_| {
+        let m = settings_validity_map.get();
+        let disabled = m.values().any(|ok| !*ok);
+        set_settings_apply_disabled.set(disabled);
+    });
 
     let apply_brain_config = {
         let runtime = runtime.clone();
@@ -531,6 +549,7 @@ fn App() -> impl IntoView {
     let (brainviz_points, set_brainviz_points) = signal::<Vec<UnitPlotPoint>>(Vec::new());
     let (brainviz_node_sample, set_brainviz_node_sample) = signal(128u32);
     let (brainviz_edges_per_node, set_brainviz_edges_per_node) = signal(4u32);
+    let (brainviz_is_expanded, set_brainviz_is_expanded) = signal(false);
     let (brainviz_zoom, set_brainviz_zoom) = signal(1.5f32);
     let (brainviz_pan_x, set_brainviz_pan_x) = signal(0.0f32);
     let (brainviz_pan_y, set_brainviz_pan_y) = signal(0.0f32);
@@ -543,6 +562,12 @@ fn App() -> impl IntoView {
     let (brainviz_view_mode, set_brainviz_view_mode) = signal::<&'static str>("substrate"); // "substrate" or "causal"
     let (brainviz_causal_graph, set_brainviz_causal_graph) =
         signal::<CausalGraphViz>(CausalGraphViz::default());
+    let (brainviz_display_nodes, set_brainviz_display_nodes) = signal::<usize>(0);
+    let (brainviz_display_edges, set_brainviz_display_edges) = signal::<usize>(0);
+    let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
+    let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
+    let brainviz_degree_by_id =
+        StoredValue::new(std::collections::HashMap::<u32, usize>::new());
     let brainviz_dragging = StoredValue::new(false);
     let brainviz_last_drag_xy = StoredValue::new((0.0f64, 0.0f64));
     let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
@@ -738,9 +763,20 @@ fn App() -> impl IntoView {
                 set_gpu_status.set("WebGPU: initializing…");
                 match braine::gpu::init_gpu_context(65_536).await {
                     Ok(()) => {
-                        runtime.update_value(|r| r.brain.set_execution_tier(ExecutionTier::Gpu));
-                        set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
-                        push_toast(ToastLevel::Success, "WebGPU enabled".to_string());
+                        runtime.update_value(|r| {
+                            r.brain.set_execution_tier(ExecutionTier::Gpu);
+                        });
+                        let eff = runtime.with_value(|r| r.brain.effective_execution_tier());
+                        if eff == ExecutionTier::Gpu {
+                            set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
+                            push_toast(ToastLevel::Success, "WebGPU enabled".to_string());
+                        } else {
+                            set_gpu_status.set("WebGPU: ready (CPU fallback)");
+                            push_toast(
+                                ToastLevel::Info,
+                                "WebGPU detected, but using CPU tier".to_string(),
+                            );
+                        }
                     }
                     Err(e) => {
                         if explicit_gpu_pref {
@@ -955,6 +991,45 @@ fn App() -> impl IntoView {
         }
     });
 
+    let open_docs = Callback::new({
+        let set_show_about_page = set_show_about_page.clone();
+        let set_about_sub_tab = set_about_sub_tab.clone();
+        let set_dashboard_open = set_dashboard_open.clone();
+        let set_sidebar_open = set_sidebar_open.clone();
+        move |()| {
+            set_dashboard_open.set(false);
+            set_show_about_page.set(true);
+            set_about_sub_tab.set(AboutSubTab::Overview);
+            set_sidebar_open.set(false);
+        }
+    });
+
+    let open_settings = Callback::new({
+        let set_show_about_page = set_show_about_page.clone();
+        let set_dashboard_tab = set_dashboard_tab.clone();
+        let set_dashboard_open = set_dashboard_open.clone();
+        let set_sidebar_open = set_sidebar_open.clone();
+        move |()| {
+            set_show_about_page.set(false);
+            set_dashboard_tab.set(DashboardTab::Settings);
+            set_dashboard_open.set(true);
+            set_sidebar_open.set(false);
+        }
+    });
+
+    let open_analytics = Callback::new({
+        let set_show_about_page = set_show_about_page.clone();
+        let set_dashboard_tab = set_dashboard_tab.clone();
+        let set_dashboard_open = set_dashboard_open.clone();
+        let set_sidebar_open = set_sidebar_open.clone();
+        move |()| {
+            set_show_about_page.set(false);
+            set_dashboard_tab.set(DashboardTab::Analytics);
+            set_dashboard_open.set(true);
+            set_sidebar_open.set(false);
+        }
+    });
+
     let do_tick = {
         let runtime = runtime.clone();
         move || {
@@ -967,33 +1042,42 @@ fn App() -> impl IntoView {
                 learning_enabled: learning_enabled.get_untracked(),
             };
 
-            let mut out: Option<TickOutput> = None;
+            let mut tick_result: TickResult = TickResult::Advanced(None);
             runtime.update_value(|r| {
-                out = r.tick(&cfg);
+                tick_result = r.tick(&cfg);
             });
-            set_brain_dirty.set(true);
-            if let Some(out) = out {
-                let last_action = out.last_action.clone();
-                set_last_action.set(last_action.clone());
-                set_last_reward.set(out.reward);
 
-                // Update choice history (cap to 200)
-                choice_events.update_value(|v| {
-                    v.push(last_action);
-                    if v.len() > 200 {
-                        let extra = v.len() - 200;
-                        v.drain(0..extra);
+            match tick_result {
+                TickResult::PendingGpu => {
+                    // A GPU step is in-flight; don't count this as a completed step.
+                    // We'll try again on the next interval tick.
+                }
+                TickResult::Advanced(out) => {
+                    set_brain_dirty.set(true);
+                    if let Some(out) = out {
+                        let last_action = out.last_action.clone();
+                        set_last_action.set(last_action.clone());
+                        set_last_reward.set(out.reward);
+
+                        // Update choice history (cap to 200)
+                        choice_events.update_value(|v| {
+                            v.push(last_action);
+                            if v.len() > 200 {
+                                let extra = v.len() - 200;
+                                v.drain(0..extra);
+                            }
+                        });
+                        set_choices_version.update(|v| *v = v.wrapping_add(1));
+
+                        // Track neuromod history
+                        neuromod_history.update_value(|h| h.push(out.reward));
+                        set_neuromod_version.update(|v| *v = v.wrapping_add(1));
                     }
-                });
-                set_choices_version.update(|v| *v = v.wrapping_add(1));
 
-                // Track neuromod history
-                neuromod_history.update_value(|h| h.push(out.reward));
-                set_neuromod_version.update(|v| *v = v.wrapping_add(1));
+                    set_steps.update(|s| *s += 1);
+                    refresh_ui_from_runtime();
+                }
             }
-
-            set_steps.update(|s| *s += 1);
-            refresh_ui_from_runtime();
         }
     };
 
@@ -1001,6 +1085,7 @@ fn App() -> impl IntoView {
         let kind = game_kind.get_untracked();
         clear_persisted_stats_state(kind);
 
+        runtime.update_value(|r| r.cancel_pending_tick());
         runtime.set_value(AppRuntime::new());
         runtime.update_value(|r| r.set_game(kind));
 
@@ -1832,27 +1917,26 @@ fn App() -> impl IntoView {
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
-            if analytics_panel.get() != AnalyticsPanel::BrainViz {
-                return;
-            }
-
+            let expanded = brainviz_is_expanded.get();
             let view_mode = brainviz_view_mode.get();
             let n = brainviz_node_sample.get().clamp(16, 1024) as usize;
 
             // Throttle refresh:
-            // - while running: refresh every ~2 steps
-            // - while idle: refresh every ~2 seconds (idle_time is ~30fps)
+            // - expanded: reasonably responsive
+            // - collapsed (pinned): keep alive but cheaper
             let step = steps.get();
             let running = is_running.get();
             let idle_time = brainviz_idle_time.get();
             if running {
-                if step % 2 != 0 {
+                let every: u64 = if expanded { 2 } else { 16 };
+                if every > 1 && step % every != 0 {
                     return;
                 }
             } else {
                 let bucket = (idle_time * 10.0) as u32; // ~10Hz buckets
+                let every: u32 = if expanded { 20 } else { 40 }; // ~2s vs ~4s
                 #[allow(clippy::manual_is_multiple_of)]
-                if bucket % 20 != 0 {
+                if bucket % every != 0 {
                     return;
                 }
             }
@@ -1877,17 +1961,30 @@ fn App() -> impl IntoView {
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
-            if analytics_panel.get() != AnalyticsPanel::BrainViz {
-                return;
-            }
-
+            let expanded = brainviz_is_expanded.get();
             let step = steps.get(); // Track for reactivity
             let running = is_running.get();
             let idle_time = brainviz_idle_time.get(); // Idle animation time
             let view_mode = brainviz_view_mode.get();
+
             let Some(canvas) = brain_viz_ref.get() else {
                 return;
             };
+
+            // Throttle render: keep pinned preview cheap.
+            if running {
+                let every: u64 = if expanded { 1 } else { 4 };
+                if every > 1 && step % every != 0 {
+                    return;
+                }
+            } else {
+                let bucket = (idle_time * 30.0) as u32; // ~30fps
+                let every: u32 = if expanded { 2 } else { 5 }; // ~15fps vs ~6fps
+                #[allow(clippy::manual_is_multiple_of)]
+                if bucket % every != 0 {
+                    return;
+                }
+            }
 
             let zoom = brainviz_zoom.get();
             let pan_x = brainviz_pan_x.get();
@@ -1911,7 +2008,30 @@ fn App() -> impl IntoView {
             if view_mode == "causal" {
                 // Render causal graph with same 3D sphere layout as substrate view
                 let causal = brainviz_causal_graph.get();
-                let opts = charts::CausalVizRenderOptions {
+
+                let node_count = causal.nodes.len();
+                let edge_count = causal.edges.len();
+                let mut degree: std::collections::HashMap<u32, usize> =
+                    std::collections::HashMap::new();
+                for e in &causal.edges {
+                    let from = e.from as u32;
+                    let to = e.to as u32;
+                    *degree.entry(from).or_insert(0) += 1;
+                    *degree.entry(to).or_insert(0) += 1;
+                }
+                let max_conn = degree.values().copied().max().unwrap_or(0);
+                let avg_conn = if node_count > 0 {
+                    (2.0 * (edge_count as f32)) / (node_count as f32)
+                } else {
+                    0.0
+                };
+                set_brainviz_display_nodes.set(node_count);
+                set_brainviz_display_edges.set(edge_count);
+                set_brainviz_display_avg_conn.set(avg_conn);
+                set_brainviz_display_max_conn.set(max_conn);
+                brainviz_degree_by_id.set_value(degree);
+
+                let opts_full = charts::CausalVizRenderOptions {
                     zoom,
                     pan_x,
                     pan_y,
@@ -1925,7 +2045,7 @@ fn App() -> impl IntoView {
                     &causal.nodes,
                     &causal.edges,
                     "#0a0f1a",
-                    opts,
+                    opts_full,
                 ) {
                     brainviz_causal_hit_nodes.set_value(hits);
                 }
@@ -1955,8 +2075,28 @@ fn App() -> impl IntoView {
                     edges
                 });
 
+                let node_count = points.len();
+                let edge_count = edges.len();
+                let mut degree: std::collections::HashMap<u32, usize> =
+                    std::collections::HashMap::new();
+                for (a, b, _w) in &edges {
+                    *degree.entry(*a).or_insert(0) += 1;
+                    *degree.entry(*b).or_insert(0) += 1;
+                }
+                let max_conn = degree.values().copied().max().unwrap_or(0);
+                let avg_conn = if node_count > 0 {
+                    (2.0 * (edge_count as f32)) / (node_count as f32)
+                } else {
+                    0.0
+                };
+                set_brainviz_display_nodes.set(node_count);
+                set_brainviz_display_edges.set(edge_count);
+                set_brainviz_display_avg_conn.set(avg_conn);
+                set_brainviz_display_max_conn.set(max_conn);
+                brainviz_degree_by_id.set_value(degree);
+
                 let is_learning = learning_enabled.get();
-                let opts = charts::BrainVizRenderOptions {
+                let opts_full = charts::BrainVizRenderOptions {
                     zoom,
                     pan_x,
                     pan_y,
@@ -1968,7 +2108,12 @@ fn App() -> impl IntoView {
                     rotation_x: rot_x,
                 };
                 if let Ok(hits) = charts::draw_brain_connectivity_sphere(
-                    &canvas, &points, &edges, rot_y, "#0a0f1a", opts,
+                    &canvas,
+                    &points,
+                    &edges,
+                    rot_y,
+                    "#0a0f1a",
+                    opts_full,
                 ) {
                     brainviz_hit_nodes.set_value(hits);
                 }
@@ -1992,118 +2137,34 @@ fn App() -> impl IntoView {
             return;
         }
         did_restore_stats.set_value(true);
-
+        // This hydrates the runtime + local charts/counters so refresh restores the current session.
         let kind = game_kind.get_untracked();
         (restore_stats_state)(kind);
         refresh_ui_from_runtime();
     });
 
-    // Settings: load/save reward shaping controls.
-    let did_load_settings = StoredValue::new(false);
-    Effect::new(move |_| {
-        if did_load_settings.get_value() {
-            return;
-        }
-        did_load_settings.set_value(true);
-
-        if let Some(s) = load_persisted_settings() {
-            set_reward_scale.set(s.reward_scale);
-            set_reward_bias.set(s.reward_bias);
-            set_learning_enabled.set(s.learning_enabled);
-            set_run_interval_ms.set(s.run_interval_ms.clamp(8, 500));
-            set_trial_period_ms.set(s.trial_period_ms.clamp(10, 60_000));
-            set_settings_advanced.set(s.settings_advanced);
-        }
-    });
-    Effect::new(move |_| {
-        let s = PersistedSettings {
-            reward_scale: reward_scale.get(),
-            reward_bias: reward_bias.get(),
-            learning_enabled: learning_enabled.get(),
-            run_interval_ms: run_interval_ms.get(),
-            trial_period_ms: trial_period_ms.get(),
-            settings_advanced: settings_advanced.get(),
-        };
-        save_persisted_settings(&s);
-    });
-
-    // Theme: load from localStorage and apply to <html data-theme=...>
-    let did_load_theme = StoredValue::new(false);
-    Effect::new(move |_| {
-        if did_load_theme.get_value() {
-            return;
-        }
-        did_load_theme.set_value(true);
-
-        if let Some(v) = local_storage_get_string(LOCALSTORAGE_THEME_KEY) {
-            if let Some(t) = Theme::from_attr(&v) {
-                set_theme.set(t);
-            }
-        }
-    });
-    Effect::new(move |_| {
-        let t = theme.get();
-        apply_theme_to_document(t);
-        local_storage_set_string(LOCALSTORAGE_THEME_KEY, t.as_attr());
-    });
-
     let training_health_bar_view = move || {
+        let rate = recent_rate.get().clamp(0.0, 1.0);
+        let pct = rate * 100.0;
+        let (label, color) = if rate >= 0.95 {
+            ("mastered", "#4ade80")
+        } else if rate >= 0.85 {
+            ("learned", "#7aa2ff")
+        } else if rate >= 0.70 {
+            ("improving", "#fbbf24")
+        } else {
+            ("training", "#fb7185")
+        };
         view! {
-            <div style="width: 100%; padding: 12px 14px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 12px;">
-                <div style="display: flex; gap: 10px; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-                    <span
-                        style=move || {
-                            let tone = learning_milestone_tone.get();
-                            let (bg, fg, border) = if tone == "mastered" {
-                                ("rgba(34, 197, 94, 0.18)", "#4ade80", "rgba(34, 197, 94, 0.35)")
-                            } else if tone == "learned" {
-                                ("rgba(34, 211, 238, 0.16)", "#22d3ee", "rgba(34, 211, 238, 0.32)")
-                            } else if tone == "learning" {
-                                ("rgba(122, 162, 255, 0.16)", "#7aa2ff", "rgba(122, 162, 255, 0.32)")
-                            } else if tone == "starting" {
-                                ("rgba(148, 163, 184, 0.16)", "#94a3b8", "rgba(148, 163, 184, 0.28)")
-                            } else {
-                                ("rgba(251, 191, 36, 0.14)", "#fbbf24", "rgba(251, 191, 36, 0.28)")
-                            };
-                            format!(
-                                "padding: 6px 10px; border-radius: 999px; background: {bg}; color: {fg}; border: 1px solid {border}; font-weight: 800; font-size: 0.75rem; letter-spacing: 0.4px;"
-                            )
-                        }
-                    >
-                        {move || learning_milestone.get()}
-                    </span>
-
-                    <span style="color: var(--muted); font-size: 0.8rem;">
-                        {move || format!("Accuracy (last 100): {:.0}%", recent_rate.get().clamp(0.0, 1.0) * 100.0)}
-                    </span>
-
-                    <span style="color: var(--muted); font-size: 0.8rem;">
-                        {move || format!("Trials: {}", trials.get())}
-                    </span>
-
-                    <span style="color: var(--muted); font-size: 0.8rem;">
-                        {move || format!("✓ {}  ✗ {}", correct_count.get(), incorrect_count.get())}
-                    </span>
+            <div style="margin-top: 10px;">
+                <div style="display:flex; align-items:center; justify-content: space-between; gap: 10px;">
+                    <div style="font-weight: 800; color: var(--text); font-size: 0.86rem;">"Training health"</div>
+                    <div style="font-family: var(--mono); color: var(--muted); font-size: 0.78rem;">{format!("{} • {:.0}%", label, pct)}</div>
                 </div>
-
-                <div style="margin-top: 10px; height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.20); overflow: hidden;">
-                    <div style=move || {
-                        let pct = recent_rate.get().clamp(0.0, 1.0);
-                        format!(
-                            "height: 100%; width: {:.1}%; background: linear-gradient(90deg, #22c55e, #7aa2ff);",
-                            pct * 100.0
-                        )
-                    }></div>
-                </div>
-
-                <div style="margin-top: 8px; color: var(--muted); font-size: 0.78rem;">
-                    {move || {
-                        if learning_enabled.get() {
-                            "Learning writes: ON".to_string()
-                        } else {
-                            "Learning writes: OFF (eval/demo)".to_string()
-                        }
-                    }}
+                <div style="margin-top: 6px; height: 10px; border-radius: 999px; border: 1px solid var(--border); background: color-mix(in oklab, var(--bg) 70%, transparent); overflow: hidden;">
+                    <div
+                        style=move || format!("height: 100%; width: {:.2}%; background: {};", pct, color)
+                    ></div>
                 </div>
             </div>
         }
@@ -2111,242 +2172,181 @@ fn App() -> impl IntoView {
 
     view! {
         <div class="app">
-            // Header
-            <header class="app-header">
-                <div class="app-header-left">
-                    <h1 class="brand">"🧠 Braine"</h1>
-                    <span class="subtle">{move || gpu_status.get()}</span>
-                </div>
-                <div class="app-header-right">
-                    <span class="status">{move || status.get()}</span>
-                    <Show when=move || is_running.get()>
-                        <span class="live-dot"></span>
-                    </Show>
-                    <button
-                        class="btn sm ghost"
-                        title=move || format!("Theme: {}", theme.get().label())
-                        on:click=move |_| set_theme.set(theme.get().toggle())
-                    >
-                        {move || theme.get().icon()}" "{move || theme.get().label()}
-                    </button>
-                </div>
-            </header>
+            <Topbar
+                sidebar_open=sidebar_open
+                set_sidebar_open=set_sidebar_open
+                gpu_status=gpu_status
+                status=status
+                is_running=is_running
+                theme=theme
+                set_theme=set_theme
+                open_docs=open_docs
+                open_analytics=open_analytics
+                open_settings=open_settings
+            />
 
-            <div class="toast-stack" aria-live="polite" aria-relevant="additions removals">
-                <For
-                    each=move || toasts.get()
-                    key=|t| t.id
-                    children=move |t| {
-                        let id = t.id;
-                        let class = match t.level {
-                            ToastLevel::Info => "toast info",
-                            ToastLevel::Success => "toast success",
-                            ToastLevel::Error => "toast error",
-                        };
-                        view! {
-                            <div class=class>
-                                <div style="flex: 1; white-space: pre-wrap;">{t.message}</div>
-                                <button
-                                    class="toast-close"
-                                    title="Dismiss"
-                                    on:click=move |_| toasts.update(|ts| ts.retain(|x| x.id != id))
-                                >
-                                    "×"
-                                </button>
-                            </div>
-                        }
-                    }
+            <ToastStack toasts=toasts />
+
+            <div class="content-split lab">
+                <Sidebar
+                    sidebar_open=sidebar_open
+                    set_sidebar_open=set_sidebar_open
+                    show_about_page=show_about_page
+                    set_show_about_page=set_show_about_page
+                    game_kind=game_kind
+                    set_game=set_game
+                    open_docs=open_docs
                 />
-            </div>
 
-            <Show when=move || system_error.get().is_some()>
-                <div style="margin-bottom: 10px; padding: 10px 12px; background: #ff3b3018; border: 1px solid #ff3b3055; border-radius: 10px;">
-                    <div style="display:flex; gap: 10px; align-items: center; justify-content: space-between;">
-                        <div style="color: #ffb4ad; font-weight: 600;">"Error"</div>
-                        <button style="padding: 6px 10px;" on:click=move |_| set_system_error.set(None)>
-                            "Dismiss"
-                        </button>
-                    </div>
-                    <div style="margin-top: 6px; color: var(--text); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px;">
-                        {move || system_error.get().unwrap_or_default()}
-                    </div>
-                </div>
-            </Show>
-
-            // Game tabs navigation (with About as first tab on left)
-            <nav class="app-nav">
-                <button
-                    class=move || if show_about_page.get() { "tab active" } else { "tab" }
-                    on:click=move |_| set_show_about_page.set(true)
-                >
-                    "ℹ️ About"
-                </button>
-                {GameKind::all().iter().map(|&kind| {
-                    let set_game = Arc::clone(&set_game);
-                    view! {
-                        <button
-                            class=move || if !show_about_page.get() && game_kind.get() == kind { "tab active" } else { "tab" }
-                            on:click=move |_| {
-                                set_show_about_page.set(false);
-                                set_game(kind);
-                            }
-                        >
-                            {kind.display_name()}
-                        </button>
-                    }
-                }).collect_view()}
-            </nav>
-
-            // Main content area
-            <div class="content-split">
-                // Game area (left) - shows About page or game controls/canvas
                 <div class="game-area">
+                    <SystemErrorBanner system_error=system_error set_system_error=set_system_error />
+
                     <Show when=move || show_about_page.get()>
-                        // Full-width About page with sub-tabs
-                        <div class="about">
-                            // Header
-                            <div class="about-header">
-                                <div style="font-size: 2.5rem;">"🧠"</div>
-                                <div>
-                                    <h1 style="margin: 0; font-size: 1.4rem; font-weight: 700; color: var(--accent);">"Braine"</h1>
-                                    <p style="margin: 2px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Closed-loop learning substrate • v"{VERSION_BRAINE}</p>
-                                </div>
-                                <div style="flex: 1;"></div>
-                                <button class="btn primary" style="padding: 8px 16px;" on:click=move |_| set_show_about_page.set(false)>"🎮 Start Playing"</button>
-                            </div>
+                        <div class="stack">
+                            <div class="card">
+                                <h2 class="card-title">"Docs"</h2>
+                                <p class="subtle">"How the substrate works, plus protocol + integration notes."</p>
 
-                            // Sub-tab navigation
-                            <div style="display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap;">
-                                {AboutSubTab::all().iter().map(|&tab| {
-                                    view! {
-                                        <button
-                                            style=move || if about_sub_tab.get() == tab {
-                                                "padding: 8px 14px; background: var(--accent); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600;"
-                                            } else {
-                                                "padding: 8px 14px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 0.85rem;"
-                                            }
-                                            on:click=move |_| set_about_sub_tab.set(tab)
-                                        >
-                                            {tab.label()}
-                                        </button>
-                                    }
-                                }).collect_view()}
-                            </div>
-
-                            // Sub-tab content
-                            <div style="display: flex; flex-direction: column; gap: 16px;">
-                                // Overview tab
-                                <Show when=move || about_sub_tab.get() == AboutSubTab::Overview>
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"What is Braine?"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Braine is a "<strong>"closed-loop learning substrate"</strong>" — a continuously-running dynamical system with local plasticity and scalar reward. Unlike LLMs, it:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                <li>"Uses no backpropagation or gradients"</li>
-                                                <li>"Learns online from experience"</li>
-                                                <li>"Has bounded memory (forgetting + pruning)"</li>
-                                                <li>"Runs on edge devices"</li>
-                                            </ul>
-
-                                            <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                                <span style="color: var(--muted); font-size: 0.85rem;">"Looking for the LLM boundary docs?"</span>
-                                                <button class="btn sm" on:click=move |_| set_about_sub_tab.set(AboutSubTab::LlmIntegration)>
-                                                    "LLM Integration →"
+                                <div class="subtabs" style="margin-top: 12px;">
+                                    {AboutSubTab::all()
+                                        .iter()
+                                        .map(|&tab| {
+                                            view! {
+                                                <button
+                                                    class=move || {
+                                                        if about_sub_tab.get() == tab {
+                                                            "subtab active"
+                                                        } else {
+                                                            "subtab"
+                                                        }
+                                                    }
+                                                    on:click=move |_| set_about_sub_tab.set(tab)
+                                                >
+                                                    {tab.label()}
                                                 </button>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </div>
+
+                                <div class="stack" style="margin-top: 14px;">
+                                    // Overview tab
+                                    <Show when=move || about_sub_tab.get() == AboutSubTab::Overview>
+                                        <div class="docs-overview-top">
+                                            <div style=STYLE_CARD>
+                                                <h3 style="margin: 0 0 10px 0; font-size: 1.1rem; color: var(--accent);">"Closed-loop learning substrate"</h3>
+                                                <p style="margin: 0; color: var(--text); font-size: 0.92rem; line-height: 1.7;">
+                                                    "Braine is a continuously running dynamical system with local plasticity and a scalar reward (neuromodulator). "
+                                                    "It is not an LLM: there is no backprop, no global loss, and no token prediction objective."
+                                                </p>
+                                            </div>
+                                            <div class="docs-overview-stack">
+                                                <div style=STYLE_CARD>
+                                                    <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"What to do"</h3>
+                                                    <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                        <li>"Pick a game (left sidebar)."</li>
+                                                        <li>"Press Run; watch last-100 accuracy rise."</li>
+                                                        <li>"Tune ε (exploration), α (meaning), and trial ms."</li>
+                                                        <li>"Use BrainViz (bottom of dashboard) to inspect structure."</li>
+                                                    </ol>
+                                                </div>
+                                                <div style=STYLE_CARD>
+                                                    <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Key idea"</h3>
+                                                    <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                        "Learning modifies couplings and attractors; inference reuses the learned dynamics. "
+                                                        "Persistence and telemetry are slow side-effects and should never block the step loop."
+                                                    </p>
+                                                </div>
                                             </div>
                                         </div>
 
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Version Info"</h3>
-                                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.9rem;">
-                                                <span style="color: var(--muted);">"Braine Core:"</span>
-                                                <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE}</span>
-                                                <span style="color: var(--muted);">"Brain Image (BBI):"</span>
-                                                <span style="color: var(--text); font-weight: 600;">{format!("v{}", VERSION_BBI_FORMAT)}</span>
-                                                <span style="color: var(--muted);">"Braine Web:"</span>
-                                                <span style="color: var(--text); font-weight: 600;">{VERSION_BRAINE_WEB}</span>
-                                            </div>
-                                        </div>
-
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Quick Start"</h3>
-                                            <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.8;">
-                                                <li>"Select a game tab above (e.g., Spot, Bandit)"</li>
-                                                <li>"Click "<strong>"▶ Run"</strong>" to start the learning loop"</li>
-                                                <li>"Watch the Stats and Analytics panels on the right"</li>
-                                                <li>"Observe accuracy climb as the brain learns"</li>
-                                            </ol>
-                                        </div>
-
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Key Principles"</h3>
-                                            <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.9rem;">
-                                                <div><strong style="color: var(--text);">"Learning modifies state"</strong><span style="color: var(--muted);">" — plasticity + reward updates couplings"</span></div>
-                                                <div><strong style="color: var(--text);">"Inference uses state"</strong><span style="color: var(--muted);">" — actions emerge from dynamics"</span></div>
-                                                <div><strong style="color: var(--text);">"Closed loop"</strong><span style="color: var(--muted);">" — stimulus → action → reward → repeat"</span></div>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    // Architecture diagram
-                                    <div style=STYLE_CARD>
-                                        <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"System Architecture"</h3>
-                                        <div style="display: flex; justify-content: center; padding: 16px 0;">
-                                            <svg viewBox="0 0 600 200" style="width: 100%; max-width: 600px; height: auto;">
-                                                // Frame box
-                                                <rect x="10" y="30" width="150" height="140" rx="8" fill="none" stroke="var(--border)" stroke-width="2"/>
-                                                <text x="85" y="22" fill="var(--muted)" font-size="12" text-anchor="middle">"Frame"</text>
-                                                <text x="85" y="60" fill="var(--text)" font-size="11" text-anchor="middle">"Sensors"</text>
-                                                <text x="85" y="100" fill="var(--text)" font-size="11" text-anchor="middle">"Stimulus Encoder"</text>
-                                                <text x="85" y="140" fill="var(--text)" font-size="11" text-anchor="middle">"Actuators"</text>
-
-                                                // Brain box
-                                                <rect x="220" y="30" width="200" height="140" rx="8" fill="none" stroke="var(--accent)" stroke-width="2"/>
-                                                <text x="320" y="22" fill="var(--accent)" font-size="12" text-anchor="middle" font-weight="bold">"Braine"</text>
-                                                <text x="320" y="55" fill="var(--text)" font-size="11" text-anchor="middle">"Wave Dynamics"</text>
-                                                <text x="320" y="80" fill="var(--text)" font-size="11" text-anchor="middle">"Local Plasticity"</text>
-                                                <text x="320" y="105" fill="var(--text)" font-size="11" text-anchor="middle">"Causality Memory"</text>
-                                                <text x="320" y="130" fill="var(--text)" font-size="11" text-anchor="middle">"Action Readout"</text>
-
-                                                // Neuromodulator
-                                                <rect x="480" y="60" width="110" height="60" rx="8" fill="none" stroke="#4ade80" stroke-width="2"/>
-                                                <text x="535" y="85" fill="#4ade80" font-size="11" text-anchor="middle">"Neuromodulator"</text>
-                                                <text x="535" y="102" fill="var(--muted)" font-size="10" text-anchor="middle">"(reward signal)"</text>
-
-                                                // Arrows
-                                                <line x1="160" y1="70" x2="220" y2="70" stroke="var(--text)" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-                                                <line x1="420" y1="100" x2="480" y2="90" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-                                                <line x1="220" y1="130" x2="160" y2="130" stroke="var(--text)" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-
-                                                // Feedback loop
-                                                <path d="M535 120 L535 170 L320 170 L320 170" stroke="var(--accent)" stroke-width="1.5" fill="none" stroke-dasharray="4,2" marker-end="url(#arrowhead)"/>
-
+                                        <div class="docs-diagram-wrap docs-wide">
+                                            <svg class="docs-diagram" viewBox="0 0 920 320">
                                                 <defs>
-                                                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                                                        <polygon points="0 0, 10 3.5, 0 7" fill="var(--text)"/>
+                                                    <marker id="overview-arrow-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text)" />
+                                                    </marker>
+                                                    <marker id="overview-arrow-reward" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#4ade80" />
+                                                    </marker>
+                                                    <marker id="overview-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" />
                                                     </marker>
                                                 </defs>
+
+                                                // Frame
+                                                <rect x="40" y="60" width="230" height="170" rx="16" fill="rgba(122, 162, 255, 0.08)" stroke="var(--accent)" stroke-width="1.5"/>
+                                                <text x="155" y="92" fill="var(--text)" font-size="12" text-anchor="middle" font-weight="700">"Frame / environment"</text>
+                                                <text x="155" y="114" fill="var(--muted)" font-size="10" text-anchor="middle">"stimuli + actions"</text>
+                                                <rect x="70" y="132" width="170" height="36" rx="10" fill="rgba(122, 162, 255, 0.06)" stroke="rgba(122, 162, 255, 0.25)" stroke-width="1"/>
+                                                <text x="155" y="155" fill="var(--text)" font-size="10" text-anchor="middle">"Stimuli symbols"</text>
+                                                <rect x="70" y="176" width="170" height="36" rx="10" fill="rgba(122, 162, 255, 0.06)" stroke="rgba(122, 162, 255, 0.25)" stroke-width="1"/>
+                                                <text x="155" y="199" fill="var(--text)" font-size="10" text-anchor="middle">"Action symbols"</text>
+
+                                                // Substrate
+                                                <rect x="300" y="70" width="360" height="150" rx="18" fill="rgba(10, 15, 26, 0.35)" stroke="var(--border)" stroke-width="1.5"/>
+                                                <text x="480" y="100" fill="var(--text)" font-size="12" text-anchor="middle" font-weight="800">"Brain substrate"</text>
+                                                <text x="480" y="122" fill="var(--muted)" font-size="10" text-anchor="middle">"sparse recurrent dynamics + local learning"</text>
+
+                                                // Reward
+                                                <rect x="360" y="232" width="240" height="52" rx="14" fill="rgba(74, 222, 128, 0.08)" stroke="#4ade80" stroke-width="1.5"/>
+                                                <text x="480" y="262" fill="var(--text)" font-size="11" text-anchor="middle" font-weight="700">"Reward / neuromodulator"</text>
+
+                                                // Persistence
+                                                <rect x="690" y="70" width="210" height="70" rx="12" fill="rgba(244, 114, 182, 0.08)" stroke="#f472b6" stroke-width="1.5"/>
+                                                <text x="795" y="96" fill="var(--text)" font-size="11" text-anchor="middle" font-weight="700">"Persistence"</text>
+                                                <text x="795" y="116" fill="var(--muted)" font-size="10" text-anchor="middle">"brain image (BBI)"</text>
+
+                                                // Telemetry / viz
+                                                <rect x="690" y="162" width="210" height="70" rx="12" fill="rgba(244, 114, 182, 0.08)" stroke="#f472b6" stroke-width="1.5"/>
+                                                <text x="795" y="188" fill="var(--text)" font-size="11" text-anchor="middle" font-weight="700">"Telemetry / viz"</text>
+                                                <text x="795" y="208" fill="var(--muted)" font-size="10" text-anchor="middle">"stats • BrainViz • analytics"</text>
+
+                                                // Fast loop arrows
+                                                <line x1="270" y1="150" x2="300" y2="150" stroke="var(--text)" stroke-width="1.7" marker-end="url(#overview-arrow-text)"/>
+                                                <text x="285" y="139" fill="var(--muted)" font-size="9" text-anchor="middle">"stimuli"</text>
+                                                <line x1="300" y1="186" x2="270" y2="186" stroke="var(--text)" stroke-width="1.7" marker-end="url(#overview-arrow-text)"/>
+                                                <text x="285" y="175" fill="var(--muted)" font-size="9" text-anchor="middle">"actions"</text>
+
+                                                // Reward gating
+                                                <line x1="270" y1="216" x2="360" y2="252" stroke="#4ade80" stroke-width="1.9" marker-end="url(#overview-arrow-reward)"/>
+                                                <text x="320" y="236" fill="#4ade80" font-size="9" text-anchor="middle">"neuromodulates"</text>
+
+                                                // Slow paths
+                                                <line x1="660" y1="105" x2="690" y2="105" stroke="var(--accent)" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#overview-arrow-accent)"/>
+                                                <text x="675" y="95" fill="var(--muted)" font-size="9" text-anchor="middle">"save/load"</text>
+                                                <line x1="660" y1="197" x2="690" y2="197" stroke="var(--border)" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#overview-arrow-text)"/>
+
+                                                // Legend
+                                                <line x1="120" y1="300" x2="180" y2="300" stroke="var(--text)" stroke-width="1.7" marker-end="url(#overview-arrow-text)"/>
+                                                <text x="190" y="304" fill="var(--muted)" font-size="10">"fast step loop"</text>
+                                                <line x1="320" y1="300" x2="380" y2="300" stroke="#4ade80" stroke-width="1.9" marker-end="url(#overview-arrow-reward)"/>
+                                                <text x="390" y="304" fill="var(--muted)" font-size="10">"reward / neuromodulation"</text>
+                                                <line x1="600" y1="300" x2="660" y2="300" stroke="var(--accent)" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#overview-arrow-accent)"/>
+                                                <text x="670" y="304" fill="var(--muted)" font-size="10">"slow side-effects"</text>
                                             </svg>
                                         </div>
-                                    </div>
 
-                                    // Research Disclaimer
-                                    <div style="padding: 14px; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 12px;">
-                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: #fbbf24;">"⚠️ Research Disclaimer"</h3>
-                                        <p style="margin: 0; color: var(--text); font-size: 0.85rem; line-height: 1.7;">
-                                            "This system was developed with the assistance of Large Language Models (LLMs) under human guidance. "
-                                            "It is provided as a "<strong>"research demonstration"</strong>" to explore biologically-inspired learning substrates. "
-                                            "Braine is "<strong>"not production-ready"</strong>" and should not be used for real-world deployment, safety-critical applications, "
-                                            "or any scenario requiring reliability guarantees. Use at your own discretion for educational and experimental purposes only."
+                                        <p class="docs-diagram-caption">
+                                            "The substrate runs continuously: stimuli excite dynamics, actions are read out, and a scalar reward (neuromodulator) gates local learning. Persistence and telemetry are "
+                                            <strong>"slow paths"</strong>" that should not block the realtime step loop."
                                         </p>
-                                    </div>
-                                </Show>
+
+                                        // Research Disclaimer
+                                        <div style="padding: 14px; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 12px;">
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: #fbbf24;">"⚠️ Research Disclaimer"</h3>
+                                            <p style="margin: 0; color: var(--text); font-size: 0.85rem; line-height: 1.7;">
+                                                "This system was developed with the assistance of Large Language Models (LLMs) under human guidance. "
+                                                "It is provided as a "<strong>"research demonstration"</strong>" to explore biologically-inspired learning substrates. "
+                                                "Braine is "<strong>"not production-ready"</strong>" and should not be used for real-world deployment, safety-critical applications, "
+                                                "or any scenario requiring reliability guarantees. Use at your own discretion for educational and experimental purposes only."
+                                            </p>
+                                        </div>
+                                    </Show>
 
                                 // Dynamics tab
                                 <Show when=move || about_sub_tab.get() == AboutSubTab::Dynamics>
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Unit State"</h3>
                                             <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
@@ -2421,7 +2421,7 @@ fn App() -> impl IntoView {
 
                                 // Learning tab
                                 <Show when=move || about_sub_tab.get() == AboutSubTab::Learning>
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Three-Factor Hebbian Learning"</h3>
                                             <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
@@ -2530,7 +2530,7 @@ fn App() -> impl IntoView {
 
                                 // Memory tab
                                 <Show when=move || about_sub_tab.get() == AboutSubTab::Memory>
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Causal Memory"</h3>
                                             <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
@@ -2610,7 +2610,7 @@ fn App() -> impl IntoView {
 
                                 // Architecture tab
                                 <Show when=move || about_sub_tab.get() == AboutSubTab::Architecture>
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Brain Image Format (BBI)"</h3>
                                             <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
@@ -2779,7 +2779,7 @@ fn App() -> impl IntoView {
 
                                 // Applications sub-tab - real-world use cases
                                 <Show when=move || about_sub_tab.get() == AboutSubTab::Applications>
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🤖 Embodied Robotics"</h3>
                                             <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
@@ -2976,7 +2976,7 @@ fn App() -> impl IntoView {
                                         </p>
                                     </div>
 
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Contract"</h3>
                                             <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
@@ -3002,7 +3002,7 @@ fn App() -> impl IntoView {
                                         <pre style="margin: 0; white-space: pre-wrap; background: var(--bg); padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.6; color: var(--text);">{ABOUT_LLM_DATAFLOW}</pre>
                                     </div>
 
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Sample: AdvisorContext"</h3>
                                             <div style="color: var(--muted); font-size: 0.85rem; line-height: 1.6; margin-bottom: 8px;">
@@ -3038,7 +3038,7 @@ fn App() -> impl IntoView {
                                         </p>
                                     </div>
 
-                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px;">
+                                    <div class="docs-masonry">
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"General"</h3>
                                             <div style="font-family: monospace; font-size: 0.82rem; line-height: 1.7; background: var(--bg); padding: 12px; border-radius: 8px;">
@@ -3112,6 +3112,7 @@ fn App() -> impl IntoView {
                                 </Show>
                             </div>
                         </div>
+                    </div>
                     </Show>
 
                     <Show when=move || !show_about_page.get()>
@@ -3181,266 +3182,368 @@ fn App() -> impl IntoView {
                     <div class="canvas-container">
                         // Spot game - Enhanced with visual arena
                         <Show when=move || game_kind.get() == GameKind::Spot>
-                            <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; max-width: 400px;">
-                                <div style="text-align: center; margin-bottom: 8px;">
-                                    <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"Spot Discrimination"</h2>
-                                    <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Learn to respond LEFT or RIGHT based on stimulus"</p>
+                            <div class="game-page">
+                                <div class="game-header">
+                                    <h2>"Spot Discrimination"</h2>
+                                    <p>"Learn to respond LEFT or RIGHT based on stimulus"</p>
                                 </div>
 
                                 {training_health_bar_view()}
 
-                                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
-                                    <button class="btn sm" on:click=move |_| {
-                                        set_trial_period_ms.set(450);
-                                        set_exploration_eps.set(0.06);
-                                        set_meaning_alpha.set(8.0);
-                                    }>
-                                        "Easy"
-                                    </button>
-                                    <button class="btn sm" on:click=move |_| {
-                                        set_trial_period_ms.set(300);
-                                        set_exploration_eps.set(0.08);
-                                        set_meaning_alpha.set(6.0);
-                                    }>
-                                        "Normal"
-                                    </button>
-                                    <button class="btn sm" on:click=move |_| {
-                                        set_trial_period_ms.set(160);
-                                        set_exploration_eps.set(0.12);
-                                        set_meaning_alpha.set(4.5);
-                                    }>
-                                        "Hard"
-                                    </button>
-                                </div>
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Arena"</h3>
+                                            <div class="arena-grid" style="margin-top: 10px;">
+                                                <div style=move || {
+                                                    let active = matches!(spot_is_left.get(), Some(true));
+                                                    format!(
+                                                        "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                                        if active { "var(--accent)" } else { "var(--border)" },
+                                                        if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                                    )
+                                                }>
+                                                    <span style="font-size: 3rem;">"⬅️"</span>
+                                                    <span style="margin-top: 8px; font-size: 0.9rem; font-weight: 800; color: var(--text);">"LEFT"</span>
+                                                    <span style="font-size: 0.75rem; color: var(--muted);">"Press A"</span>
+                                                </div>
+                                                <div style=move || {
+                                                    let active = matches!(spot_is_left.get(), Some(false));
+                                                    format!(
+                                                        "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                                        if active { "var(--accent)" } else { "var(--border)" },
+                                                        if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                                    )
+                                                }>
+                                                    <span style="font-size: 3rem;">"➡️"</span>
+                                                    <span style="margin-top: 8px; font-size: 0.9rem; font-weight: 800; color: var(--text);">"RIGHT"</span>
+                                                    <span style="font-size: 0.75rem; color: var(--muted);">"Press D"</span>
+                                                </div>
+                                            </div>
+                                        </div>
 
-                                // Visual arena
-                                <div class="arena-grid">
-                                    <div style=move || {
-                                        let active = matches!(spot_is_left.get(), Some(true));
-                                        format!(
-                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};",
-                                            if active { "var(--accent)" } else { "var(--border)" },
-                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
-                                        )
-                                    }>
-                                        <span style="font-size: 3rem;">"⬅️"</span>
-                                        <span style="margin-top: 8px; font-size: 0.9rem; font-weight: 600; color: var(--text);">"LEFT"</span>
-                                        <span style="font-size: 0.75rem; color: var(--muted);">"Press A"</span>
+                                        <div class="card">
+                                            <h3 class="card-title">"Last Decision"</h3>
+                                            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                                                <span class="subtle">"Braine chose:"</span>
+                                                <span style="font-size: 1.1rem; font-weight: 800; color: var(--accent);">
+                                                    {move || {
+                                                        let a = last_action.get();
+                                                        if a.is_empty() { "—".to_string() } else { a.to_uppercase() }
+                                                    }}
+                                                </span>
+                                                <span style=move || format!(
+                                                    "padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 800; background: {}; color: #fff;",
+                                                    if last_reward.get() > 0.0 { "#22c55e" } else if last_reward.get() < 0.0 { "#ef4444" } else { "#64748b" }
+                                                )>
+                                                    {move || if last_reward.get() > 0.0 { "✓ Correct" } else if last_reward.get() < 0.0 { "✗ Wrong" } else { "—" }}
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div style=move || {
-                                        let active = matches!(spot_is_left.get(), Some(false));
-                                        format!(
-                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; border-radius: 12px; border: 2px solid {}; background: {};",
-                                            if active { "var(--accent)" } else { "var(--border)" },
-                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
-                                        )
-                                    }>
-                                        <span style="font-size: 3rem;">"➡️"</span>
-                                        <span style="margin-top: 8px; font-size: 0.9rem; font-weight: 600; color: var(--text);">"RIGHT"</span>
-                                        <span style="font-size: 0.75rem; color: var(--muted);">"Press D"</span>
+
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Presets"</h3>
+                                            <div class="subtle">"Tune cadence + exploration for faster learning."</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_trial_period_ms.set(450);
+                                                    set_exploration_eps.set(0.06);
+                                                    set_meaning_alpha.set(8.0);
+                                                }>
+                                                    "Easy"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_trial_period_ms.set(300);
+                                                    set_exploration_eps.set(0.08);
+                                                    set_meaning_alpha.set(6.0);
+                                                }>
+                                                    "Normal"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_trial_period_ms.set(160);
+                                                    set_exploration_eps.set(0.12);
+                                                    set_meaning_alpha.set(4.5);
+                                                }>
+                                                    "Hard"
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::Spot.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"What The Knobs Mean"</h3>
+                                            <pre class="pre">{GameKind::Spot.inputs_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                {move || format!(
+                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    trial_period_ms.get(),
+                                                    exploration_eps.get(),
+                                                    meaning_alpha.get()
+                                                )}
+                                            </div>
+                                        </div>
                                     </div>
-                                </div>
-                                // Response indicator
-                                <div style="display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: rgba(0,0,0,0.2); border-radius: 8px;">
-                                    <span style="color: var(--muted); font-size: 0.85rem;">"Braine chose:"</span>
-                                    <span style="font-size: 1.1rem; font-weight: 600; color: var(--accent);">
-                                        {move || { let a = last_action.get(); if a.is_empty() { "—".to_string() } else { a.to_uppercase() } }}
-                                    </span>
-                                    <span style=move || format!("padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; background: {}; color: #fff;",
-                                        if last_reward.get() > 0.0 { "#22c55e" } else if last_reward.get() < 0.0 { "#ef4444" } else { "#64748b" })>
-                                        {move || if last_reward.get() > 0.0 { "✓ Correct" } else if last_reward.get() < 0.0 { "✗ Wrong" } else { "—" }}
-                                    </span>
                                 </div>
                             </div>
                         </Show>
 
                         // Bandit game - Enhanced with arm visualization
                         <Show when=move || game_kind.get() == GameKind::Bandit>
-                            <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; max-width: 420px;">
-                                <div style="text-align: center; margin-bottom: 8px;">
-                                    <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"🎰 Two-Armed Bandit"</h2>
-                                    <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Explore vs exploit: learn which arm pays better"</p>
+                            <div class="game-page">
+                                <div class="game-header">
+                                    <h2>"🎰 Two-Armed Bandit"</h2>
+                                    <p>"Explore vs exploit: learn which arm pays better"</p>
                                 </div>
 
                                 {training_health_bar_view()}
 
-                                <div style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
-                                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
-                                        <div style="color: var(--muted); font-size: 0.8rem;">
-                                            "Payoffs"
-                                            <div style="margin-top: 4px; color: var(--text); font-weight: 800;">
-                                                {move || format!("P(left)={:.2}  P(right)={:.2}", bandit_prob_left.get(), bandit_prob_right.get())}
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Arms"</h3>
+                                            <div class="arena-grid" style="gap: 16px; margin-top: 10px;">
+                                                <div style=move || format!(
+                                                    "display: flex; flex-direction: column; align-items: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {}; transition: all 0.2s;",
+                                                    if last_action.get() == "left" { "#fbbf24" } else { "var(--border)" },
+                                                    if last_action.get() == "left" { "rgba(251, 191, 36, 0.1)" } else { "rgba(0,0,0,0.2)" }
+                                                )>
+                                                    <div style="font-size: 3rem; margin-bottom: 8px;">"🎰"</div>
+                                                    <span style="font-size: 1rem; font-weight: 800; color: var(--text);">"ARM A"</span>
+                                                    <span style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">"Press A"</span>
+                                                </div>
+                                                <div style=move || format!(
+                                                    "display: flex; flex-direction: column; align-items: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {}; transition: all 0.2s;",
+                                                    if last_action.get() == "right" { "#fbbf24" } else { "var(--border)" },
+                                                    if last_action.get() == "right" { "rgba(251, 191, 36, 0.1)" } else { "rgba(0,0,0,0.2)" }
+                                                )>
+                                                    <div style="font-size: 3rem; margin-bottom: 8px;">"🎰"</div>
+                                                    <span style="font-size: 1rem; font-weight: 800; color: var(--text);">"ARM B"</span>
+                                                    <span style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">"Press D"</span>
+                                                </div>
                                             </div>
                                         </div>
-                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                            <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.90, 0.10)>
-                                                "Easy"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.80, 0.20)>
-                                                "Normal"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.60, 0.40)>
-                                                "Hard"
-                                            </button>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward"</h3>
+                                            <div style=move || format!(
+                                                "display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 16px; border-radius: 12px; background: {};",
+                                                if last_reward.get() > 0.0 { "rgba(34, 197, 94, 0.2)" } else if last_reward.get() < 0.0 { "rgba(239, 68, 68, 0.2)" } else { "rgba(0,0,0,0.2)" }
+                                            )>
+                                                <span style=move || format!(
+                                                    "font-size: 1.5rem; font-weight: 900; color: {};",
+                                                    if last_reward.get() > 0.0 { "#4ade80" } else if last_reward.get() < 0.0 { "#f87171" } else { "var(--muted)" }
+                                                )>
+                                                    {move || format!("{:+.1}", last_reward.get())}
+                                                </span>
+                                                <span class="subtle">"last reward"</span>
+                                            </div>
                                         </div>
                                     </div>
 
-                                    <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
-                                        <label class="label" style="min-width: 160px;">
-                                            <span title="Probability that choosing LEFT yields +1 (otherwise -1).">"P(left)"</span>
-                                            <input
-                                                type="number"
-                                                min="0"
-                                                max="1"
-                                                step="0.05"
-                                                class="input compact"
-                                                prop:value=move || format!("{:.2}", bandit_prob_left.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(x) = event_target_value(&ev).parse::<f32>() {
-                                                        do_bandit_set_probs(x, bandit_prob_right.get_untracked());
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <label class="label" style="min-width: 160px;">
-                                            <span title="Probability that choosing RIGHT yields +1 (otherwise -1).">"P(right)"</span>
-                                            <input
-                                                type="number"
-                                                min="0"
-                                                max="1"
-                                                step="0.05"
-                                                class="input compact"
-                                                prop:value=move || format!("{:.2}", bandit_prob_right.get())
-                                                on:input=move |ev| {
-                                                    if let Ok(x) = event_target_value(&ev).parse::<f32>() {
-                                                        do_bandit_set_probs(bandit_prob_left.get_untracked(), x);
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                    </div>
-                                </div>
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Probabilities"</h3>
+                                            <div class="subtle">{move || format!("P(left)={:.2}  P(right)={:.2}", bandit_prob_left.get(), bandit_prob_right.get())}</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.90, 0.10)>
+                                                    "Easy"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.80, 0.20)>
+                                                    "Normal"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.60, 0.40)>
+                                                    "Hard"
+                                                </button>
+                                            </div>
+                                            <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap;">
+                                                <label class="label" style="min-width: 160px;">
+                                                    <span title="Probability that choosing LEFT yields +1 (otherwise -1).">"P(left)"</span>
+                                                    <input
+                                                        type="number"
+                                                        min="0"
+                                                        max="1"
+                                                        step="0.05"
+                                                        class="input compact"
+                                                        prop:value=move || format!("{:.2}", bandit_prob_left.get())
+                                                        on:input=move |ev| {
+                                                            if let Ok(x) = event_target_value(&ev).parse::<f32>() {
+                                                                do_bandit_set_probs(x, bandit_prob_right.get_untracked());
+                                                            }
+                                                        }
+                                                    />
+                                                </label>
+                                                <label class="label" style="min-width: 160px;">
+                                                    <span title="Probability that choosing RIGHT yields +1 (otherwise -1).">"P(right)"</span>
+                                                    <input
+                                                        type="number"
+                                                        min="0"
+                                                        max="1"
+                                                        step="0.05"
+                                                        class="input compact"
+                                                        prop:value=move || format!("{:.2}", bandit_prob_right.get())
+                                                        on:input=move |ev| {
+                                                            if let Ok(x) = event_target_value(&ev).parse::<f32>() {
+                                                                do_bandit_set_probs(bandit_prob_left.get_untracked(), x);
+                                                            }
+                                                        }
+                                                    />
+                                                </label>
+                                            </div>
+                                        </div>
 
-                                // Slot machine arms
-                                <div class="arena-grid" style="gap: 16px;">
-                                    <div style=move || format!("display: flex; flex-direction: column; align-items: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {}; transition: all 0.2s;",
-                                        if last_action.get() == "left" { "#fbbf24" } else { "var(--border)" },
-                                        if last_action.get() == "left" { "rgba(251, 191, 36, 0.1)" } else { "rgba(0,0,0,0.2)" })>
-                                        <div style="font-size: 3rem; margin-bottom: 8px;">"🎰"</div>
-                                        <span style="font-size: 1rem; font-weight: 700; color: var(--text);">"ARM A"</span>
-                                        <span style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">"Press A"</span>
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::Bandit.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::Bandit.inputs_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                {move || format!(
+                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    trial_period_ms.get(),
+                                                    exploration_eps.get(),
+                                                    meaning_alpha.get()
+                                                )}
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div style=move || format!("display: flex; flex-direction: column; align-items: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {}; transition: all 0.2s;",
-                                        if last_action.get() == "right" { "#fbbf24" } else { "var(--border)" },
-                                        if last_action.get() == "right" { "rgba(251, 191, 36, 0.1)" } else { "rgba(0,0,0,0.2)" })>
-                                        <div style="font-size: 3rem; margin-bottom: 8px;">"🎰"</div>
-                                        <span style="font-size: 1rem; font-weight: 700; color: var(--text);">"ARM B"</span>
-                                        <span style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">"Press D"</span>
-                                    </div>
-                                </div>
-                                // Reward flash
-                                <div style=move || format!("display: flex; align-items: center; justify-content: center; gap: 8px; padding: 16px 24px; border-radius: 8px; background: {}; min-width: 180px;",
-                                    if last_reward.get() > 0.0 { "rgba(34, 197, 94, 0.2)" } else if last_reward.get() < 0.0 { "rgba(239, 68, 68, 0.2)" } else { "rgba(0,0,0,0.2)" })>
-                                    <span style=move || format!("font-size: 1.5rem; font-weight: 700; color: {};",
-                                        if last_reward.get() > 0.0 { "#4ade80" } else if last_reward.get() < 0.0 { "#f87171" } else { "var(--muted)" })>
-                                        {move || format!("{:+.1}", last_reward.get())}
-                                    </span>
-                                    <span style="color: var(--muted); font-size: 0.85rem;">"reward"</span>
                                 </div>
                             </div>
                         </Show>
 
                         // Spot Reversal - Enhanced with context indicator
                         <Show when=move || game_kind.get() == GameKind::SpotReversal>
-                            <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; max-width: 420px;">
-                                <div style="text-align: center; margin-bottom: 8px;">
-                                    <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"Spot Reversal"</h2>
-                                    <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Rules flip periodically; context bit helps detect reversals"</p>
+                            <div class="game-page">
+                                <div class="game-header">
+                                    <h2>"Spot Reversal"</h2>
+                                    <p>"Rules flip periodically; context bit helps detect reversals"</p>
                                 </div>
 
                                 {training_health_bar_view()}
 
-                                <div style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
-                                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
-                                        <div style="color: var(--muted); font-size: 0.8rem;">
-                                            "Flip timing"
-                                            <div style="margin-top: 4px; color: var(--text); font-weight: 800;">
-                                                {move || format!("flip_after_trials={}", reversal_flip_after.get())}
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Current Rule"</h3>
+                                            <div style=move || format!(
+                                                "display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: {}; border: 1px solid {};",
+                                                if reversal_active.get() { "rgba(251, 191, 36, 0.12)" } else { "rgba(122, 162, 255, 0.12)" },
+                                                if reversal_active.get() { "rgba(251, 191, 36, 0.25)" } else { "rgba(122, 162, 255, 0.25)" }
+                                            )>
+                                                <span style="font-size: 1.4rem;">{move || if reversal_active.get() { "🔄" } else { "➡️" }}</span>
+                                                <div>
+                                                    <div style=move || format!("font-weight: 900; font-size: 1rem; color: {};", if reversal_active.get() { "#fbbf24" } else { "var(--accent)" })>
+                                                        {move || if reversal_active.get() { "REVERSED" } else { "NORMAL" }}
+                                                    </div>
+                                                    <div class="subtle">{move || format!("Flips after {} trials", reversal_flip_after.get())}</div>
+                                                </div>
                                             </div>
                                         </div>
-                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                            <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(400)>
-                                                "Easier (slow flip)"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(200)>
-                                                "Normal"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(80)>
-                                                "Hard (fast flip)"
-                                            </button>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Arena"</h3>
+                                            <div class="arena-grid" style="margin-top: 10px;">
+                                                <div style=move || {
+                                                    let active = matches!(spot_is_left.get(), Some(true));
+                                                    format!(
+                                                        "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                                        if active { "var(--accent)" } else { "var(--border)" },
+                                                        if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                                    )
+                                                }>
+                                                    <span style="font-size: 2.5rem;">"⬅️"</span>
+                                                    <span style="margin-top: 8px; font-weight: 800; color: var(--text);">"LEFT"</span>
+                                                </div>
+                                                <div style=move || {
+                                                    let active = matches!(spot_is_left.get(), Some(false));
+                                                    format!(
+                                                        "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
+                                                        if active { "var(--accent)" } else { "var(--border)" },
+                                                        if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
+                                                    )
+                                                }>
+                                                    <span style="font-size: 2.5rem;">"➡️"</span>
+                                                    <span style="margin-top: 8px; font-weight: 800; color: var(--text);">"RIGHT"</span>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
 
-                                    <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
-                                        <label class="label" style="min-width: 200px;">
-                                            <span title="After this many trials, the correct mapping flips.">"flip_after_trials"</span>
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                max="2000"
-                                                step="10"
-                                                class="input compact"
-                                                prop:value=move || reversal_flip_after.get().to_string()
-                                                on:input=move |ev| {
-                                                    if let Ok(n) = event_target_value(&ev).parse::<u32>() {
-                                                        do_reversal_set_flip_after(n);
-                                                    }
-                                                }
-                                            />
-                                        </label>
-                                        <div style="color: var(--muted); font-size: 0.78rem; max-width: 210px;">
-                                            "If this flips too fast, Braine can’t stabilize two rules."
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Flip Timing"</h3>
+                                            <div class="subtle">{move || format!("flip_after_trials={}", reversal_flip_after.get())}</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(400)>
+                                                    "Easier (slow flip)"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(200)>
+                                                    "Normal"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| do_reversal_set_flip_after(80)>
+                                                    "Hard (fast flip)"
+                                                </button>
+                                            </div>
+                                            <div style="margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
+                                                <label class="label" style="min-width: 200px;">
+                                                    <span title="After this many trials, the correct mapping flips.">"flip_after_trials"</span>
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        max="2000"
+                                                        step="10"
+                                                        class="input compact"
+                                                        prop:value=move || reversal_flip_after.get().to_string()
+                                                        on:input=move |ev| {
+                                                            if let Ok(n) = event_target_value(&ev).parse::<u32>() {
+                                                                do_reversal_set_flip_after(n);
+                                                            }
+                                                        }
+                                                    />
+                                                </label>
+                                                <div class="subtle" style="max-width: 220px;">
+                                                    "If this flips too fast, Braine can’t stabilize two rules."
+                                                </div>
+                                            </div>
                                         </div>
-                                    </div>
-                                </div>
 
-                                // Reversal status badge
-                                <div style=move || format!("display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-radius: 24px; background: {}; border: 2px solid {};",
-                                    if reversal_active.get() { "rgba(251, 191, 36, 0.15)" } else { "rgba(122, 162, 255, 0.1)" },
-                                    if reversal_active.get() { "#fbbf24" } else { "var(--accent)" })>
-                                    <span style="font-size: 1.5rem;">{move || if reversal_active.get() { "🔄" } else { "➡️" }}</span>
-                                    <div>
-                                        <div style=move || format!("font-weight: 700; font-size: 1rem; color: {};", if reversal_active.get() { "#fbbf24" } else { "var(--accent)" })>
-                                            {move || if reversal_active.get() { "REVERSED" } else { "NORMAL" }}
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::SpotReversal.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
                                         </div>
-                                        <div style="font-size: 0.75rem; color: var(--muted);">
-                                            {move || format!("Flips after {} trials", reversal_flip_after.get())}
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::SpotReversal.inputs_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                {move || format!(
+                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    trial_period_ms.get(),
+                                                    exploration_eps.get(),
+                                                    meaning_alpha.get()
+                                                )}
+                                            </div>
                                         </div>
-                                    </div>
-                                </div>
-                                // Arena (same as Spot but with reversal indicator)
-                                <div class="arena-grid">
-                                    <div style=move || {
-                                        let active = matches!(spot_is_left.get(), Some(true));
-                                        format!(
-                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
-                                            if active { "var(--accent)" } else { "var(--border)" },
-                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
-                                        )
-                                    }>
-                                        <span style="font-size: 2.5rem;">"⬅️"</span>
-                                        <span style="margin-top: 8px; font-weight: 600; color: var(--text);">"LEFT"</span>
-                                    </div>
-                                    <div style=move || {
-                                        let active = matches!(spot_is_left.get(), Some(false));
-                                        format!(
-                                            "display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 12px; border: 2px solid {}; background: {};",
-                                            if active { "var(--accent)" } else { "var(--border)" },
-                                            if active { "rgba(122, 162, 255, 0.15)" } else { "rgba(0,0,0,0.2)" },
-                                        )
-                                    }>
-                                        <span style="font-size: 2.5rem;">"➡️"</span>
-                                        <span style="margin-top: 8px; font-weight: 600; color: var(--text);">"RIGHT"</span>
                                     </div>
                                 </div>
                             </div>
@@ -3448,114 +3551,130 @@ fn App() -> impl IntoView {
 
                         // SpotXY game with canvas - Modern gaming design
                         <Show when=move || game_kind.get() == GameKind::SpotXY>
-                            <div class="game-shell" style="max-width: 480px;">
-                                // Header with mode indicator
-                                <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
+                            <div class="game-page">
+                                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 20px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
                                     <div>
-                                        <h2 style="margin: 0; font-size: 1.2rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px;">
+                                        <h2 style="margin: 0; font-size: 1.2rem; font-weight: 900; color: var(--text); display: flex; align-items: center; gap: 8px;">
                                             <span style="font-size: 1.5rem;">"🎯"</span>
                                             "SpotXY Tracker"
                                         </h2>
-                                        <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Predict the dot position in a 2D grid"</p>
+                                        <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Predict the dot position in a 2D grid"</p>
                                     </div>
-                                    <div style=move || format!("padding: 8px 16px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; background: {}; color: {};",
+                                    <div style=move || format!(
+                                        "padding: 8px 16px; border-radius: 999px; font-size: 0.85rem; font-weight: 900; background: {}; color: {};",
                                         if spotxy_eval.get() { "linear-gradient(135deg, #22c55e, #16a34a)" } else { "rgba(122, 162, 255, 0.2)" },
-                                        if spotxy_eval.get() { "#fff" } else { "var(--accent)" })>
+                                        if spotxy_eval.get() { "#fff" } else { "var(--accent)" }
+                                    )>
                                         {move || if spotxy_eval.get() { "🧪 EVAL" } else { "📚 TRAIN" }}
                                     </div>
                                 </div>
 
                                 {training_health_bar_view()}
 
-                                <div style="margin-top: 12px; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
-                                    <div style="display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center;">
-                                        <div>
-                                            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Difficulty presets"</div>
-                                            <div style="font-size: 0.85rem; color: var(--text); font-weight: 800;">"Bigger grid = harder"</div>
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Canvas"</h3>
+                                            <div class="game-canvas-wrap" style="margin-top: 10px;">
+                                                <div style=move || format!(
+                                                    "position: absolute; width: 340px; height: 340px; border-radius: 50%; filter: blur(70px); opacity: 0.25; pointer-events: none; background: {};",
+                                                    if spotxy_eval.get() { "#22c55e" } else { "#7aa2ff" }
+                                                )></div>
+                                                <div class="game-canvas-frame" style=move || format!(
+                                                    "background: {};",
+                                                    if spotxy_eval.get() { "linear-gradient(135deg, #22c55e, #16a34a)" } else { "linear-gradient(135deg, #7aa2ff, #5b7dc9)" }
+                                                )>
+                                                    <canvas
+                                                        node_ref=canvas_ref
+                                                        width="340"
+                                                        height="340"
+                                                        class="game-canvas square"
+                                                        style="border-radius: 13px; background: #0a0f1a;"
+                                                    ></canvas>
+                                                </div>
+                                            </div>
+
+                                            <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 12px;">
+                                                <div style="display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 10px;">
+                                                    <button style="padding: 10px 16px; border: none; background: rgba(122, 162, 255, 0.15); color: var(--accent); border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 800;"
+                                                        on:click=move |_| do_spotxy_grid_minus()>"−"</button>
+                                                    <div style="padding: 10px 16px; color: var(--text); font-size: 0.9rem; font-weight: 900; min-width: 70px; text-align: center;">
+                                                        {move || {
+                                                            let n = spotxy_grid_n.get();
+                                                            if n == 0 { "1×1".to_string() } else { format!("{n}×{n}") }
+                                                        }}
+                                                    </div>
+                                                    <button style="padding: 10px 16px; border: none; background: rgba(122, 162, 255, 0.15); color: var(--accent); border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 800;"
+                                                        on:click=move |_| do_spotxy_grid_plus()>"+"</button>
+                                                </div>
+                                                <button style=move || format!(
+                                                    "padding: 10px 20px; border: none; border-radius: 10px; cursor: pointer; font-size: 0.9rem; font-weight: 900; background: {}; color: {};",
+                                                    if spotxy_eval.get() { "#22c55e" } else { "rgba(122, 162, 255, 0.15)" },
+                                                    if spotxy_eval.get() { "#fff" } else { "var(--accent)" }
+                                                )
+                                                    on:click=move |_| do_spotxy_toggle_eval()>
+                                                    {move || if spotxy_eval.get() { "Switch to Train" } else { "Switch to Eval" }}
+                                                </button>
+                                            </div>
+
+                                            <div style="display: flex; gap: 8px; justify-content: center; margin-top: 10px; flex-wrap: wrap;">
+                                                <span style="padding: 6px 14px; background: rgba(122, 162, 255, 0.1); border: 1px solid rgba(122, 162, 255, 0.2); border-radius: 999px; font-size: 0.8rem; color: var(--muted);">
+                                                    "Mode: "<span style="color: var(--accent); font-weight: 900;">{move || spotxy_mode.get()}</span>
+                                                </span>
+                                            </div>
                                         </div>
-                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                            <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(0); }>
-                                                "Easy (BinaryX)"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(4); }>
-                                                "Normal (4×4)"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(8); }>
-                                                "Hard (8×8)"
-                                            </button>
+                                    </div>
+
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Difficulty Presets"</h3>
+                                            <div class="subtle">"Bigger grid = harder."</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(0); }>
+                                                    "Easy (BinaryX)"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(4); }>
+                                                    "Normal (4×4)"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| { do_spotxy_set_eval(false); do_spotxy_set_grid_target(8); }>
+                                                    "Hard (8×8)"
+                                                </button>
+                                            </div>
+                                            <div class="subtle" style="margin-top: 10px; line-height: 1.5;">
+                                                "Eval mode is holdout (no learning writes). Use it to check generalization."
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::SpotXY.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::SpotXY.inputs_info()}</pre>
                                         </div>
                                     </div>
-
-                                    <div style="margin-top: 10px; color: var(--muted); font-size: 0.78rem; line-height: 1.5;">
-                                        "Tip: Eval mode is a holdout run (no learning writes). Use it to check if learning generalizes."
-                                    </div>
-                                </div>
-
-                                // Canvas container with ambient glow
-                                <div class="game-canvas-wrap">
-                                    <div style=move || format!("position: absolute; width: 280px; height: 280px; border-radius: 50%; filter: blur(60px); opacity: 0.3; pointer-events: none; background: {};",
-                                        if spotxy_eval.get() { "#22c55e" } else { "#7aa2ff" })>
-                                    </div>
-                                    <div class="game-canvas-frame" style=move || format!("background: {};",
-                                        if spotxy_eval.get() { "linear-gradient(135deg, #22c55e, #16a34a)" } else { "linear-gradient(135deg, #7aa2ff, #5b7dc9)" })>
-                                        <canvas
-                                            node_ref=canvas_ref
-                                            width="340"
-                                            height="340"
-                                            class="game-canvas square"
-                                            style="border-radius: 13px; background: #0a0f1a;"
-                                        ></canvas>
-                                    </div>
-                                </div>
-
-                                // Controls row
-                                <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
-                                    <div style="display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 10px;">
-                                        <button style="padding: 10px 16px; border: none; background: rgba(122, 162, 255, 0.15); color: var(--accent); border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: all 0.15s;"
-                                            on:click=move |_| do_spotxy_grid_minus()>"−"</button>
-                                        <div style="padding: 10px 16px; color: var(--text); font-size: 0.9rem; font-weight: 600; min-width: 60px; text-align: center;">
-                                            {move || {
-                                                let n = spotxy_grid_n.get();
-                                                if n == 0 {
-                                                    "1×1".to_string()
-                                                } else {
-                                                    format!("{n}×{n}")
-                                                }
-                                            }}
-                                        </div>
-                                        <button style="padding: 10px 16px; border: none; background: rgba(122, 162, 255, 0.15); color: var(--accent); border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: all 0.15s;"
-                                            on:click=move |_| do_spotxy_grid_plus()>"+"</button>
-                                    </div>
-                                    <button style=move || format!("padding: 10px 20px; border: none; border-radius: 10px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: all 0.15s; background: {}; color: {};",
-                                        if spotxy_eval.get() { "#22c55e" } else { "rgba(122, 162, 255, 0.15)" },
-                                        if spotxy_eval.get() { "#fff" } else { "var(--accent)" })
-                                        on:click=move |_| do_spotxy_toggle_eval()>
-                                        {move || if spotxy_eval.get() { "Switch to Train" } else { "Switch to Eval" }}
-                                    </button>
-                                </div>
-
-                                // Status pills
-                                <div style="display: flex; gap: 8px; justify-content: center;">
-                                    <span style="padding: 6px 14px; background: rgba(122, 162, 255, 0.1); border: 1px solid rgba(122, 162, 255, 0.2); border-radius: 20px; font-size: 0.8rem; color: var(--muted);">
-                                        "Mode: "<span style="color: var(--accent); font-weight: 600;">{move || spotxy_mode.get()}</span>
-                                    </span>
                                 </div>
                             </div>
                         </Show>
 
                         // Pong game - Modern arcade design
                         <Show when=move || game_kind.get() == GameKind::Pong>
-                            <div class="game-shell" style="max-width: 580px;">
-                                // Header
-                                <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, rgba(251, 191, 36, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
+                            <div class="game-page">
+                                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 20px; background: linear-gradient(135deg, rgba(251, 191, 36, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
                                     <div>
-                                        <h2 style="margin: 0; font-size: 1.2rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px;">
+                                        <h2 style="margin: 0; font-size: 1.2rem; font-weight: 900; color: var(--text); display: flex; align-items: center; gap: 8px;">
                                             <span style="font-size: 1.5rem;">"🏓"</span>
                                             "Pong Arena"
                                         </h2>
-                                        <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Control the paddle • Intercept the ball"</p>
+                                        <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Control the paddle • Intercept the ball"</p>
                                     </div>
-                                    <div style="display: flex; gap: 8px;">
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                         <kbd style="padding: 4px 10px; background: rgba(255,255,255,0.1); border: 1px solid var(--border); border-radius: 6px; font-size: 0.75rem; color: var(--muted);">"W/S"</kbd>
                                         <kbd style="padding: 4px 10px; background: rgba(255,255,255,0.1); border: 1px solid var(--border); border-radius: 6px; font-size: 0.75rem; color: var(--muted);">"↑/↓"</kbd>
                                     </div>
@@ -3563,175 +3682,191 @@ fn App() -> impl IntoView {
 
                                 {training_health_bar_view()}
 
-                                // Game canvas
-                                <div class="game-canvas-wrap">
-                                    <div class="game-canvas-frame" style="border: 1px solid var(--border); background: rgba(0,0,0,0.25);">
-                                        <canvas
-                                            node_ref=pong_canvas_ref
-                                            width="540"
-                                            height="320"
-                                            class="game-canvas wide"
-                                            style="border-radius: 13px; background: #0a0f1a;"
-                                        ></canvas>
-                                    </div>
-                                </div>
-
-                                // Parameter sliders in a compact card
-                                <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px;">
-                                    <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-                                        <div style="display: flex; flex-direction: column; gap: 2px;">
-                                            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Difficulty presets"</div>
-                                            <div style="font-size: 0.85rem; color: var(--text); font-weight: 700;">"Make Pong easier"</div>
-                                        </div>
-                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                            <button class="btn sm" on:click=move |_| {
-                                                // Easy: big paddle, slower ball, gentler bounce, longer respawn.
-                                                do_pong_set_param("paddle_half_height", 0.28);
-                                                do_pong_set_param("ball_speed", 0.6);
-                                                do_pong_set_param("paddle_speed", 2.0);
-                                                do_pong_set_param("paddle_bounce_y", 0.55);
-                                                do_pong_set_param("respawn_delay_s", 0.25);
-                                                do_pong_set_param("distractor_enabled", 0.0);
-                                                // Faster control cadence helps learning and reduces paddle "teleport" per action.
-                                                set_trial_period_ms.set(80);
-                                            }>
-                                                "Easy"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| {
-                                                // Default-ish.
-                                                do_pong_set_param("paddle_half_height", 0.15);
-                                                do_pong_set_param("ball_speed", 1.0);
-                                                do_pong_set_param("paddle_speed", 1.3);
-                                                do_pong_set_param("paddle_bounce_y", 0.9);
-                                                do_pong_set_param("respawn_delay_s", 0.18);
-                                                do_pong_set_param("distractor_enabled", 0.0);
-                                                set_trial_period_ms.set(100);
-                                            }>
-                                                "Normal"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| {
-                                                // Hard: smaller paddle, faster ball, steeper bounces.
-                                                do_pong_set_param("paddle_half_height", 0.11);
-                                                do_pong_set_param("ball_speed", 1.4);
-                                                do_pong_set_param("paddle_speed", 1.2);
-                                                do_pong_set_param("paddle_bounce_y", 1.2);
-                                                do_pong_set_param("respawn_delay_s", 0.12);
-                                                set_trial_period_ms.set(120);
-                                            }>
-                                                "Hard"
-                                            </button>
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Arena"</h3>
+                                            <div class="game-canvas-wrap" style="margin-top: 10px;">
+                                                <div class="game-canvas-frame" style="border: 1px solid var(--border); background: rgba(0,0,0,0.25);">
+                                                    <canvas
+                                                        node_ref=pong_canvas_ref
+                                                        width="540"
+                                                        height="320"
+                                                        class="game-canvas wide"
+                                                        style="border-radius: 13px; background: #0a0f1a;"
+                                                    ></canvas>
+                                                </div>
+                                            </div>
+                                            <div class="subtle" style="margin-top: 10px; line-height: 1.5;">
+                                                "Tip: If learning is jittery, reduce ε and slow Trial ms a bit."
+                                            </div>
                                         </div>
                                     </div>
 
-                                    <div style="display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;">
-                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 90px;">
-                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Paddle Speed"</span>
-                                        <input
-                                            type="range"
-                                            min="0.5"
-                                            max="5"
-                                            step="0.1"
-                                            style="width: 100%; accent-color: #7aa2ff;"
-                                            prop:value=move || format!("{:.1}", pong_paddle_speed.get())
-                                            on:input=move |ev| {
-                                                let v = event_target_value(&ev);
-                                                if let Ok(x) = v.parse::<f32>() {
-                                                    do_pong_set_param("paddle_speed", x);
-                                                }
-                                            }
-                                        />
-                                        <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.1}", pong_paddle_speed.get())}</span>
-                                    </div>
-                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 90px;">
-                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Paddle Size"</span>
-                                        <input
-                                            type="range"
-                                            min="0.05"
-                                            max="0.5"
-                                            step="0.01"
-                                            style="width: 100%; accent-color: #7aa2ff;"
-                                            prop:value=move || format!("{:.2}", pong_paddle_half_height.get())
-                                            on:input=move |ev| {
-                                                let v = event_target_value(&ev);
-                                                if let Ok(x) = v.parse::<f32>() {
-                                                    do_pong_set_param("paddle_half_height", x);
-                                                }
-                                            }
-                                        />
-                                        <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.0}%", pong_paddle_half_height.get() * 100.0)}</span>
-                                    </div>
-                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 90px;">
-                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Ball Speed"</span>
-                                        <input
-                                            type="range"
-                                            min="0.3"
-                                            max="3"
-                                            step="0.1"
-                                            style="width: 100%; accent-color: #fbbf24;"
-                                            prop:value=move || format!("{:.1}", pong_ball_speed.get())
-                                            on:input=move |ev| {
-                                                let v = event_target_value(&ev);
-                                                if let Ok(x) = v.parse::<f32>() {
-                                                    do_pong_set_param("ball_speed", x);
-                                                }
-                                            }
-                                        />
-                                        <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.1}×", pong_ball_speed.get())}</span>
-                                    </div>
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Difficulty Presets"</h3>
+                                            <div class="subtle">"Big paddle + slower ball = easier."</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| {
+                                                    do_pong_set_param("paddle_half_height", 0.28);
+                                                    do_pong_set_param("ball_speed", 0.6);
+                                                    do_pong_set_param("paddle_speed", 2.0);
+                                                    do_pong_set_param("paddle_bounce_y", 0.55);
+                                                    do_pong_set_param("respawn_delay_s", 0.25);
+                                                    do_pong_set_param("distractor_enabled", 0.0);
+                                                    set_trial_period_ms.set(80);
+                                                }>
+                                                    "Easy"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    do_pong_set_param("paddle_half_height", 0.15);
+                                                    do_pong_set_param("ball_speed", 1.0);
+                                                    do_pong_set_param("paddle_speed", 1.3);
+                                                    do_pong_set_param("paddle_bounce_y", 0.9);
+                                                    do_pong_set_param("respawn_delay_s", 0.18);
+                                                    do_pong_set_param("distractor_enabled", 0.0);
+                                                    set_trial_period_ms.set(100);
+                                                }>
+                                                    "Normal"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    do_pong_set_param("paddle_half_height", 0.11);
+                                                    do_pong_set_param("ball_speed", 1.4);
+                                                    do_pong_set_param("paddle_speed", 1.2);
+                                                    do_pong_set_param("paddle_bounce_y", 1.2);
+                                                    do_pong_set_param("respawn_delay_s", 0.12);
+                                                    set_trial_period_ms.set(120);
+                                                }>
+                                                    "Hard"
+                                                </button>
+                                            </div>
+                                        </div>
 
-                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
-                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Bounce Angle"</span>
-                                        <input
-                                            type="range"
-                                            min="0.0"
-                                            max="2.0"
-                                            step="0.05"
-                                            style="width: 100%; accent-color: #fbbf24;"
-                                            prop:value=move || format!("{:.2}", pong_paddle_bounce_y.get())
-                                            on:input=move |ev| {
-                                                let v = event_target_value(&ev);
-                                                if let Ok(x) = v.parse::<f32>() {
-                                                    do_pong_set_param("paddle_bounce_y", x);
-                                                }
-                                            }
-                                        />
-                                        <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.2}", pong_paddle_bounce_y.get())}</span>
-                                    </div>
+                                        <div class="card">
+                                            <h3 class="card-title">"Parameters"</h3>
+                                            <div style="display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;">
+                                                <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
+                                                    <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Paddle Speed"</span>
+                                                    <input
+                                                        type="range"
+                                                        min="0.5"
+                                                        max="5"
+                                                        step="0.1"
+                                                        style="width: 100%; accent-color: #7aa2ff;"
+                                                        prop:value=move || format!("{:.1}", pong_paddle_speed.get())
+                                                        on:input=move |ev| {
+                                                            let v = event_target_value(&ev);
+                                                            if let Ok(x) = v.parse::<f32>() {
+                                                                do_pong_set_param("paddle_speed", x);
+                                                            }
+                                                        }
+                                                    />
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.1}", pong_paddle_speed.get())}</span>
+                                                </div>
 
-                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
-                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Respawn Delay"</span>
-                                        <input
-                                            type="range"
-                                            min="0.0"
-                                            max="0.6"
-                                            step="0.01"
-                                            style="width: 100%; accent-color: #7aa2ff;"
-                                            prop:value=move || format!("{:.2}", pong_respawn_delay_s.get())
-                                            on:input=move |ev| {
-                                                let v = event_target_value(&ev);
-                                                if let Ok(x) = v.parse::<f32>() {
-                                                    do_pong_set_param("respawn_delay_s", x);
-                                                }
-                                            }
-                                        />
-                                        <span style="font-size: 0.8rem; color: var(--text); font-weight: 600; text-align: center;">{move || format!("{:.2}s", pong_respawn_delay_s.get())}</span>
-                                    </div>
+                                                <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
+                                                    <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Paddle Size"</span>
+                                                    <input
+                                                        type="range"
+                                                        min="0.05"
+                                                        max="0.5"
+                                                        step="0.01"
+                                                        style="width: 100%; accent-color: #7aa2ff;"
+                                                        prop:value=move || format!("{:.2}", pong_paddle_half_height.get())
+                                                        on:input=move |ev| {
+                                                            let v = event_target_value(&ev);
+                                                            if let Ok(x) = v.parse::<f32>() {
+                                                                do_pong_set_param("paddle_half_height", x);
+                                                            }
+                                                        }
+                                                    />
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.0}%", pong_paddle_half_height.get() * 100.0)}</span>
+                                                </div>
 
-                                    <div style="display: flex; flex-direction: column; gap: 6px; min-width: 120px; align-items: center; justify-content: center;">
-                                        <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Distractor"</span>
-                                        <label class="label" style="flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border);">
-                                            <input
-                                                type="checkbox"
-                                                prop:checked=move || pong_distractor_enabled.get()
-                                                on:change=move |ev| {
-                                                    let v = event_target_checked(&ev);
-                                                    do_pong_set_param("distractor_enabled", if v { 1.0 } else { 0.0 });
-                                                }
-                                            />
-                                            <span style="font-size: 0.85rem; font-weight: 700;">{move || if pong_distractor_enabled.get() { "On" } else { "Off" }}</span>
-                                        </label>
-                                        <span style="font-size: 0.75rem; color: var(--muted); text-align: center;">"Adds a 2nd ball (no reward)"</span>
-                                    </div>
+                                                <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
+                                                    <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Ball Speed"</span>
+                                                    <input
+                                                        type="range"
+                                                        min="0.3"
+                                                        max="3"
+                                                        step="0.1"
+                                                        style="width: 100%; accent-color: #fbbf24;"
+                                                        prop:value=move || format!("{:.1}", pong_ball_speed.get())
+                                                        on:input=move |ev| {
+                                                            let v = event_target_value(&ev);
+                                                            if let Ok(x) = v.parse::<f32>() {
+                                                                do_pong_set_param("ball_speed", x);
+                                                            }
+                                                        }
+                                                    />
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.1}×", pong_ball_speed.get())}</span>
+                                                </div>
+
+                                                <div style="display: flex; flex-direction: column; gap: 4px; min-width: 120px;">
+                                                    <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Bounce Angle"</span>
+                                                    <input
+                                                        type="range"
+                                                        min="0.0"
+                                                        max="2.0"
+                                                        step="0.05"
+                                                        style="width: 100%; accent-color: #fbbf24;"
+                                                        prop:value=move || format!("{:.2}", pong_paddle_bounce_y.get())
+                                                        on:input=move |ev| {
+                                                            let v = event_target_value(&ev);
+                                                            if let Ok(x) = v.parse::<f32>() {
+                                                                do_pong_set_param("paddle_bounce_y", x);
+                                                            }
+                                                        }
+                                                    />
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.2}", pong_paddle_bounce_y.get())}</span>
+                                                </div>
+
+                                                <div style="display: flex; flex-direction: column; gap: 4px; min-width: 130px;">
+                                                    <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Respawn Delay"</span>
+                                                    <input
+                                                        type="range"
+                                                        min="0.0"
+                                                        max="0.6"
+                                                        step="0.01"
+                                                        style="width: 100%; accent-color: #7aa2ff;"
+                                                        prop:value=move || format!("{:.2}", pong_respawn_delay_s.get())
+                                                        on:input=move |ev| {
+                                                            let v = event_target_value(&ev);
+                                                            if let Ok(x) = v.parse::<f32>() {
+                                                                do_pong_set_param("respawn_delay_s", x);
+                                                            }
+                                                        }
+                                                    />
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.2}s", pong_respawn_delay_s.get())}</span>
+                                                </div>
+
+                                                <div style="display: flex; flex-direction: column; gap: 6px; min-width: 140px; align-items: center; justify-content: center;">
+                                                    <span style="font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Distractor"</span>
+                                                    <label class="label" style="flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border);">
+                                                        <input
+                                                            type="checkbox"
+                                                            prop:checked=move || pong_distractor_enabled.get()
+                                                            on:change=move |ev| {
+                                                                let v = event_target_checked(&ev);
+                                                                do_pong_set_param("distractor_enabled", if v { 1.0 } else { 0.0 });
+                                                            }
+                                                        />
+                                                        <span style="font-size: 0.85rem; font-weight: 900;">{move || if pong_distractor_enabled.get() { "On" } else { "Off" }}</span>
+                                                    </label>
+                                                    <span class="subtle" style="text-align: center;">"Adds a 2nd ball (no reward)"</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::Pong.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -3739,149 +3874,210 @@ fn App() -> impl IntoView {
 
                         // Sequence game - Enhanced
                         <Show when=move || game_kind.get() == GameKind::Sequence>
-                            <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; max-width: 400px;">
-                                <div style="text-align: center;">
-                                    <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"Sequence Prediction"</h2>
-                                    <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Learn repeating patterns: A→B→C→A..."</p>
+                            <div class="game-page">
+                                <div class="game-header">
+                                    <h2>"Sequence Prediction"</h2>
+                                    <p>"Learn repeating patterns: A→B→C→A..."</p>
                                 </div>
 
                                 {training_health_bar_view()}
 
-                                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
-                                    <button class="btn sm" on:click=move |_| {
-                                        set_trial_period_ms.set(450);
-                                        set_exploration_eps.set(0.06);
-                                        set_meaning_alpha.set(8.0);
-                                    }>
-                                        "Easy"
-                                    </button>
-                                    <button class="btn sm" on:click=move |_| {
-                                        set_trial_period_ms.set(280);
-                                        set_exploration_eps.set(0.08);
-                                        set_meaning_alpha.set(6.0);
-                                    }>
-                                        "Normal"
-                                    </button>
-                                    <button class="btn sm" on:click=move |_| {
-                                        set_trial_period_ms.set(140);
-                                        set_exploration_eps.set(0.12);
-                                        set_meaning_alpha.set(4.5);
-                                    }>
-                                        "Hard"
-                                    </button>
-                                </div>
-                                // Token display
-                                <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; background: rgba(0,0,0,0.3); border-radius: 16px; width: 100%;">
-                                    <span style="color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;">"Current Token"</span>
-                                    <div style="font-size: 4rem; font-family: 'Courier New', monospace; font-weight: 700; color: var(--accent);">
-                                        {move || sequence_state.get().map(|s| s.token.clone()).unwrap_or_else(|| "?".to_string())}
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Tokens"</h3>
+                                            <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0;">
+                                                <span class="subtle" style="text-transform: uppercase; letter-spacing: 1px;">"Current Token"</span>
+                                                <div style="font-size: 4rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-weight: 900; color: var(--accent);">
+                                                    {move || sequence_state.get().map(|s| s.token.clone()).unwrap_or_else(|| "?".to_string())}
+                                                </div>
+                                                <span style="font-size: 1.5rem; color: var(--muted);">"↓"</span>
+                                                <span class="subtle" style="text-transform: uppercase; letter-spacing: 1px;">"Target Next"</span>
+                                                <div style="font-size: 2.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; color: var(--text); opacity: 0.8;">
+                                                    {move || sequence_state.get().map(|s| s.target_next.clone()).unwrap_or_else(|| "?".to_string())}
+                                                </div>
+                                            </div>
+
+                                            <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 10px; font-size: 0.85rem;">
+                                                <span style="padding: 6px 12px; background: rgba(122, 162, 255, 0.15); border-radius: 999px; color: var(--text);">
+                                                    {move || sequence_state.get().map(|s| format!("Regime {}", s.regime)).unwrap_or_default()}
+                                                </span>
+                                                <span style="padding: 6px 12px; background: rgba(122, 162, 255, 0.15); border-radius: 999px; color: var(--text);">
+                                                    {move || sequence_state.get().map(|s| format!("Outcomes: {}", s.outcomes)).unwrap_or_default()}
+                                                </span>
+                                                <span style="padding: 6px 12px; background: rgba(122, 162, 255, 0.15); border-radius: 999px; color: var(--text);">
+                                                    {move || sequence_state.get().map(|s| format!("Shift: {}", s.shift_every)).unwrap_or_default()}
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
-                                        <span style="font-size: 1.5rem; color: var(--muted);">"↓"</span>
+
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Presets"</h3>
+                                            <div class="subtle">"Cadence + exploration tuning."</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_trial_period_ms.set(450);
+                                                    set_exploration_eps.set(0.06);
+                                                    set_meaning_alpha.set(8.0);
+                                                }>
+                                                    "Easy"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_trial_period_ms.set(280);
+                                                    set_exploration_eps.set(0.08);
+                                                    set_meaning_alpha.set(6.0);
+                                                }>
+                                                    "Normal"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_trial_period_ms.set(140);
+                                                    set_exploration_eps.set(0.12);
+                                                    set_meaning_alpha.set(4.5);
+                                                }>
+                                                    "Hard"
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::Sequence.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::Sequence.inputs_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                {move || format!(
+                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    trial_period_ms.get(),
+                                                    exploration_eps.get(),
+                                                    meaning_alpha.get()
+                                                )}
+                                            </div>
+                                        </div>
                                     </div>
-                                    <span style="color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;">"Target Next"</span>
-                                    <div style="font-size: 2.5rem; font-family: 'Courier New', monospace; color: var(--text); opacity: 0.7;">
-                                        {move || sequence_state.get().map(|s| s.target_next.clone()).unwrap_or_else(|| "?".to_string())}
-                                    </div>
-                                </div>
-                                // Stats bar
-                                <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; font-size: 0.8rem;">
-                                    <span style="padding: 6px 12px; background: rgba(122, 162, 255, 0.15); border-radius: 6px; color: var(--text);">
-                                        {move || sequence_state.get().map(|s| format!("Regime {}", s.regime)).unwrap_or_default()}
-                                    </span>
-                                    <span style="padding: 6px 12px; background: rgba(122, 162, 255, 0.15); border-radius: 6px; color: var(--text);">
-                                        {move || sequence_state.get().map(|s| format!("Outcomes: {}", s.outcomes)).unwrap_or_default()}
-                                    </span>
-                                    <span style="padding: 6px 12px; background: rgba(122, 162, 255, 0.15); border-radius: 6px; color: var(--text);">
-                                        {move || sequence_state.get().map(|s| format!("Shift: {}", s.shift_every)).unwrap_or_default()}
-                                    </span>
                                 </div>
                             </div>
                         </Show>
 
                         // Text game - Enhanced
                         <Show when=move || game_kind.get() == GameKind::Text>
-                            <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; max-width: 500px;">
-                                <div style="text-align: center;">
-                                    <h2 style="margin: 0; font-size: 1.1rem; color: var(--text);">"📝 Text Prediction"</h2>
-                                    <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Next-token prediction: observe and predict"</p>
+                            <div class="game-page">
+                                <div class="game-header">
+                                    <h2>"📝 Text Prediction"</h2>
+                                    <p>"Next-token prediction: observe and predict"</p>
                                 </div>
 
                                 {training_health_bar_view()}
 
-                                <div style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 12px;">
-                                    <div style="display:flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                        <div>
-                                            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px;">"Difficulty presets"</div>
-                                            <div style="font-size: 0.85rem; color: var(--text); font-weight: 800;">"Smaller vocab + slower shifts = easier"</div>
-                                        </div>
-                                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                            <button class="btn sm" on:click=move |_| {
-                                                set_text_max_vocab.set(16);
-                                                set_text_shift_every.set(140);
-                                                (do_text_apply_corpora_sv.get_value())();
-                                            }>
-                                                "Easy (reset)"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| {
-                                                set_text_max_vocab.set(32);
-                                                set_text_shift_every.set(80);
-                                                (do_text_apply_corpora_sv.get_value())();
-                                            }>
-                                                "Normal (reset)"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| {
-                                                set_text_max_vocab.set(96);
-                                                set_text_shift_every.set(50);
-                                                (do_text_apply_corpora_sv.get_value())();
-                                            }>
-                                                "Hard (reset)"
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div style="margin-top: 8px; color: var(--muted); font-size: 0.78rem; line-height: 1.5;">
-                                        {move || format!("Current: max_vocab={}  shift_every={}", text_max_vocab.get(), text_shift_every.get())}
-                                    </div>
-                                </div>
-                                // Token display card
-                                <div style="width: 100%; padding: 24px; background: linear-gradient(135deg, rgba(122, 162, 255, 0.1), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
-                                    <div style="text-align: center;">
-                                        <span style="color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 2px;">"Current Token"</span>
-                                        <div style="font-size: 2.5rem; font-family: 'Courier New', monospace; font-weight: 700; color: var(--accent); margin: 12px 0; padding: 16px; background: rgba(0,0,0,0.4); border-radius: 8px;">
-                                            {move || text_state.get().map(|s| format!("\"{}\"", s.token)).unwrap_or_else(|| "\"?\"".to_string())}
-                                        </div>
-                                        <div style="display: flex; justify-content: center; align-items: center; gap: 12px; margin: 16px 0;">
-                                            <div style="flex: 1; height: 1px; background: var(--border);"></div>
-                                            <span style="color: var(--muted); font-size: 0.9rem;">"predict →"</span>
-                                            <div style="flex: 1; height: 1px; background: var(--border);"></div>
-                                        </div>
-                                        <span style="color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 2px;">"Next Token"</span>
-                                        <div style="font-size: 1.8rem; font-family: 'Courier New', monospace; color: var(--text); opacity: 0.8; margin-top: 12px;">
-                                            {move || text_state.get().map(|s| format!("\"{}\"", s.target_next)).unwrap_or_else(|| "\"?\"".to_string())}
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Tokens"</h3>
+                                            <div style="text-align: center;">
+                                                <span class="subtle" style="text-transform: uppercase; letter-spacing: 2px;">"Current Token"</span>
+                                                <div style="font-size: 2.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-weight: 900; color: var(--accent); margin: 12px 0; padding: 16px; background: rgba(0,0,0,0.4); border-radius: 8px;">
+                                                    {move || text_state.get().map(|s| format!("\"{}\"", s.token)).unwrap_or_else(|| "\"?\"".to_string())}
+                                                </div>
+                                                <div style="display: flex; justify-content: center; align-items: center; gap: 12px; margin: 16px 0;">
+                                                    <div style="flex: 1; height: 1px; background: var(--border);"></div>
+                                                    <span class="subtle">"predict →"</span>
+                                                    <div style="flex: 1; height: 1px; background: var(--border);"></div>
+                                                </div>
+                                                <span class="subtle" style="text-transform: uppercase; letter-spacing: 2px;">"Next Token"</span>
+                                                <div style="font-size: 1.8rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; color: var(--text); opacity: 0.85; margin-top: 12px;">
+                                                    {move || text_state.get().map(|s| format!("\"{}\"", s.target_next)).unwrap_or_else(|| "\"?\"".to_string())}
+                                                </div>
+                                            </div>
+
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 14px;">
+                                                <span style="padding: 6px 14px; background: rgba(251, 191, 36, 0.15); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 999px; font-size: 0.8rem; color: #fbbf24;">
+                                                    {move || text_state.get().map(|s| format!("Vocab: {}", s.vocab_size)).unwrap_or_default()}
+                                                </span>
+                                                <span style="padding: 6px 14px; background: rgba(122, 162, 255, 0.15); border: 1px solid rgba(122, 162, 255, 0.3); border-radius: 999px; font-size: 0.8rem; color: var(--accent);">
+                                                    {move || text_state.get().map(|s| format!("Regime {}", s.regime)).unwrap_or_default()}
+                                                </span>
+                                                <span style="padding: 6px 14px; background: rgba(122, 162, 255, 0.12); border: 1px solid rgba(122, 162, 255, 0.25); border-radius: 999px; font-size: 0.8rem; color: var(--text);">
+                                                    {move || text_state.get().map(|s| format!("Outcomes: {}", s.outcomes)).unwrap_or_default()}
+                                                </span>
+                                                <span style="padding: 6px 14px; background: rgba(74, 222, 128, 0.15); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 999px; font-size: 0.8rem; color: #4ade80;">
+                                                    {move || text_state.get().map(|s| format!("Shift: {}", s.shift_every)).unwrap_or_default()}
+                                                </span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                                // Info pills
-                                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
-                                    <span style="padding: 6px 14px; background: rgba(251, 191, 36, 0.15); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 20px; font-size: 0.8rem; color: #fbbf24;">
-                                        {move || text_state.get().map(|s| format!("Vocab: {}", s.vocab_size)).unwrap_or_default()}
-                                    </span>
-                                    <span style="padding: 6px 14px; background: rgba(122, 162, 255, 0.15); border: 1px solid rgba(122, 162, 255, 0.3); border-radius: 20px; font-size: 0.8rem; color: var(--accent);">
-                                        {move || text_state.get().map(|s| format!("Regime {}", s.regime)).unwrap_or_default()}
-                                    </span>
-                                    <span style="padding: 6px 14px; background: rgba(122, 162, 255, 0.12); border: 1px solid rgba(122, 162, 255, 0.25); border-radius: 20px; font-size: 0.8rem; color: var(--text);">
-                                        {move || text_state.get().map(|s| format!("Outcomes: {}", s.outcomes)).unwrap_or_default()}
-                                    </span>
-                                    <span style="padding: 6px 14px; background: rgba(74, 222, 128, 0.15); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 20px; font-size: 0.8rem; color: #4ade80;">
-                                        {move || text_state.get().map(|s| format!("Shift: {}", s.shift_every)).unwrap_or_default()}
-                                    </span>
+
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Training Config"</h3>
+                                            <div class="subtle">"Smaller vocab + slower shifts = easier."</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_text_max_vocab.set(16);
+                                                    set_text_shift_every.set(140);
+                                                    (do_text_apply_corpora_sv.get_value())();
+                                                }>
+                                                    "Easy (reset)"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_text_max_vocab.set(32);
+                                                    set_text_shift_every.set(80);
+                                                    (do_text_apply_corpora_sv.get_value())();
+                                                }>
+                                                    "Normal (reset)"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_text_max_vocab.set(96);
+                                                    set_text_shift_every.set(50);
+                                                    (do_text_apply_corpora_sv.get_value())();
+                                                }>
+                                                    "Hard (reset)"
+                                                </button>
+                                            </div>
+                                            <div class="subtle" style="margin-top: 10px; line-height: 1.5;">
+                                                {move || format!("Current: max_vocab={}  shift_every={}", text_max_vocab.get(), text_shift_every.get())}
+                                            </div>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Reset buttons rebuild sensors/actions for the Text game but keep the same brain."
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::Text.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::Text.inputs_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                {move || format!(
+                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    trial_period_ms.get(),
+                                                    exploration_eps.get(),
+                                                    meaning_alpha.get()
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </Show>
 
                         // Replay game - Dataset-driven trial inspector
                         <Show when=move || game_kind.get() == GameKind::Replay>
-                            <div class="game-shell" style="max-width: 520px;">
+                            <div class="game-page">
                                 <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, rgba(34, 211, 238, 0.10), rgba(0,0,0,0.30)); border: 1px solid var(--border); border-radius: 16px;">
                                     <div>
                                         <h2 style="margin: 0; font-size: 1.2rem; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px;">
@@ -3902,100 +4098,115 @@ fn App() -> impl IntoView {
 
                                 {training_health_bar_view()}
 
-                                <div style="margin-top: 12px; padding: 16px 18px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 12px;">
-                                    <h3 style="margin: 0 0 10px 0; font-size: 0.95rem; color: var(--text);">"Explain Replay like I'm 5"</h3>
-                                    <div style="color: var(--text); font-size: 0.85rem; line-height: 1.6;">
-                                        <div>"Replay is like a stack of flashcards."</div>
-                                        <div>"Each flashcard shows some clues (stimuli)."</div>
-                                        <div>"Braine picks one button (an action)."</div>
-                                        <div>"If it picked the right button, it gets a green point. If not, a red point."</div>
-                                        <div style="margin-top: 8px; color: var(--muted);">"Step = do 1 flashcard. Run = keep going."</div>
-                                        <div style="margin-top: 6px; color: var(--muted);">"Replay is special because the questions don’t change — it’s great for checking whether a settings change helped."</div>
-                                    </div>
-                                </div>
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Trial Progress"</h3>
+                                            <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                                                <div class="subtle">
+                                                    "Trial"
+                                                    <div style="margin-top: 4px; color: var(--text); font-weight: 900;">
+                                                        {move || {
+                                                            replay_state
+                                                                .get()
+                                                                .map(|s| {
+                                                                    let idx = s.index.saturating_add(1);
+                                                                    format!("{idx} / {}", s.total)
+                                                                })
+                                                                .unwrap_or_else(|| "—".to_string())
+                                                        }}
+                                                    </div>
+                                                </div>
 
-                                <div style="margin-top: 14px; padding: 16px 18px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 12px;">
-                                    <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
-                                        <div style="color: var(--muted); font-size: 0.8rem;">
-                                            "Trial"
-                                            <div style="margin-top: 4px; color: var(--text); font-weight: 700;">
-                                                {move || {
-                                                    replay_state
+                                                <div class="subtle">
+                                                    "Trial ID"
+                                                    <div style="margin-top: 4px; color: var(--text); font-weight: 900; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
+                                                        {move || replay_state.get().map(|s| s.trial_id).unwrap_or_else(|| "—".to_string())}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div style="margin-top: 12px; height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.20); overflow: hidden;">
+                                                <div style=move || {
+                                                    let pct = replay_state
                                                         .get()
-                                                        .map(|s| {
-                                                            let idx = s.index.saturating_add(1);
-                                                            format!("{idx} / {}", s.total)
+                                                        .and_then(|s| {
+                                                            if s.total == 0 {
+                                                                None
+                                                            } else {
+                                                                let idx = s.index.saturating_add(1).min(s.total);
+                                                                Some(idx as f32 / s.total as f32)
+                                                            }
                                                         })
-                                                        .unwrap_or_else(|| "—".to_string())
-                                                }}
+                                                        .unwrap_or(0.0);
+                                                    format!(
+                                                        "height: 100%; width: {:.1}%; background: linear-gradient(90deg, #22d3ee, #7aa2ff);",
+                                                        (pct.clamp(0.0, 1.0) * 100.0)
+                                                    )
+                                                }></div>
                                             </div>
-                                        </div>
 
-                                        <div style="color: var(--muted); font-size: 0.8rem;">
-                                            "Trial ID"
-                                            <div style="margin-top: 4px; color: var(--text); font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
-                                                {move || replay_state.get().map(|s| s.trial_id).unwrap_or_else(|| "—".to_string())}
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div style="margin-top: 12px; height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.20); overflow: hidden;">
-                                        <div style=move || {
-                                            let pct = replay_state
-                                                .get()
-                                                .and_then(|s| {
-                                                    if s.total == 0 {
-                                                        None
+                                            <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: rgba(0,0,0,0.25); border: 1px solid rgba(148, 163, 184, 0.18); border-radius: 10px; flex-wrap: wrap;">
+                                                <div class="subtle">"Braine chose:"</div>
+                                                <div style="color: var(--text); font-weight: 900;">
+                                                    {move || {
+                                                        let a = last_action.get();
+                                                        if a.is_empty() { "—".to_string() } else { a }
+                                                    }}
+                                                </div>
+                                                <div style="flex: 1;"></div>
+                                                <div style=move || {
+                                                    let r = last_reward.get();
+                                                    let (bg, fg) = if r > 0.0 {
+                                                        ("rgba(34, 197, 94, 0.18)", "#4ade80")
+                                                    } else if r < 0.0 {
+                                                        ("rgba(239, 68, 68, 0.18)", "#f87171")
                                                     } else {
-                                                        let idx = s.index.saturating_add(1).min(s.total);
-                                                        Some(idx as f32 / s.total as f32)
-                                                    }
-                                                })
-                                                .unwrap_or(0.0);
-                                            format!(
-                                                "height: 100%; width: {:.1}%; background: linear-gradient(90deg, #22d3ee, #7aa2ff);",
-                                                (pct.clamp(0.0, 1.0) * 100.0)
-                                            )
-                                        }></div>
-                                    </div>
+                                                        ("rgba(100, 116, 139, 0.18)", "#94a3b8")
+                                                    };
+                                                    format!(
+                                                        "padding: 6px 10px; border-radius: 999px; background: {bg}; color: {fg}; font-weight: 900; font-size: 0.85rem;"
+                                                    )
+                                                }>
+                                                    {move || {
+                                                        let r = last_reward.get();
+                                                        if r > 0.0 { "✓ Correct" } else if r < 0.0 { "✗ Wrong" } else { "—" }
+                                                    }}
+                                                </div>
+                                            </div>
 
-                                    <div style="margin-top: 14px; display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: rgba(0,0,0,0.25); border: 1px solid rgba(148, 163, 184, 0.18); border-radius: 10px;">
-                                        <div style="color: var(--muted); font-size: 0.85rem;">"Braine chose:"</div>
-                                        <div style="color: var(--text); font-weight: 800;">
-                                            {move || {
-                                                let a = last_action.get();
-                                                if a.is_empty() { "—".to_string() } else { a }
-                                            }}
-                                        </div>
-                                        <div style="flex: 1;"></div>
-                                        <div style=move || {
-                                            let r = last_reward.get();
-                                            let (bg, fg) = if r > 0.0 {
-                                                ("rgba(34, 197, 94, 0.18)", "#4ade80")
-                                            } else if r < 0.0 {
-                                                ("rgba(239, 68, 68, 0.18)", "#f87171")
-                                            } else {
-                                                ("rgba(100, 116, 139, 0.18)", "#94a3b8")
-                                            };
-                                            format!(
-                                                "padding: 6px 10px; border-radius: 8px; background: {bg}; color: {fg}; font-weight: 800; font-size: 0.85rem;"
-                                            )
-                                        }>
-                                            {move || {
-                                                let r = last_reward.get();
-                                                if r > 0.0 {
-                                                    "✓ Correct"
-                                                } else if r < 0.0 {
-                                                    "✗ Wrong"
-                                                } else {
-                                                    "—"
-                                                }
-                                            }}
+                                            <div class="subtle" style="margin-top: 10px; line-height: 1.5;">
+                                                "Tip: If accuracy is stuck, slow the trial, lower ε, and increase α a bit."
+                                            </div>
                                         </div>
                                     </div>
 
-                                    <div style="margin-top: 10px; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                        "Tip: If accuracy is stuck, slow the trial, lower ε, and increase α a bit."
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"What Replay Is"</h3>
+                                            <div style="color: var(--text); font-size: 0.85rem; line-height: 1.6;">
+                                                <div>"Replay is like a stack of flashcards."</div>
+                                                <div>"Each flashcard shows some clues (stimuli)."</div>
+                                                <div>"Braine picks one button (an action)."</div>
+                                                <div>"If it picked the right button, it gets a green point. If not, a red point."</div>
+                                                <div style="margin-top: 8px; color: var(--muted);">"Step = do 1 flashcard. Run = keep going."</div>
+                                                <div style="margin-top: 6px; color: var(--muted);">"Replay is special because the questions don’t change — it’s great for checking whether a settings change helped."</div>
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::Replay.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::Replay.inputs_info()}</pre>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -4608,11 +4819,20 @@ fn App() -> impl IntoView {
                                                                 runtime.update_value(|r| {
                                                                     r.brain.set_execution_tier(ExecutionTier::Gpu);
                                                                 });
-                                                                set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
-                                                                push_toast(
-                                                                    ToastLevel::Success,
-                                                                    "Execution tier: GPU".to_string(),
-                                                                );
+                                                                let eff = runtime.with_value(|r| r.brain.effective_execution_tier());
+                                                                if eff == ExecutionTier::Gpu {
+                                                                    set_gpu_status.set("WebGPU: enabled (GPU dynamics tier)");
+                                                                    push_toast(
+                                                                        ToastLevel::Success,
+                                                                        "Execution tier: GPU".to_string(),
+                                                                    );
+                                                                } else {
+                                                                    set_gpu_status.set("WebGPU: ready (CPU fallback)");
+                                                                    push_toast(
+                                                                        ToastLevel::Info,
+                                                                        "WebGPU detected, but using CPU tier".to_string(),
+                                                                    );
+                                                                }
                                                             }
                                                             Err(e) => {
                                                                 set_gpu_status
@@ -4886,269 +5106,6 @@ fn App() -> impl IntoView {
                                             <div style="display: flex; align-items: center; gap: 4px;">
                                                 <div style="width: 10px; height: 10px; border-radius: 50%; background: rgb(148, 163, 184);"></div>
                                                 <span style="color: var(--muted);">"Concepts (imprinted)"</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </Show>
-
-                                <Show when=move || analytics_panel.get() == AnalyticsPanel::BrainViz>
-                                    <div class="card">
-                                        <h3 class="card-title">"🧠 Braine Visualization"</h3>
-                                        <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
-                                        <div class="callout">
-                                            <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
-                                        </div>
-
-                                        <div class="subtle" style="margin-top: 8px;">
-                                            {move || {
-                                                let src = if idb_loaded.get() { "IndexedDB (brain_image)" } else { "fresh" };
-                                                let autosave = if idb_autosave.get() { "on" } else { "off" };
-                                                let ts = idb_last_save.get();
-                                                if ts.is_empty() {
-                                                    format!("BBI source: {src} • Autosave: {autosave} • Last save: —")
-                                                } else {
-                                                    format!("BBI source: {src} • Autosave: {autosave} • Last save: {ts}")
-                                                }
-                                            }}
-                                        </div>
-
-                                        <div class="row end wrap" style="margin-top: 10px;">
-                                            <label class="label">
-                                                <span>"View"</span>
-                                                <select
-                                                    class="input"
-                                                    on:change=move |ev| {
-                                                        let v = event_target_value(&ev);
-                                                        set_brainviz_view_mode.set(if v == "causal" { "causal" } else { "substrate" });
-                                                    }
-                                                >
-                                                    <option value="substrate" selected=move || brainviz_view_mode.get() == "substrate">"Substrate"</option>
-                                                    <option value="causal" selected=move || brainviz_view_mode.get() == "causal">"Causal"</option>
-                                                </select>
-                                            </label>
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
-                                                <span>"Nodes"</span>
-                                                <div style="display: flex; gap: 2px; align-items: center;">
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(50).max(16));
-                                                    }>"-50"</button>
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(10).max(16));
-                                                    }>"-10"</button>
-                                                    <input
-                                                        class="input compact"
-                                                        type="number"
-                                                        min="16"
-                                                        max="1024"
-                                                        step="16"
-                                                        style="width: 60px;"
-                                                        prop:value=move || brainviz_node_sample.get().to_string()
-                                                        on:input=move |ev| {
-                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                                set_brainviz_node_sample.set(v.clamp(16, 1024));
-                                                            }
-                                                        }
-                                                    />
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_node_sample.update(|v| *v = (*v + 10).min(1024));
-                                                    }>"+10"</button>
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_node_sample.update(|v| *v = (*v + 50).min(1024));
-                                                    }>"+50"</button>
-                                                </div>
-                                            </div>
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
-                                                <span>"Edges/node"</span>
-                                                <div style="display: flex; gap: 2px; align-items: center;">
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(5).max(1));
-                                                    }>"-5"</button>
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(1).max(1));
-                                                    }>"-1"</button>
-                                                    <input
-                                                        class="input compact"
-                                                        type="number"
-                                                        min="1"
-                                                        max="32"
-                                                        step="1"
-                                                        style="width: 50px;"
-                                                        prop:value=move || brainviz_edges_per_node.get().to_string()
-                                                        on:input=move |ev| {
-                                                            if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                                set_brainviz_edges_per_node.set(v.clamp(1, 32));
-                                                            }
-                                                        }
-                                                    />
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_edges_per_node.update(|v| *v = (*v + 1).min(32));
-                                                    }>"+1"</button>
-                                                    <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                                        set_brainviz_edges_per_node.update(|v| *v = (*v + 5).min(32));
-                                                    }>"+5"</button>
-                                                </div>
-                                            </div>
-                                            <button
-                                                class="btn sm"
-                                                on:click=move |_| {
-                                                    set_brainviz_zoom.set(1.0);
-                                                    set_brainviz_pan_x.set(0.0);
-                                                    set_brainviz_pan_y.set(0.0);
-                                                    set_brainviz_manual_rotation.set(0.0);
-                                                    set_brainviz_rotation_x.set(0.0);
-                                                }
-                                            >
-                                                "Reset view"
-                                            </button>
-                                        </div>
-
-                                        <div style="position: relative;">
-                                            <canvas
-                                                node_ref=brain_viz_ref
-                                                width="900"
-                                                height="520"
-                                                class="canvas brainviz"
-                                                style="touch-action: none;"
-                                                on:wheel=move |ev| {
-                                                    ev.prevent_default();
-                                                    let dy = ev.delta_y() as f32;
-                                                    let factor = (1.0 + (-dy * 0.001)).clamp(0.85, 1.18);
-                                                    set_brainviz_zoom.update(|z| {
-                                                        *z = (*z * factor).clamp(0.5, 4.0);
-                                                    });
-                                                }
-                                                on:mousedown=move |ev| {
-                                                    let Some(canvas) = brain_viz_ref.get() else { return; };
-                                                    let rect = canvas.get_bounding_client_rect();
-                                                    let css_x = (ev.client_x() as f64) - rect.left();
-                                                    let css_y = (ev.client_y() as f64) - rect.top();
-                                                    brainviz_dragging.set_value(true);
-                                                    brainviz_last_drag_xy.set_value((css_x, css_y));
-                                                }
-                                                on:mouseup=move |_| {
-                                                    brainviz_dragging.set_value(false);
-                                                }
-                                                on:mouseleave=move |_| {
-                                                    brainviz_dragging.set_value(false);
-                                                    set_brainviz_hover.set(None);
-                                                }
-                                                on:mousemove=move |ev| {
-                                                    let Some(canvas) = brain_viz_ref.get() else { return; };
-                                                    let rect = canvas.get_bounding_client_rect();
-                                                    let css_x = (ev.client_x() as f64) - rect.left();
-                                                    let css_y = (ev.client_y() as f64) - rect.top();
-
-                                                    let rw = rect.width().max(1.0);
-                                                    let rh = rect.height().max(1.0);
-                                                    if css_x < 0.0 || css_y < 0.0 || css_x > rw || css_y > rh {
-                                                        set_brainviz_hover.set(None);
-                                                        return;
-                                                    }
-
-                                                    if brainviz_dragging.get_value() {
-                                                        let (lx, ly) = brainviz_last_drag_xy.get_value();
-                                                        let dx = css_x - lx;
-                                                        let dy = css_y - ly;
-
-                                                        // Shift+drag = pan, regular drag = rotate (both axes)
-                                                        if ev.shift_key() {
-                                                            set_brainviz_pan_x.update(|v| *v += dx as f32);
-                                                            set_brainviz_pan_y.update(|v| *v += dy as f32);
-                                                        } else {
-                                                            // Horizontal drag = Y-axis rotation
-                                                            set_brainviz_manual_rotation.update(|v| *v += (dx as f32) * 0.01);
-                                                            // Vertical drag = X-axis rotation
-                                                            set_brainviz_rotation_x.update(|v| *v += (dy as f32) * 0.01);
-                                                        }
-                                                        brainviz_last_drag_xy.set_value((css_x, css_y));
-                                                        return;
-                                                    }
-
-                                                    let mut best: Option<(u32, f64, f64)> = None; // (id, css_x, css_y)
-                                                    brainviz_hit_nodes.with_value(|hits| {
-                                                        let mut best_d2: f64 = f64::INFINITY;
-                                                        for hn in hits {
-                                                            let dx = hn.x - css_x;
-                                                            let dy = hn.y - css_y;
-                                                            let d2 = dx * dx + dy * dy;
-                                                            let r = hn.r + 4.0;
-                                                            if d2 <= r * r && d2 < best_d2 {
-                                                                best_d2 = d2;
-                                                                best = Some((hn.id, hn.x, hn.y));
-                                                            }
-                                                        }
-                                                    });
-
-                                                    set_brainviz_hover.set(best);
-                                                }
-                                            ></canvas>
-
-                                            <Show when=move || brainviz_hover.get().is_some()>
-                                                <div style=move || {
-                                                    let Some((_id, x, y)) = brainviz_hover.get() else { return "display: none;".to_string(); };
-                                                    format!(
-                                                        "position: absolute; left: {:.0}px; top: {:.0}px; transform: translate(10px, -10px); padding: 8px 10px; background: rgba(10,15,26,0.92); border: 1px solid rgba(122,162,255,0.25); border-radius: 10px; font-size: 12px; color: rgba(232,236,255,0.95); pointer-events: none; max-width: 260px;",
-                                                        x,
-                                                        y
-                                                    )
-                                                }>
-                                                    {move || {
-                                                        let Some((id, _x, _y)) = brainviz_hover.get() else { return "".to_string(); };
-                                                        let p = brainviz_points
-                                                            .get()
-                                                            .into_iter()
-                                                            .find(|p| p.id == id);
-                                                        if let Some(p) = p {
-                                                            let kind = if p.is_sensor_member {
-                                                                "sensor"
-                                                            } else if p.is_group_member {
-                                                                "group"
-                                                            } else if p.is_reserved {
-                                                                "reserved"
-                                                            } else {
-                                                                "unit"
-                                                            };
-                                                            format!("id={}  kind={}  amp01={:.2}  age={:.2}", p.id, kind, p.amp01, p.rel_age)
-                                                        } else {
-                                                            format!("id={}", id)
-                                                        }
-                                                    }}
-                                                </div>
-                                            </Show>
-                                        </div>
-
-                                        // Legend with node type descriptions
-                                        <div style="margin-top: 12px; padding: 10px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px;">
-                                            <div style="font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-weight: 600;">"Node Types"</div>
-                                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; font-size: 0.75rem;">
-                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(255, 153, 102); flex-shrink: 0; margin-top: 2px;"></div>
-                                                    <div>
-                                                        <strong style="color: var(--text);">"Sensors"</strong>
-                                                        <div style="color: var(--muted);">"Input units that receive external stimuli from the environment"</div>
-                                                    </div>
-                                                </div>
-                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(74, 222, 128); flex-shrink: 0; margin-top: 2px;"></div>
-                                                    <div>
-                                                        <strong style="color: var(--text);">"Groups"</strong>
-                                                        <div style="color: var(--muted);">"Action units that form output groups for behavior/decisions"</div>
-                                                    </div>
-                                                </div>
-                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(251, 191, 36); flex-shrink: 0; margin-top: 2px;"></div>
-                                                    <div>
-                                                        <strong style="color: var(--text);">"Regular"</strong>
-                                                        <div style="color: var(--muted);">"Free units that form associations through learning dynamics"</div>
-                                                    </div>
-                                                </div>
-                                                <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                                    <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(148, 163, 184); flex-shrink: 0; margin-top: 2px;"></div>
-                                                    <div>
-                                                        <strong style="color: var(--text);">"Concepts"</strong>
-                                                        <div style="color: var(--muted);">"Reserved units that have formed stable engrams via imprinting"</div>
-                                                    </div>
-                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -5469,1841 +5426,329 @@ fn App() -> impl IntoView {
                         </Show>
 
                     </div>
+
+                    <div class="dashboard-bottom">
+                        <div class=move || {
+                            if brainviz_is_expanded.get() {
+                                "dashboard-pinned brainviz-dock brainviz-overlay"
+                            } else {
+                                "dashboard-pinned brainviz-dock"
+                            }
+                        }>
+                            <div class="dashboard-pinned-head">
+                                <div class="dashboard-pinned-title">"🧠 BrainViz"</div>
+                                <div class="dashboard-pinned-meta">
+                                    {move || {
+                                        let n = brainviz_display_nodes.get();
+                                        let e = brainviz_display_edges.get();
+                                        let avg = brainviz_display_avg_conn.get();
+                                        let maxc = brainviz_display_max_conn.get();
+                                        format!("{} nodes • {} edges • avg {:.2} • max {}", n, e, avg, maxc)
+                                    }}
+                                </div>
+                                <button
+                                    class="icon-btn"
+                                    title=move || if brainviz_is_expanded.get() { "Minimize BrainViz" } else { "Maximize BrainViz" }
+                                    on:click=move |_| {
+                                        set_brainviz_is_expanded.update(|v| *v = !*v);
+                                        set_dashboard_open.set(true);
+                                    }
+                                >
+                                    {move || if brainviz_is_expanded.get() { "⤡" } else { "⤢" }}
+                                </button>
+                            </div>
+
+                            <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
+                            <div class="callout">
+                                <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
+                            </div>
+
+                            <div class="subtle" style="margin-top: 8px;">
+                                {move || {
+                                    let src = if idb_loaded.get() { "IndexedDB (brain_image)" } else { "fresh" };
+                                    let autosave = if idb_autosave.get() { "on" } else { "off" };
+                                    let ts = idb_last_save.get();
+                                    if ts.is_empty() {
+                                        format!("BBI source: {src} • Autosave: {autosave} • Last save: —")
+                                    } else {
+                                        format!("BBI source: {src} • Autosave: {autosave} • Last save: {ts}")
+                                    }
+                                }}
+                            </div>
+
+                            <div class="row end wrap" style="margin-top: 10px;">
+                                <label class="label">
+                                    <span>"View"</span>
+                                    <select
+                                        class="input"
+                                        on:change=move |ev| {
+                                            let v = event_target_value(&ev);
+                                            set_brainviz_view_mode.set(if v == "causal" { "causal" } else { "substrate" });
+                                        }
+                                    >
+                                        <option value="substrate" selected=move || brainviz_view_mode.get() == "substrate">"Substrate"</option>
+                                        <option value="causal" selected=move || brainviz_view_mode.get() == "causal">"Causal"</option>
+                                    </select>
+                                </label>
+                                <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
+                                    <span>"Nodes"</span>
+                                    <div style="display: flex; gap: 2px; align-items: center;">
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(50).max(16));
+                                        }>-50</button>
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(10).max(16));
+                                        }>-10</button>
+                                        <input
+                                            class="input compact"
+                                            type="number"
+                                            min="16"
+                                            max="1024"
+                                            step="16"
+                                            style="width: 60px;"
+                                            prop:value=move || brainviz_node_sample.get().to_string()
+                                            on:input=move |ev| {
+                                                if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                    set_brainviz_node_sample.set(v.clamp(16, 1024));
+                                                }
+                                            }
+                                        />
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_node_sample.update(|v| *v = (*v + 10).min(1024));
+                                        }>+10</button>
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_node_sample.update(|v| *v = (*v + 50).min(1024));
+                                        }>+50</button>
+                                    </div>
+                                </div>
+                                <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
+                                    <span>"Edges/node"</span>
+                                    <div style="display: flex; gap: 2px; align-items: center;">
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(5).max(1));
+                                        }>-5</button>
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(1).max(1));
+                                        }>-1</button>
+                                        <input
+                                            class="input compact"
+                                            type="number"
+                                            min="1"
+                                            max="32"
+                                            step="1"
+                                            style="width: 50px;"
+                                            prop:value=move || brainviz_edges_per_node.get().to_string()
+                                            on:input=move |ev| {
+                                                if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                    set_brainviz_edges_per_node.set(v.clamp(1, 32));
+                                                }
+                                            }
+                                        />
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_edges_per_node.update(|v| *v = (*v + 1).min(32));
+                                        }>+1</button>
+                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                            set_brainviz_edges_per_node.update(|v| *v = (*v + 5).min(32));
+                                        }>+5</button>
+                                    </div>
+                                </div>
+                                <button
+                                    class="btn sm"
+                                    on:click=move |_| {
+                                        set_brainviz_zoom.set(1.0);
+                                        set_brainviz_pan_x.set(0.0);
+                                        set_brainviz_pan_y.set(0.0);
+                                        set_brainviz_manual_rotation.set(0.0);
+                                        set_brainviz_rotation_x.set(0.0);
+                                    }
+                                >
+                                    "Reset view"
+                                </button>
+                            </div>
+
+                            <div style="position: relative;">
+                                <canvas
+                                    node_ref=brain_viz_ref
+                                    width="900"
+                                    height="520"
+                                    class=move || {
+                                        if brainviz_is_expanded.get() {
+                                            "canvas brainviz brainviz-expanded"
+                                        } else {
+                                            "canvas brainviz"
+                                        }
+                                    }
+                                    style="touch-action: none;"
+                                    on:wheel=move |ev| {
+                                        ev.prevent_default();
+                                        let dy = ev.delta_y() as f32;
+                                        let factor = (1.0 + (-dy * 0.001)).clamp(0.85, 1.18);
+                                        set_brainviz_zoom.update(|z| {
+                                            *z = (*z * factor).clamp(0.5, 4.0);
+                                        });
+                                    }
+                                    on:mousedown=move |ev| {
+                                        let Some(canvas) = brain_viz_ref.get() else { return; };
+                                        let rect = canvas.get_bounding_client_rect();
+                                        let css_x = (ev.client_x() as f64) - rect.left();
+                                        let css_y = (ev.client_y() as f64) - rect.top();
+                                        brainviz_dragging.set_value(true);
+                                        brainviz_last_drag_xy.set_value((css_x, css_y));
+                                    }
+                                    on:mouseup=move |_| {
+                                        brainviz_dragging.set_value(false);
+                                    }
+                                    on:mouseleave=move |_| {
+                                        brainviz_dragging.set_value(false);
+                                        set_brainviz_hover.set(None);
+                                    }
+                                    on:mousemove=move |ev| {
+                                        let Some(canvas) = brain_viz_ref.get() else { return; };
+                                        let rect = canvas.get_bounding_client_rect();
+                                        let css_x = (ev.client_x() as f64) - rect.left();
+                                        let css_y = (ev.client_y() as f64) - rect.top();
+
+                                        let rw = rect.width().max(1.0);
+                                        let rh = rect.height().max(1.0);
+                                        if css_x < 0.0 || css_y < 0.0 || css_x > rw || css_y > rh {
+                                            set_brainviz_hover.set(None);
+                                            return;
+                                        }
+
+                                        if brainviz_dragging.get_value() {
+                                            let (lx, ly) = brainviz_last_drag_xy.get_value();
+                                            let dx = css_x - lx;
+                                            let dy = css_y - ly;
+
+                                            // Shift+drag = pan, regular drag = rotate (both axes)
+                                            if ev.shift_key() {
+                                                set_brainviz_pan_x.update(|v| *v += dx as f32);
+                                                set_brainviz_pan_y.update(|v| *v += dy as f32);
+                                            } else {
+                                                // Horizontal drag = Y-axis rotation
+                                                set_brainviz_manual_rotation.update(|v| *v += (dx as f32) * 0.01);
+                                                // Vertical drag = X-axis rotation
+                                                set_brainviz_rotation_x.update(|v| *v += (dy as f32) * 0.01);
+                                            }
+                                            brainviz_last_drag_xy.set_value((css_x, css_y));
+                                            return;
+                                        }
+
+                                        let mut best: Option<(u32, f64, f64)> = None; // (id, css_x, css_y)
+                                        brainviz_hit_nodes.with_value(|hits| {
+                                            let mut best_d2: f64 = f64::INFINITY;
+                                            for hn in hits {
+                                                let dx = hn.x - css_x;
+                                                let dy = hn.y - css_y;
+                                                let d2 = dx * dx + dy * dy;
+                                                let r = hn.r + 4.0;
+                                                if d2 <= r * r && d2 < best_d2 {
+                                                    best_d2 = d2;
+                                                    best = Some((hn.id, hn.x, hn.y));
+                                                }
+                                            }
+                                        });
+
+                                        set_brainviz_hover.set(best);
+                                    }
+                                ></canvas>
+
+                                <Show when=move || brainviz_hover.get().is_some()>
+                                    <div style=move || {
+                                        let Some((_id, x, y)) = brainviz_hover.get() else { return "display: none;".to_string(); };
+                                        format!(
+                                            "position: absolute; left: {:.0}px; top: {:.0}px; transform: translate(10px, -10px); padding: 8px 10px; background: rgba(10,15,26,0.92); border: 1px solid rgba(122,162,255,0.25); border-radius: 10px; font-size: 12px; color: rgba(232,236,255,0.95); pointer-events: none; max-width: 260px;",
+                                            x,
+                                            y
+                                        )
+                                    }>
+                                        {move || {
+                                            let Some((id, _x, _y)) = brainviz_hover.get() else { return "".to_string(); };
+                                            let degree = brainviz_degree_by_id
+                                                .with_value(|m| m.get(&id).copied().unwrap_or(0));
+                                            if brainviz_view_mode.get() == "causal" {
+                                                let g = brainviz_causal_graph.get();
+                                                let n = g
+                                                    .nodes
+                                                    .iter()
+                                                    .find(|n| (n.id as u32) == id);
+                                                if let Some(n) = n {
+                                                    format!(
+                                                        "symbol={}  count={:.1}  conn={}",
+                                                        n.name, n.base_count, degree
+                                                    )
+                                                } else {
+                                                    format!("id={}  conn={}", id, degree)
+                                                }
+                                            } else {
+                                                let p = brainviz_points
+                                                    .get()
+                                                    .into_iter()
+                                                    .find(|p| p.id == id);
+                                                if let Some(p) = p {
+                                                    let kind = if p.is_sensor_member {
+                                                        "sensor"
+                                                    } else if p.is_group_member {
+                                                        "group"
+                                                    } else if p.is_reserved {
+                                                        "reserved"
+                                                    } else {
+                                                        "unit"
+                                                    };
+                                                    format!(
+                                                        "id={}  kind={}  conn={}  amp01={:.2}  age={:.2}",
+                                                        p.id, kind, degree, p.amp01, p.rel_age
+                                                    )
+                                                } else {
+                                                    format!("id={}  conn={}", id, degree)
+                                                }
+                                            }
+                                        }}
+                                    </div>
+                                </Show>
+                            </div>
+
+                            // Legend with node type descriptions
+                            <div style="margin-top: 12px; padding: 10px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px;">
+                                <div style="font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-weight: 600;">"Node Types"</div>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; font-size: 0.75rem;">
+                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(255, 153, 102); flex-shrink: 0; margin-top: 2px;"></div>
+                                        <div>
+                                            <strong style="color: var(--text);">"Sensors"</strong>
+                                            <div style="color: var(--muted);">"Input units that receive external stimuli from the environment"</div>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(74, 222, 128); flex-shrink: 0; margin-top: 2px;"></div>
+                                        <div>
+                                            <strong style="color: var(--text);">"Groups"</strong>
+                                            <div style="color: var(--muted);">"Action units that form output groups for behavior/decisions"</div>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(251, 191, 36); flex-shrink: 0; margin-top: 2px;"></div>
+                                        <div>
+                                            <strong style="color: var(--text);">"Regular"</strong>
+                                            <div style="color: var(--muted);">"Free units that form associations through learning dynamics"</div>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(148, 163, 184); flex-shrink: 0; margin-top: 2px;"></div>
+                                        <div>
+                                            <strong style="color: var(--text);">"Concepts"</strong>
+                                            <div style="color: var(--muted);">"Reserved units that have formed stable engrams via imprinting"</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
     }
 }
-/// Dashboard tabs for the right panel in split-page layout
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum DashboardTab {
-    Learning,
-    #[default]
-    GameDetails,
-    Stats,
-    Analytics,
-    Settings,
-}
 
-impl DashboardTab {
-    fn label(self) -> &'static str {
-        match self {
-            DashboardTab::GameDetails => "Game Details",
-            DashboardTab::Learning => "Learning",
-            DashboardTab::Stats => "Stats",
-            DashboardTab::Analytics => "Analytics",
-            DashboardTab::Settings => "Settings",
-        }
-    }
-    fn icon(self) -> &'static str {
-        match self {
-            DashboardTab::GameDetails => "🧩",
-            DashboardTab::Learning => "🧠",
-            DashboardTab::Stats => "📊",
-            DashboardTab::Analytics => "📈",
-            DashboardTab::Settings => "⚙️",
-        }
-    }
-    fn all() -> &'static [DashboardTab] {
-        &[
-            DashboardTab::Learning,
-            DashboardTab::GameDetails,
-            DashboardTab::Stats,
-            DashboardTab::Analytics,
-            DashboardTab::Settings,
-        ]
-    }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum AnalyticsPanel {
-    #[default]
-    Performance,
-    Reward,
-    Choices,
-    UnitPlot,
-    BrainViz,
-}
 
-impl AnalyticsPanel {
-    fn label(self) -> &'static str {
-        match self {
-            AnalyticsPanel::Performance => "Performance",
-            AnalyticsPanel::Reward => "Reward",
-            AnalyticsPanel::Choices => "Choices",
-            AnalyticsPanel::UnitPlot => "Unit Plot",
-            AnalyticsPanel::BrainViz => "Braine Viz",
-        }
-    }
-    fn all() -> &'static [AnalyticsPanel] {
-        &[
-            AnalyticsPanel::Performance,
-            AnalyticsPanel::Reward,
-            AnalyticsPanel::Choices,
-            AnalyticsPanel::UnitPlot,
-            AnalyticsPanel::BrainViz,
-        ]
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GameKind {
-    Spot,
-    Bandit,
-    SpotReversal,
-    SpotXY,
-    Pong,
-    Sequence,
-    Text,
-    Replay,
-}
-
-impl GameKind {
-    fn label(self) -> &'static str {
-        match self {
-            GameKind::Spot => "spot",
-            GameKind::Bandit => "bandit",
-            GameKind::SpotReversal => "spot_reversal",
-            GameKind::SpotXY => "spotxy",
-            GameKind::Pong => "pong",
-            GameKind::Sequence => "sequence",
-            GameKind::Text => "text",
-            GameKind::Replay => "replay",
-        }
-    }
-
-    fn display_name(self) -> &'static str {
-        match self {
-            GameKind::Spot => "Spot",
-            GameKind::Bandit => "Bandit",
-            GameKind::SpotReversal => "Reversal",
-            GameKind::SpotXY => "SpotXY",
-            GameKind::Pong => "Pong",
-            GameKind::Sequence => "Sequence",
-            GameKind::Text => "Text",
-            GameKind::Replay => "Replay",
-        }
-    }
-
-    fn icon(self) -> &'static str {
-        match self {
-            GameKind::Spot => "🎯",
-            GameKind::Bandit => "🎰",
-            GameKind::SpotReversal => "🔄",
-            GameKind::SpotXY => "📍",
-            GameKind::Pong => "🏓",
-            GameKind::Sequence => "🔢",
-            GameKind::Text => "📝",
-            GameKind::Replay => "📼",
-        }
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            GameKind::Spot => "Binary discrimination with two stimuli (spot_left/spot_right) and two actions (left/right). One response per trial; reward is +1 for correct, −1 for wrong.",
-            GameKind::Bandit => "Two-armed bandit with a constant context stimulus (bandit). Choose left/right once per trial; reward is stochastic with prob_left=0.8 and prob_right=0.2.",
-            GameKind::SpotReversal => "Like Spot, but the correct mapping flips once after flip_after_trials=200. Tests adaptation to a distributional shift in reward dynamics.",
-            GameKind::SpotXY => "Population-coded 2D position. In BinaryX mode, classify sign(x) into left/right. In Grid mode, choose the correct spotxy_cell_{n}_{ix}_{iy} among n² actions (web control doubles: 2×2 → 4×4 → 8×8).",
-            GameKind::Pong => "Discrete-sensor Pong: ball/paddle position and velocity are binned into named sensors; actions are up/down/stay. The sim uses continuous collision detection against the arena walls and is deterministic given a fixed seed (randomness only on post-score serve).",
-            GameKind::Sequence => "Next-token prediction over a small alphabet {A,B,C} with a regime shift between two fixed patterns every 60 outcomes.",
-            GameKind::Text => "Next-token prediction over a byte vocabulary built from two small corpora (default: 'hello world\\n' vs 'goodbye world\\n') with a regime shift every 80 outcomes.",
-            GameKind::Replay => "Dataset-driven replay: each completed trial consumes a record (stimuli + allowed actions + correct action) and emits reward based on correctness. Useful for deterministic evaluation of the advisor boundary.",
-        }
-    }
-
-    fn what_it_tests(self) -> &'static str {
-        match self {
-            GameKind::Spot => "• Simple stimulus-action associations\n• Binary classification\n• Basic credit assignment\n• Fastest to learn (~50-100 trials)",
-            GameKind::Bandit => "• Exploration vs exploitation trade-off\n• Stochastic reward handling\n• Value estimation under uncertainty\n• Convergence to the better arm (0.8 vs 0.2)",
-            GameKind::SpotReversal => "• Behavioral flexibility\n• Rule change detection\n• Context-dependent learning\n• Unlearning old associations\n• Catastrophic forgetting resistance",
-            GameKind::SpotXY => "• Multi-class classification (N² classes)\n• Spatial encoding and decoding\n• Scalable representation\n• Train/eval mode separation\n• Generalization testing",
-            GameKind::Pong => "• Continuous state representation\n• Real-time motor control\n• Predictive tracking\n• Reward delay handling\n• Sensorimotor coordination",
-            GameKind::Sequence => "• Temporal pattern recognition\n• Regime/distribution shifts\n• Sequence prediction over {A,B,C}\n• Phase detection\n• Attractor dynamics",
-            GameKind::Text => "• Symbolic next-token prediction (byte tokens)\n• Regime/distribution shifts\n• Online learning without backprop\n• Vocabulary scaling (max_vocab)\n• Credit assignment with scalar reward",
-            GameKind::Replay => "• Deterministic evaluation loop\n• Dataset-conditioned correctness reward\n• Context stability (replay::<dataset>)\n• Advisor boundary validation (context → advice)",
-        }
-    }
-
-    fn inputs_info(self) -> &'static str {
-        match self {
-            GameKind::Spot => "Stimuli (by name): spot_left or spot_right\nActions: left, right\nTrial timing: controlled by Trial ms",
-            GameKind::Bandit => "Stimulus: bandit (constant context)\nActions: left, right\nParameters: prob_left=0.8, prob_right=0.2",
-            GameKind::SpotReversal => "Stimuli: spot_left or spot_right (+ reversal context sensor spot_rev_ctx when reversed)\nActions: left, right\nParameter: flip_after_trials=200\nNote: the web runtime also tags the meaning context with ::rev",
-            GameKind::SpotXY => "Base stimulus: spotxy (context)\nSensors: pos_x_00..pos_x_15 and pos_y_00..pos_y_15 (population code)\nStimulus key: spotxy_xbin_XX or spotxy_bin_NN_IX_IY\nActions: left/right (BinaryX) OR spotxy_cell_NN_IX_IY (Grid)\nEval mode: holdout band |x| in [0.25..0.45] with learning suppressed",
-            GameKind::Pong => "Base stimulus: pong (context)\nSensors: pong_ball_x_00..07, pong_ball_y_00..07, pong_paddle_y_00..07, pong_ball_visible/hidden, pong_vx_pos/neg, pong_vy_pos/neg\nOptional distractor: pong_ball2_x_00..07, pong_ball2_y_00..07, pong_ball2_visible/hidden, pong_ball2_vx_pos/neg, pong_ball2_vy_pos/neg\nStimulus key: pong_b08_vis.._bx.._by.._py.._vx.._vy.. (+ ball2 fields when enabled)\nActions: up, down, stay",
-            GameKind::Sequence => "Base stimulus: sequence (context)\nSensors: seq_token_A/B/C and seq_regime_0/1\nStimulus key: seq_r{0|1}_t{A|B|C}\nActions: A, B, C",
-            GameKind::Text => "Base stimulus: text (context)\nSensors: txt_regime_0/1 and txt_tok_XX (byte tokens) + txt_tok_UNK\nActions: tok_XX for bytes in vocab + tok_UNK",
-            GameKind::Replay => "Stimuli/actions: defined per-trial by the dataset\nStimulus key: replay::<dataset_name>\nReward: +1 on correct_action, −1 otherwise",
-        }
-    }
-
-    fn reward_info(self) -> &'static str {
-        match self {
-            GameKind::Spot => "+1.0: Correct response (stimulus matches action)\n−1.0: Incorrect response",
-            GameKind::Bandit => "+1.0: Bernoulli reward (win)\n−1.0: No win\nProbabilities: left=0.8, right=0.2 (default)",
-            GameKind::SpotReversal => "+1.0: Correct under current mapping\n−1.0: Incorrect\nFlip: once after flip_after_trials=200",
-            GameKind::SpotXY => "+1.0: Correct classification\n−1.0: Incorrect\nEval mode: runs dynamics and action selection, but suppresses learning writes",
-            GameKind::Pong => "+0.05: Action matches a simple tracking heuristic\n−0.05: Action mismatches heuristic\nEvent reward: +1 on paddle hit, −1 on miss (when the ball reaches the left boundary at x=0)\nAll rewards are clamped to [−1, +1]",
-            GameKind::Sequence => "+1.0: Correct next-token prediction\n−1.0: Incorrect\nRegime flips every shift_every_outcomes=60",
-            GameKind::Text => "+1.0: Correct next-token prediction\n−1.0: Incorrect\nRegime flips every shift_every_outcomes=80",
-            GameKind::Replay => "+1.0: Action matches correct_action\n−1.0: Otherwise\nNotes: no stochasticity unless your dataset includes it",
-        }
-    }
-
-    fn learning_objectives(self) -> &'static str {
-        match self {
-            GameKind::Spot => "• Achieve >90% accuracy consistently\n• Learn in <100 trials\n• Demonstrate stable attractor formation",
-            GameKind::Bandit => "• Converge to preferred arm selection\n• Maintain ~70% reward rate at optimum\n• Balance exploration early, exploitation late",
-            GameKind::SpotReversal => "• Recover accuracy after reversal within ~20 trials\n• Use context bit to accelerate switching\n• Maintain two stable modes",
-            GameKind::SpotXY => "• Scale to larger grids (3×3, 4×4, 5×5+)\n• Maintain accuracy in Eval mode\n• Demonstrate spatial generalization",
-            GameKind::Pong => "• Track ball trajectory predictively\n• Minimize missed balls over time\n• Develop smooth control policy",
-            GameKind::Sequence => "• Predict sequences of length 3-6+\n• Recognize phase within sequence\n• Handle pattern length changes",
-            GameKind::Text => "• Build character transition model\n• Adapt to regime shifts\n• Predict based on statistical regularities",
-            GameKind::Replay => "• Achieve high accuracy on dataset\n• Use stable context to generalize across repeated trials\n• Validate advisor integration without action selection",
-        }
-    }
-
-    fn all() -> &'static [GameKind] {
-        &[
-            GameKind::Spot,
-            GameKind::Bandit,
-            GameKind::SpotReversal,
-            GameKind::SpotXY,
-            GameKind::Pong,
-            GameKind::Sequence,
-            GameKind::Text,
-            GameKind::Replay,
-        ]
-    }
-}
-
-struct TickConfig {
-    trial_period_ms: u32,
-    exploration_eps: f32,
-    meaning_alpha: f32,
-    reward_scale: f32,
-    reward_bias: f32,
-    learning_enabled: bool,
-}
-
-struct TickOutput {
-    last_action: String,
-    reward: f32,
-}
-
-struct AppRuntime {
-    brain: Brain,
-    game: WebGame,
-    pending_neuromod: f32,
-    rng_seed: u64,
-}
-
-impl AppRuntime {
-    fn new() -> Self {
-        Self {
-            brain: make_default_brain(),
-            game: WebGame::Spot(SpotGame::new()),
-            pending_neuromod: 0.0,
-            rng_seed: 0xC0FF_EE12u64,
-        }
-    }
-
-    fn set_game(&mut self, kind: GameKind) {
-        self.game = match kind {
-            GameKind::Spot => WebGame::Spot(SpotGame::new()),
-            GameKind::Bandit => WebGame::Bandit(BanditGame::new()),
-            GameKind::SpotReversal => WebGame::SpotReversal(SpotReversalGame::new(200)),
-            GameKind::SpotXY => {
-                self.ensure_spotxy_io(16);
-                let g = SpotXYGame::new(16);
-                self.ensure_spotxy_actions(&g);
-                WebGame::SpotXY(g)
-            }
-            GameKind::Pong => {
-                self.ensure_pong_io();
-                WebGame::Pong(PongWebGame::new(0xB0A7_F00Du64))
-            }
-            GameKind::Sequence => {
-                self.ensure_sequence_io();
-                WebGame::Sequence(SequenceWebGame::new())
-            }
-            GameKind::Text => {
-                let g = TextWebGame::new();
-                self.ensure_text_io(&g);
-                WebGame::Text(g)
-            }
-            GameKind::Replay => {
-                let ds = ReplayDataset::builtin_left_right_spot();
-                self.ensure_replay_io(&ds);
-                WebGame::Replay(ReplayGame::new(ds))
-            }
-        };
-        self.pending_neuromod = 0.0;
-    }
-
-    fn game_ui_snapshot(&self) -> GameUiSnapshot {
-        self.game.ui_snapshot()
-    }
-
-    fn ensure_spotxy_io(&mut self, k: usize) {
-        for i in 0..k {
-            self.brain
-                .ensure_sensor_min_width(&format!("pos_x_{i:02}"), 3);
-            self.brain
-                .ensure_sensor_min_width(&format!("pos_y_{i:02}"), 3);
-        }
-        self.brain.ensure_action_min_width("left", 6);
-        self.brain.ensure_action_min_width("right", 6);
-    }
-
-    fn ensure_pong_io(&mut self) {
-        let bins = 8u32;
-        for i in 0..bins {
-            self.brain
-                .ensure_sensor_min_width(&format!("pong_ball_x_{i:02}"), 3);
-            self.brain
-                .ensure_sensor_min_width(&format!("pong_ball_y_{i:02}"), 3);
-            self.brain
-                .ensure_sensor_min_width(&format!("pong_ball2_x_{i:02}"), 3);
-            self.brain
-                .ensure_sensor_min_width(&format!("pong_ball2_y_{i:02}"), 3);
-            self.brain
-                .ensure_sensor_min_width(&format!("pong_paddle_y_{i:02}"), 3);
-        }
-        self.brain.ensure_sensor_min_width("pong_ball_visible", 2);
-        self.brain.ensure_sensor_min_width("pong_ball_hidden", 2);
-        self.brain.ensure_sensor_min_width("pong_ball2_visible", 2);
-        self.brain.ensure_sensor_min_width("pong_ball2_hidden", 2);
-        self.brain.ensure_sensor_min_width("pong_vx_pos", 2);
-        self.brain.ensure_sensor_min_width("pong_vx_neg", 2);
-        self.brain.ensure_sensor_min_width("pong_vy_pos", 2);
-        self.brain.ensure_sensor_min_width("pong_vy_neg", 2);
-
-        self.brain.ensure_sensor_min_width("pong_ball2_vx_pos", 2);
-        self.brain.ensure_sensor_min_width("pong_ball2_vx_neg", 2);
-        self.brain.ensure_sensor_min_width("pong_ball2_vy_pos", 2);
-        self.brain.ensure_sensor_min_width("pong_ball2_vy_neg", 2);
-
-        self.brain.ensure_action_min_width("up", 6);
-        self.brain.ensure_action_min_width("down", 6);
-        self.brain.ensure_action_min_width("stay", 6);
-    }
-
-    fn ensure_sequence_io(&mut self) {
-        self.brain.ensure_sensor_min_width("seq_token_A", 4);
-        self.brain.ensure_sensor_min_width("seq_token_B", 4);
-        self.brain.ensure_sensor_min_width("seq_token_C", 4);
-
-        self.brain.ensure_sensor_min_width("seq_regime_0", 3);
-        self.brain.ensure_sensor_min_width("seq_regime_1", 3);
-
-        self.brain.ensure_action_min_width("A", 6);
-        self.brain.ensure_action_min_width("B", 6);
-        self.brain.ensure_action_min_width("C", 6);
-    }
-
-    fn ensure_text_io(&mut self, g: &TextWebGame) {
-        self.brain.ensure_sensor_min_width("txt_regime_0", 3);
-        self.brain.ensure_sensor_min_width("txt_regime_1", 3);
-        for name in g.token_sensor_names() {
-            self.brain.ensure_sensor_min_width(name, 3);
-        }
-        for name in g.allowed_actions() {
-            self.brain.ensure_action_min_width(name, 6);
-        }
-    }
-
-    fn ensure_replay_io(&mut self, dataset: &ReplayDataset) {
-        use std::collections::BTreeSet;
-
-        let mut sensors: BTreeSet<String> = BTreeSet::new();
-        let mut actions: BTreeSet<String> = BTreeSet::new();
-
-        for tr in &dataset.trials {
-            for s in &tr.stimuli {
-                sensors.insert(s.name.clone());
-            }
-            for a in &tr.allowed_actions {
-                actions.insert(a.clone());
-            }
-            if !tr.correct_action.trim().is_empty() {
-                actions.insert(tr.correct_action.clone());
-            }
-        }
-
-        for name in sensors {
-            self.brain.ensure_sensor_min_width(&name, 3);
-        }
-        for name in actions {
-            self.brain.ensure_action_min_width(&name, 6);
-        }
-    }
-
-    fn ensure_spotxy_actions(&mut self, g: &SpotXYGame) {
-        self.brain.ensure_action_min_width("left", 6);
-        self.brain.ensure_action_min_width("right", 6);
-        for name in g.allowed_actions() {
-            self.brain.ensure_action_min_width(name, 6);
-        }
-    }
-
-    fn spotxy_increase_grid(&mut self) {
-        let actions = if let WebGame::SpotXY(g) = &mut self.game {
-            let cur = g.grid_n();
-            let target = if cur == 0 {
-                2
-            } else if cur.is_power_of_two() {
-                (cur.saturating_mul(2)).min(8)
-            } else {
-                cur.next_power_of_two().min(8)
-            };
-
-            // Use the underlying stepwise API, but jump to the next power-of-two size.
-            let mut guard = 0u32;
-            while g.grid_n() < target && guard < 16 {
-                let before = g.grid_n();
-                g.increase_grid();
-                if g.grid_n() == before {
-                    break;
-                }
-                guard += 1;
-            }
-
-            Some(g.allowed_actions().to_vec())
-        } else {
-            None
-        };
-
-        if let Some(actions) = actions {
-            self.brain.ensure_action_min_width("left", 6);
-            self.brain.ensure_action_min_width("right", 6);
-            for name in actions {
-                self.brain.ensure_action_min_width(&name, 6);
-            }
-        }
-    }
-
-    fn spotxy_decrease_grid(&mut self) {
-        let actions = if let WebGame::SpotXY(g) = &mut self.game {
-            let cur = g.grid_n();
-            let target = if cur <= 2 {
-                0
-            } else if cur.is_power_of_two() {
-                cur / 2
-            } else {
-                // Snap down to the closest lower power-of-two.
-                1u32 << (31 - cur.leading_zeros())
-            };
-
-            let mut guard = 0u32;
-            while g.grid_n() > target && guard < 16 {
-                let before = g.grid_n();
-                g.decrease_grid();
-                if g.grid_n() == before {
-                    break;
-                }
-                guard += 1;
-            }
-
-            Some(g.allowed_actions().to_vec())
-        } else {
-            None
-        };
-
-        if let Some(actions) = actions {
-            self.brain.ensure_action_min_width("left", 6);
-            self.brain.ensure_action_min_width("right", 6);
-            for name in actions {
-                self.brain.ensure_action_min_width(&name, 6);
-            }
-        }
-    }
-
-    fn spotxy_set_eval(&mut self, eval: bool) {
-        if let WebGame::SpotXY(g) = &mut self.game {
-            g.set_eval_mode(eval);
-        }
-    }
-
-    fn pong_set_param(&mut self, key: &str, value: f32) -> Result<(), String> {
-        match &mut self.game {
-            WebGame::Pong(g) => g.set_param(key, value),
-            _ => Err("pong_set_param: not in pong".to_string()),
-        }
-    }
-
-    fn tick(&mut self, cfg: &TickConfig) -> Option<TickOutput> {
-        self.game.update_timing(cfg.trial_period_ms);
-
-        // SpotXY eval mode is a holdout run: no causal/meaning writes.
-        let allow_learning = cfg.learning_enabled && !self.game.spotxy_eval_mode();
-
-        // Apply last reward as neuromodulation for one step.
-        self.brain.set_neuromodulator(self.pending_neuromod);
-        self.pending_neuromod = 0.0;
-
-        let base_stimulus = self.game.stimulus_name();
-        let stimulus_key_owned: Option<String> = if self.game.reversal_active() {
-            Some(format!("{}::rev", base_stimulus))
-        } else {
-            self.game.stimulus_key().map(|k| k.to_string())
-        };
-        let context_key_owned = stimulus_key_owned.unwrap_or_else(|| base_stimulus.to_string());
-        let context_key = context_key_owned.as_str();
-
-        // Apply stimuli.
-        match &self.game {
-            WebGame::Spot(_) | WebGame::Bandit(_) | WebGame::SpotReversal(_) => {
-                self.brain.apply_stimulus(Stimulus::new(base_stimulus, 1.0));
-                if self.game.reversal_active() {
-                    self.brain
-                        .apply_stimulus(Stimulus::new("spot_rev_ctx", 1.0));
-                }
-            }
-            WebGame::SpotXY(g) => {
-                g.apply_stimuli(&mut self.brain);
-            }
-            WebGame::Pong(g) => {
-                g.apply_stimuli(&mut self.brain);
-            }
-            WebGame::Sequence(g) => {
-                g.apply_stimuli(&mut self.brain);
-            }
-            WebGame::Text(g) => {
-                g.apply_stimuli(&mut self.brain);
-            }
-            WebGame::Replay(g) => {
-                g.apply_stimuli(&mut self.brain);
-            }
-        }
-
-        self.brain.note_compound_symbol(&[context_key]);
-        self.brain.step();
-
-        if self.game.response_made() {
-            self.brain.set_neuromodulator(0.0);
-            if allow_learning {
-                self.brain.commit_observation();
-            } else {
-                self.brain.discard_observation();
-            }
-            return None;
-        }
-
-        let explore = self.rng_next_f32() < cfg.exploration_eps;
-        let rand_idx = self.rng_next_u64() as usize;
-        let action = match &self.game {
-            WebGame::SpotXY(g) => {
-                let allowed = g.allowed_actions();
-                if allowed.is_empty() {
-                    return None;
-                }
-
-                if explore {
-                    allowed[rand_idx % allowed.len()].to_string()
-                } else {
-                    let ranked = self
-                        .brain
-                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
-                    ranked
-                        .into_iter()
-                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
-                        .map(|(name, _score)| name)
-                        .or_else(|| allowed.first().cloned())
-                        .unwrap_or_else(|| "left".to_string())
-                }
-            }
-            WebGame::Pong(g) => {
-                let allowed = g.allowed_actions();
-                if allowed.is_empty() {
-                    return None;
-                }
-
-                if explore {
-                    allowed[rand_idx % allowed.len()].to_string()
-                } else {
-                    let ranked = self
-                        .brain
-                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
-                    ranked
-                        .into_iter()
-                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
-                        .map(|(name, _score)| name)
-                        .or_else(|| allowed.first().cloned())
-                        .unwrap_or_else(|| "stay".to_string())
-                }
-            }
-            WebGame::Sequence(g) => {
-                let allowed = g.allowed_actions();
-                if allowed.is_empty() {
-                    return None;
-                }
-
-                if explore {
-                    allowed[rand_idx % allowed.len()].to_string()
-                } else {
-                    let ranked = self
-                        .brain
-                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
-                    ranked
-                        .into_iter()
-                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
-                        .map(|(name, _score)| name)
-                        .or_else(|| allowed.first().cloned())
-                        .unwrap_or_else(|| "A".to_string())
-                }
-            }
-            WebGame::Text(g) => {
-                let allowed = g.allowed_actions();
-                if allowed.is_empty() {
-                    return None;
-                }
-
-                if explore {
-                    allowed[rand_idx % allowed.len()].to_string()
-                } else {
-                    let ranked = self
-                        .brain
-                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
-                    ranked
-                        .into_iter()
-                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
-                        .map(|(name, _score)| name)
-                        .or_else(|| allowed.first().cloned())
-                        .unwrap_or_else(|| "tok_UNK".to_string())
-                }
-            }
-            WebGame::Replay(g) => {
-                let allowed = g.allowed_actions();
-                if allowed.is_empty() {
-                    return None;
-                }
-
-                if explore {
-                    allowed[rand_idx % allowed.len()].to_string()
-                } else {
-                    let ranked = self
-                        .brain
-                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
-                    ranked
-                        .into_iter()
-                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
-                        .map(|(name, _score)| name)
-                        .or_else(|| allowed.first().cloned())
-                        .unwrap_or_else(|| "stay".to_string())
-                }
-            }
-            _ => {
-                let allowed = ["left", "right"];
-                if explore {
-                    allowed[rand_idx % allowed.len()].to_string()
-                } else {
-                    let ranked = self
-                        .brain
-                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
-                    ranked
-                        .into_iter()
-                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
-                        .map(|(name, _score)| name)
-                        .or_else(|| allowed.first().map(|s| s.to_string()))
-                        .unwrap_or_else(|| "left".to_string())
-                }
-            }
-        };
-
-        let (reward, _done) = match self.game.score_action(&action, cfg.trial_period_ms) {
-            Some((r, done)) => (r, done),
-            None => (0.0, false),
-        };
-
-        let shaped_reward = ((reward + cfg.reward_bias) * cfg.reward_scale).clamp(-5.0, 5.0);
-
-        self.brain.note_action(&action);
-        self.brain
-            .note_compound_symbol(&["pair", context_key, action.as_str()]);
-
-        if allow_learning {
-            self.brain.set_neuromodulator(shaped_reward);
-            self.brain.reinforce_action(&action, shaped_reward);
-            self.pending_neuromod = shaped_reward;
-            self.brain.commit_observation();
-        } else {
-            self.brain.set_neuromodulator(0.0);
-            self.pending_neuromod = 0.0;
-            self.brain.discard_observation();
-        }
-
-        Some(TickOutput {
-            last_action: action,
-            reward: shaped_reward,
-        })
-    }
-
-    fn rng_next_u64(&mut self) -> u64 {
-        self.rng_seed = self
-            .rng_seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
-        self.rng_seed
-    }
-
-    fn rng_next_f32(&mut self) -> f32 {
-        let u = (self.rng_next_u64() >> 40) as u32; // 24 bits
-        (u as f32) / ((1u32 << 24) as f32)
-    }
-}
-
-#[allow(clippy::large_enum_variant)]
-enum WebGame {
-    Spot(SpotGame),
-    Bandit(BanditGame),
-    SpotReversal(SpotReversalGame),
-    SpotXY(SpotXYGame),
-    Pong(PongWebGame),
-    Sequence(SequenceWebGame),
-    Text(TextWebGame),
-    Replay(ReplayGame),
-}
-
-impl WebGame {
-    fn allowed_actions_for_ui(&self) -> Vec<String> {
-        match self {
-            WebGame::Spot(_) | WebGame::Bandit(_) | WebGame::SpotReversal(_) => {
-                vec!["left".to_string(), "right".to_string()]
-            }
-            WebGame::SpotXY(g) => g.allowed_actions().to_vec(),
-            WebGame::Pong(g) => g.allowed_actions().to_vec(),
-            WebGame::Sequence(g) => g.allowed_actions().to_vec(),
-            WebGame::Text(g) => g.allowed_actions().to_vec(),
-            WebGame::Replay(g) => g.allowed_actions().to_vec(),
-        }
-    }
-
-    fn stimulus_name(&self) -> &'static str {
-        match self {
-            WebGame::Spot(g) => g.stimulus_name(),
-            WebGame::Bandit(g) => g.stimulus_name(),
-            WebGame::SpotReversal(g) => g.stimulus_name(),
-            WebGame::SpotXY(g) => g.stimulus_name(),
-            WebGame::Pong(g) => g.stimulus_name(),
-            WebGame::Sequence(g) => g.stimulus_name(),
-            WebGame::Text(g) => g.stimulus_name(),
-            WebGame::Replay(g) => g.stimulus_name(),
-        }
-    }
-
-    fn stimulus_key(&self) -> Option<&str> {
-        match self {
-            WebGame::SpotXY(g) => Some(g.stimulus_key()),
-            WebGame::Pong(g) => Some(g.stimulus_key()),
-            WebGame::Sequence(g) => Some(g.stimulus_key()),
-            WebGame::Text(g) => Some(g.stimulus_key()),
-            WebGame::Replay(g) => Some(g.stimulus_key()),
-            _ => None,
-        }
-    }
-
-    fn reversal_active(&self) -> bool {
-        match self {
-            WebGame::SpotReversal(g) => g.reversal_active,
-            _ => false,
-        }
-    }
-
-    fn spotxy_eval_mode(&self) -> bool {
-        match self {
-            WebGame::SpotXY(g) => g.eval_mode,
-            _ => false,
-        }
-    }
-
-    fn response_made(&self) -> bool {
-        match self {
-            WebGame::Spot(g) => g.response_made,
-            WebGame::Bandit(g) => g.response_made,
-            WebGame::SpotReversal(g) => g.response_made,
-            WebGame::SpotXY(g) => g.response_made,
-            WebGame::Pong(g) => g.response_made,
-            WebGame::Sequence(g) => g.response_made(),
-            WebGame::Text(g) => g.response_made(),
-            WebGame::Replay(g) => g.response_made,
-        }
-    }
-
-    fn update_timing(&mut self, trial_period_ms: u32) {
-        match self {
-            WebGame::Spot(g) => g.update_timing(trial_period_ms),
-            WebGame::Bandit(g) => g.update_timing(trial_period_ms),
-            WebGame::SpotReversal(g) => g.update_timing(trial_period_ms),
-            WebGame::SpotXY(g) => g.update_timing(trial_period_ms),
-            WebGame::Pong(g) => g.update_timing(trial_period_ms),
-            WebGame::Sequence(g) => g.update_timing(trial_period_ms),
-            WebGame::Text(g) => g.update_timing(trial_period_ms),
-            WebGame::Replay(g) => g.update_timing(trial_period_ms),
-        }
-    }
-
-    fn score_action(&mut self, action: &str, trial_period_ms: u32) -> Option<(f32, bool)> {
-        match self {
-            WebGame::Spot(g) => g.score_action(action),
-            WebGame::Bandit(g) => g.score_action(action),
-            WebGame::SpotReversal(g) => g.score_action(action),
-            WebGame::SpotXY(g) => g.score_action(action),
-            WebGame::Pong(g) => {
-                let _ = trial_period_ms;
-                g.score_action(action)
-            }
-            WebGame::Sequence(g) => {
-                let _ = trial_period_ms;
-                g.score_action(action)
-            }
-            WebGame::Text(g) => {
-                let _ = trial_period_ms;
-                g.score_action(action)
-            }
-            WebGame::Replay(g) => {
-                let _ = trial_period_ms;
-                g.score_action(action)
-            }
-        }
-    }
-
-    fn stats(&self) -> &braine_games::stats::GameStats {
-        match self {
-            WebGame::Spot(g) => &g.stats,
-            WebGame::Bandit(g) => &g.stats,
-            WebGame::SpotReversal(g) => &g.stats,
-            WebGame::SpotXY(g) => &g.stats,
-            WebGame::Pong(g) => &g.stats,
-            WebGame::Sequence(g) => &g.game.stats,
-            WebGame::Text(g) => &g.game.stats,
-            WebGame::Replay(g) => &g.stats,
-        }
-    }
-
-    fn set_stats(&mut self, stats: braine_games::stats::GameStats) {
-        match self {
-            WebGame::Spot(g) => g.stats = stats,
-            WebGame::Bandit(g) => g.stats = stats,
-            WebGame::SpotReversal(g) => g.stats = stats,
-            WebGame::SpotXY(g) => g.stats = stats,
-            WebGame::Pong(g) => g.stats = stats,
-            WebGame::Sequence(g) => g.game.stats = stats,
-            WebGame::Text(g) => g.game.stats = stats,
-            WebGame::Replay(g) => g.stats = stats,
-        }
-    }
-
-    fn ui_snapshot(&self) -> GameUiSnapshot {
-        match self {
-            WebGame::Spot(g) => GameUiSnapshot {
-                spot_is_left: Some(g.spot_is_left),
-                ..GameUiSnapshot::default()
-            },
-            WebGame::Bandit(_) => GameUiSnapshot::default(),
-            WebGame::SpotReversal(g) => GameUiSnapshot {
-                spot_is_left: Some(g.spot_is_left),
-                reversal_active: g.reversal_active,
-                reversal_flip_after_trials: g.flip_after_trials,
-                ..GameUiSnapshot::default()
-            },
-            WebGame::SpotXY(g) => GameUiSnapshot {
-                spotxy_pos: Some((g.pos_x, g.pos_y)),
-                spotxy_stimulus_key: g.stimulus_key().to_string(),
-                spotxy_eval: g.eval_mode,
-                spotxy_mode: g.mode_name().to_string(),
-                spotxy_grid_n: g.grid_n(),
-                ..GameUiSnapshot::default()
-            },
-            WebGame::Pong(g) => GameUiSnapshot {
-                pong_state: Some(PongUiState {
-                    ball_x: g.sim.state.ball_x,
-                    ball_y: g.sim.state.ball_y,
-                    paddle_y: g.sim.state.paddle_y,
-                    paddle_half_height: g.sim.params.paddle_half_height,
-                    ball_visible: g.ball_visible(),
-                }),
-                pong_stimulus_key: g.stimulus_key().to_string(),
-                pong_paddle_speed: g.sim.params.paddle_speed,
-                pong_paddle_half_height: g.sim.params.paddle_half_height,
-                pong_ball_speed: g.sim.params.ball_speed,
-                pong_paddle_bounce_y: g.sim.params.paddle_bounce_y,
-                pong_respawn_delay_s: g.sim.params.respawn_delay_s,
-                pong_distractor_enabled: g.sim.params.distractor_enabled,
-                pong_distractor_speed_scale: g.sim.params.distractor_speed_scale,
-                ..GameUiSnapshot::default()
-            },
-            WebGame::Sequence(g) => GameUiSnapshot {
-                sequence_state: Some(SequenceUiState {
-                    regime: g.game.regime(),
-                    token: g.game.current_token().label().to_string(),
-                    target_next: g.game.correct_action().to_string(),
-                    outcomes: g.game.outcomes(),
-                    shift_every: g.game.shift_every_outcomes(),
-                }),
-                ..GameUiSnapshot::default()
-            },
-            WebGame::Text(g) => GameUiSnapshot {
-                text_state: Some(TextUiState {
-                    regime: g.game.regime(),
-                    token: g.game.current_token().display(),
-                    target_next: g.game.target_next_token().display(),
-                    outcomes: g.game.outcomes(),
-                    shift_every: g.game.shift_every_outcomes(),
-                    vocab_size: g.game.vocab_size() as u32,
-                }),
-                ..GameUiSnapshot::default()
-            },
-            WebGame::Replay(g) => GameUiSnapshot {
-                replay_state: Some(ReplayUiState {
-                    dataset: g.dataset_name().to_string(),
-                    index: g.index() as u32,
-                    total: g.total_trials() as u32,
-                    trial_id: g.current_trial_id().to_string(),
-                }),
-                ..GameUiSnapshot::default()
-            },
-        }
-    }
-}
-
-#[derive(Default, Clone)]
-struct GameUiSnapshot {
-    spot_is_left: Option<bool>,
-
-    spotxy_pos: Option<(f32, f32)>,
-    spotxy_stimulus_key: String,
-    spotxy_eval: bool,
-    spotxy_mode: String,
-    spotxy_grid_n: u32,
-
-    reversal_active: bool,
-    reversal_flip_after_trials: u32,
-
-    pong_state: Option<PongUiState>,
-    pong_stimulus_key: String,
-    pong_paddle_speed: f32,
-    pong_paddle_half_height: f32,
-    pong_ball_speed: f32,
-    pong_paddle_bounce_y: f32,
-    pong_respawn_delay_s: f32,
-    pong_distractor_enabled: bool,
-    pong_distractor_speed_scale: f32,
-
-    sequence_state: Option<SequenceUiState>,
-    text_state: Option<TextUiState>,
-    replay_state: Option<ReplayUiState>,
-}
-
-#[derive(Clone)]
-struct ReplayUiState {
-    dataset: String,
-    index: u32,
-    total: u32,
-    trial_id: String,
-}
-
-#[derive(Clone)]
-struct SequenceUiState {
-    regime: u32,
-    token: String,
-    target_next: String,
-    outcomes: u32,
-    shift_every: u32,
-}
-
-#[derive(Clone)]
-struct TextUiState {
-    regime: u32,
-    token: String,
-    target_next: String,
-    outcomes: u32,
-    shift_every: u32,
-    vocab_size: u32,
-}
-
-#[derive(Clone, Copy)]
-struct PongUiState {
-    ball_x: f32,
-    ball_y: f32,
-    paddle_y: f32,
-    paddle_half_height: f32,
-    ball_visible: bool,
-}
-
-fn make_default_brain() -> Brain {
-    let mut brain = Brain::new(BrainConfig {
-        seed: Some(2026),
-        causal_decay: 0.002,
-        ..BrainConfig::default()
-    });
-
-    // Actions used by Spot/Bandit.
-    brain.define_action("left", 6);
-    brain.define_action("right", 6);
-
-    // Context stimuli.
-    brain.define_sensor("spot_left", 4);
-    brain.define_sensor("spot_right", 4);
-    brain.define_sensor("spot_rev_ctx", 2);
-    brain.define_sensor("bandit", 4);
-
-    brain
-}
-
-fn local_storage() -> Option<web_sys::Storage> {
-    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
-}
-
-fn local_storage_get_string(key: &str) -> Option<String> {
-    local_storage().and_then(|s| s.get_item(key).ok().flatten())
-}
-
-fn local_storage_set_string(key: &str, value: &str) {
-    if let Some(s) = local_storage() {
-        let _ = s.set_item(key, value);
-    }
-}
-
-fn local_storage_remove(key: &str) {
-    if let Some(s) = local_storage() {
-        let _ = s.remove_item(key);
-    }
-}
-
-fn parse_exec_tier_pref(v: &str) -> Option<ExecutionTier> {
-    match v.trim().to_ascii_lowercase().as_str() {
-        "scalar" | "cpu" => Some(ExecutionTier::Scalar),
-        "gpu" => Some(ExecutionTier::Gpu),
-        _ => None,
-    }
-}
-
-fn game_stats_storage_key(kind: GameKind) -> String {
-    format!("{}{}", LOCALSTORAGE_GAME_STATS_PREFIX, kind.label())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedGameStats {
-    correct: u32,
-    incorrect: u32,
-    trials: u32,
-    recent: Vec<bool>,
-    learning_at_trial: Option<u32>,
-    learned_at_trial: Option<u32>,
-    mastered_at_trial: Option<u32>,
-}
-
-impl From<&braine_games::stats::GameStats> for PersistedGameStats {
-    fn from(s: &braine_games::stats::GameStats) -> Self {
-        Self {
-            correct: s.correct,
-            incorrect: s.incorrect,
-            trials: s.trials,
-            recent: s.recent.clone(),
-            learning_at_trial: s.learning_at_trial,
-            learned_at_trial: s.learned_at_trial,
-            mastered_at_trial: s.mastered_at_trial,
-        }
-    }
-}
-
-impl PersistedGameStats {
-    fn into_game_stats(self) -> braine_games::stats::GameStats {
-        braine_games::stats::GameStats {
-            correct: self.correct,
-            incorrect: self.incorrect,
-            trials: self.trials,
-            recent: self.recent,
-            learning_at_trial: self.learning_at_trial,
-            learned_at_trial: self.learned_at_trial,
-            mastered_at_trial: self.mastered_at_trial,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedStatsState {
-    version: u32,
-    game: String,
-    stats: PersistedGameStats,
-    perf_history: Vec<f32>,
-    neuromod_history: Vec<f32>,
-    #[serde(default)]
-    choice_events: Vec<String>,
-    last_action: String,
-    last_reward: f32,
-}
-
-fn load_persisted_stats_state(kind: GameKind) -> Option<PersistedStatsState> {
-    let key = game_stats_storage_key(kind);
-    let raw = local_storage_get_string(&key)?;
-    serde_json::from_str(&raw).ok()
-}
-
-fn save_persisted_stats_state(kind: GameKind, state: &PersistedStatsState) {
-    let key = game_stats_storage_key(kind);
-    if let Ok(raw) = serde_json::to_string(state) {
-        local_storage_set_string(&key, &raw);
-    }
-}
-
-fn clear_persisted_stats_state(kind: GameKind) {
-    let key = game_stats_storage_key(kind);
-    local_storage_remove(&key);
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedSettings {
-    reward_scale: f32,
-    reward_bias: f32,
-    #[serde(default = "default_true")]
-    learning_enabled: bool,
-    #[serde(default = "default_run_interval_ms")]
-    run_interval_ms: u32,
-    #[serde(default = "default_trial_period_ms")]
-    trial_period_ms: u32,
-    #[serde(default)]
-    settings_advanced: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_run_interval_ms() -> u32 {
-    33
-}
-
-fn default_trial_period_ms() -> u32 {
-    500
-}
-
-fn load_persisted_settings() -> Option<PersistedSettings> {
-    let raw = local_storage_get_string(LOCALSTORAGE_SETTINGS_KEY)?;
-    serde_json::from_str(&raw).ok()
-}
-
-fn save_persisted_settings(settings: &PersistedSettings) {
-    if let Ok(raw) = serde_json::to_string(settings) {
-        local_storage_set_string(LOCALSTORAGE_SETTINGS_KEY, &raw);
-    }
-}
-
-fn apply_theme_to_document(theme: Theme) {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-        return;
-    };
-    let Some(el) = doc.document_element() else {
-        return;
-    };
-    let _ = el.set_attribute("data-theme", theme.as_attr());
-}
-
-async fn idb_put_bytes(key: &str, bytes: &[u8]) -> Result<(), String> {
-    let db = idb_open().await?;
-    let tx = db
-        .transaction_with_str_and_mode(IDB_STORE, web_sys::IdbTransactionMode::Readwrite)
-        .map_err(|_| "indexeddb: failed to open transaction".to_string())?;
-    let store = tx
-        .object_store(IDB_STORE)
-        .map_err(|_| "indexeddb: failed to open object store".to_string())?;
-
-    let value = js_sys::Uint8Array::from(bytes).into();
-    let req = store
-        .put_with_key(&value, &JsValue::from_str(key))
-        .map_err(|_| "indexeddb: put() threw".to_string())?;
-    idb_request_done(req).await?;
-    Ok(())
-}
-
-async fn idb_get_bytes(key: &str) -> Result<Option<Vec<u8>>, String> {
-    let db = idb_open().await?;
-    let tx = db
-        .transaction_with_str_and_mode(IDB_STORE, web_sys::IdbTransactionMode::Readonly)
-        .map_err(|_| "indexeddb: failed to open transaction".to_string())?;
-    let store = tx
-        .object_store(IDB_STORE)
-        .map_err(|_| "indexeddb: failed to open object store".to_string())?;
-
-    let req = store
-        .get(&JsValue::from_str(key))
-        .map_err(|_| "indexeddb: get() threw".to_string())?;
-    let v = idb_request_result(req).await?;
-    if v.is_undefined() || v.is_null() {
-        return Ok(None);
-    }
-
-    let arr = js_sys::Uint8Array::new(&v);
-    let mut out = vec![0u8; arr.length() as usize];
-    arr.copy_to(&mut out);
-    Ok(Some(out))
-}
-
-/// Save game accuracies to IndexedDB as JSON
-async fn save_game_accuracies(accs: &std::collections::HashMap<String, f32>) -> Result<(), String> {
-    let json = serde_json::to_string(accs).map_err(|e| format!("serialize error: {}", e))?;
-    idb_put_bytes(IDB_KEY_GAME_ACCURACY, json.as_bytes()).await
-}
-
-/// Load game accuracies from IndexedDB
-async fn load_game_accuracies() -> Result<std::collections::HashMap<String, f32>, String> {
-    match idb_get_bytes(IDB_KEY_GAME_ACCURACY).await? {
-        Some(bytes) => {
-            let json = String::from_utf8(bytes).map_err(|_| "invalid utf8")?;
-            serde_json::from_str(&json).map_err(|e| format!("parse error: {}", e))
-        }
-        None => Ok(std::collections::HashMap::new()),
-    }
-}
-
-fn choose_text_token_sensor(last_byte: Option<u8>, known_sensors: &[String]) -> String {
-    let preferred = match last_byte {
-        Some(b) => format!("txt_tok_{b:02X}"),
-        None => "txt_tok_UNK".to_string(),
-    };
-
-    if known_sensors.iter().any(|s| s == &preferred) {
-        return preferred;
-    }
-
-    let unk = "txt_tok_UNK";
-    if known_sensors.iter().any(|s| s == unk) {
-        return unk.to_string();
-    }
-
-    known_sensors.first().cloned().unwrap_or(preferred)
-}
-
-fn token_action_name_from_sensor(sensor: &str) -> String {
-    match sensor.strip_prefix("txt_tok_") {
-        Some(suffix) => format!("tok_{suffix}"),
-        None => "tok_UNK".to_string(),
-    }
-}
-
-fn display_token_from_action(action: &str) -> String {
-    let Some(suffix) = action.strip_prefix("tok_") else {
-        return "<unk>".to_string();
-    };
-
-    if suffix == "UNK" {
-        return "<unk>".to_string();
-    }
-
-    if suffix.len() != 2 {
-        return format!("<{suffix}>");
-    }
-
-    let Ok(b) = u8::from_str_radix(suffix, 16) else {
-        return format!("<{suffix}>");
-    };
-
-    if b == b' ' {
-        "<sp>".to_string()
-    } else if b == b'\n' {
-        "\\n".to_string()
-    } else if (0x21..=0x7E).contains(&b) {
-        (b as char).to_string()
-    } else {
-        format!("0x{b:02X}")
-    }
-}
-
-fn softmax_temp(items: &[(String, f32)], temp: f32) -> Vec<f32> {
-    if items.is_empty() {
-        return Vec::new();
-    }
-
-    let t = temp.max(1.0e-6);
-
-    let mut max_score = f32::NEG_INFINITY;
-    for (_name, score) in items {
-        if score.is_finite() {
-            max_score = max_score.max(*score);
-        }
-    }
-    if !max_score.is_finite() {
-        max_score = 0.0;
-    }
-
-    let mut exps: Vec<f32> = Vec::with_capacity(items.len());
-    let mut sum = 0.0f32;
-    for (_name, score) in items {
-        let s = if score.is_finite() { *score } else { 0.0 };
-        let z = ((s - max_score) / t).clamp(-80.0, 80.0);
-        let e = z.exp();
-        sum += e;
-        exps.push(e);
-    }
-
-    if !sum.is_finite() || sum <= 0.0 {
-        let p = 1.0 / (items.len() as f32);
-        return vec![p; items.len()];
-    }
-
-    exps.into_iter().map(|e| e / sum).collect()
-}
-
-async fn idb_open() -> Result<web_sys::IdbDatabase, String> {
-    let promise = idb_open_promise()?;
-    let v = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(|_| "indexeddb: open() failed".to_string())?;
-    v.dyn_into::<web_sys::IdbDatabase>()
-        .map_err(|_| "indexeddb: open() returned unexpected type".to_string())
-}
-
-fn idb_open_promise() -> Result<js_sys::Promise, String> {
-    let w = web_sys::window().ok_or("no window")?;
-    let factory = w
-        .indexed_db()
-        .map_err(|_| "indexeddb() threw".to_string())?
-        .ok_or("indexeddb unavailable".to_string())?;
-
-    let req = factory
-        .open_with_u32(IDB_DB_NAME, 1)
-        .map_err(|_| "indexeddb: open_with_u32() threw".to_string())?;
-
-    let promise = js_sys::Promise::new(&mut |resolve, reject| {
-        let resolve = resolve.clone();
-        let reject_upgrade = reject.clone();
-        let reject_success = reject.clone();
-        let reject_error = reject;
-
-        // Upgrade: create the object store.
-        let on_upgrade = Closure::wrap(Box::new(move |ev: web_sys::Event| {
-            let Some(target) = ev.target() else {
-                let _ = reject_upgrade.call1(
-                    &JsValue::UNDEFINED,
-                    &JsValue::from_str("indexeddb: no event target"),
-                );
-                return;
-            };
-            let Ok(open_req) = target.dyn_into::<web_sys::IdbOpenDbRequest>() else {
-                let _ = reject_upgrade.call1(
-                    &JsValue::UNDEFINED,
-                    &JsValue::from_str("indexeddb: bad upgrade target"),
-                );
-                return;
-            };
-            let db = match open_req.result() {
-                Ok(v) => match v.dyn_into::<web_sys::IdbDatabase>() {
-                    Ok(db) => db,
-                    Err(_) => {
-                        let _ = reject_upgrade.call1(
-                            &JsValue::UNDEFINED,
-                            &JsValue::from_str("indexeddb: upgrade result not a db"),
-                        );
-                        return;
-                    }
-                },
-                Err(_) => {
-                    let _ = reject_upgrade.call1(
-                        &JsValue::UNDEFINED,
-                        &JsValue::from_str("indexeddb: upgrade result() threw"),
-                    );
-                    return;
-                }
-            };
-
-            // Creating an existing store throws; ignore if it already exists.
-            let _ = db.create_object_store(IDB_STORE);
-        }) as Box<dyn FnMut(_)>);
-        req.set_onupgradeneeded(Some(on_upgrade.as_ref().unchecked_ref()));
-        on_upgrade.forget();
-
-        let on_success = Closure::wrap(Box::new(move |ev: web_sys::Event| {
-            let Some(target) = ev.target() else {
-                let _ = reject_success.call1(
-                    &JsValue::UNDEFINED,
-                    &JsValue::from_str("indexeddb: no event target"),
-                );
-                return;
-            };
-            let Ok(open_req) = target.dyn_into::<web_sys::IdbOpenDbRequest>() else {
-                let _ = reject_success.call1(
-                    &JsValue::UNDEFINED,
-                    &JsValue::from_str("indexeddb: bad success target"),
-                );
-                return;
-            };
-            let db = match open_req.result() {
-                Ok(v) => v,
-                Err(_) => {
-                    let _ = reject_success.call1(
-                        &JsValue::UNDEFINED,
-                        &JsValue::from_str("indexeddb: result() threw"),
-                    );
-                    return;
-                }
-            };
-            let _ = resolve.call1(&JsValue::UNDEFINED, &db);
-        }) as Box<dyn FnMut(_)>);
-        req.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
-        on_success.forget();
-
-        let on_error = Closure::wrap(Box::new(move |_ev: web_sys::Event| {
-            let _ = reject_error.call1(
-                &JsValue::UNDEFINED,
-                &JsValue::from_str("indexeddb: open error"),
-            );
-        }) as Box<dyn FnMut(_)>);
-        req.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-        on_error.forget();
-    });
-
-    Ok(promise)
-}
-
-async fn idb_request_done(req: web_sys::IdbRequest) -> Result<(), String> {
-    let promise = idb_request_done_promise(req);
-    wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map(|_| ())
-        .map_err(|_| "indexeddb: request failed".to_string())
-}
-
-async fn idb_request_result(req: web_sys::IdbRequest) -> Result<JsValue, String> {
-    let promise = idb_request_result_promise(req);
-    wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(|_| "indexeddb: request failed".to_string())
-}
-
-fn idb_request_done_promise(req: web_sys::IdbRequest) -> js_sys::Promise {
-    js_sys::Promise::new(&mut |resolve, reject| {
-        let on_success = Closure::wrap(Box::new(move |_ev: web_sys::Event| {
-            let _ = resolve.call0(&JsValue::UNDEFINED);
-        }) as Box<dyn FnMut(_)>);
-        req.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
-        on_success.forget();
-
-        let on_error = Closure::wrap(Box::new(move |_ev: web_sys::Event| {
-            let _ = reject.call1(
-                &JsValue::UNDEFINED,
-                &JsValue::from_str("indexeddb: request error"),
-            );
-        }) as Box<dyn FnMut(_)>);
-        req.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-        on_error.forget();
-    })
-}
-
-fn idb_request_result_promise(req: web_sys::IdbRequest) -> js_sys::Promise {
-    js_sys::Promise::new(&mut |resolve, reject| {
-        let reject_success = reject.clone();
-        let reject_error = reject;
-        let on_success = Closure::wrap(Box::new(move |ev: web_sys::Event| {
-            let Some(target) = ev.target() else {
-                let _ = reject_success.call1(
-                    &JsValue::UNDEFINED,
-                    &JsValue::from_str("indexeddb: no event target"),
-                );
-                return;
-            };
-            let Ok(req) = target.dyn_into::<web_sys::IdbRequest>() else {
-                let _ = reject_success.call1(
-                    &JsValue::UNDEFINED,
-                    &JsValue::from_str("indexeddb: bad request target"),
-                );
-                return;
-            };
-            let v = match req.result() {
-                Ok(v) => v,
-                Err(_) => {
-                    let _ = reject_success.call1(
-                        &JsValue::UNDEFINED,
-                        &JsValue::from_str("indexeddb: result() threw"),
-                    );
-                    return;
-                }
-            };
-            let _ = resolve.call1(&JsValue::UNDEFINED, &v);
-        }) as Box<dyn FnMut(_)>);
-        req.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
-        on_success.forget();
-
-        let on_error = Closure::wrap(Box::new(move |_ev: web_sys::Event| {
-            let _ = reject_error.call1(
-                &JsValue::UNDEFINED,
-                &JsValue::from_str("indexeddb: request error"),
-            );
-        }) as Box<dyn FnMut(_)>);
-        req.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-        on_error.forget();
-    })
-}
-
-#[allow(deprecated)]
-fn clear_canvas(canvas: &web_sys::HtmlCanvasElement) -> Result<(), String> {
-    let ctx = canvas
-        .get_context("2d")
-        .map_err(|_| "canvas: get_context threw".to_string())?
-        .ok_or("canvas: missing 2d context".to_string())?
-        .dyn_into::<web_sys::CanvasRenderingContext2d>()
-        .map_err(|_| "canvas: context is not 2d".to_string())?;
-
-    // Match the app theme (dark scientific background)
-    ctx.set_fill_style(&JsValue::from_str("#0a0f1a"));
-    ctx.fill_rect(0.0, 0.0, canvas.width() as f64, canvas.height() as f64);
-    Ok(())
-}
-
-#[allow(deprecated)]
-fn draw_spotxy(
-    canvas: &web_sys::HtmlCanvasElement,
-    x: f32,
-    y: f32,
-    grid_n: u32,
-    accent: &str,
-    selected_action: Option<&str>,
-) -> Result<(), String> {
-    let ctx = canvas
-        .get_context("2d")
-        .map_err(|_| "canvas: get_context threw".to_string())?
-        .ok_or("canvas: missing 2d context".to_string())?
-        .dyn_into::<web_sys::CanvasRenderingContext2d>()
-        .map_err(|_| "canvas: context is not 2d".to_string())?;
-
-    let w = canvas.width() as f64;
-    let h = canvas.height() as f64;
-
-    // Background
-    ctx.set_fill_style(&JsValue::from_str("#0a0f1a"));
-    ctx.fill_rect(0.0, 0.0, w, h);
-
-    // Map x,y in [-1,1] to canvas coords.
-    let px = ((x.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * w;
-    let py = (1.0 - (y.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5) * h;
-
-    if grid_n >= 2 {
-        // Grid mode: N×N cells
-        let eff_grid = grid_n as f64;
-        let cell_w = w / eff_grid;
-        let cell_h = h / eff_grid;
-
-        // Draw grid lines
-        ctx.set_stroke_style(&JsValue::from_str("rgba(122, 162, 255, 0.25)"));
-        ctx.set_line_width(1.0);
-        for i in 1..grid_n {
-            let xf = (i as f64) * cell_w;
-            let yf = (i as f64) * cell_h;
-            ctx.begin_path();
-            ctx.move_to(xf, 0.0);
-            ctx.line_to(xf, h);
-            ctx.stroke();
-            ctx.begin_path();
-            ctx.move_to(0.0, yf);
-            ctx.line_to(w, yf);
-            ctx.stroke();
-        }
-
-        // Highlight the correct cell (where dot is)
-        let cx = ((px / cell_w).floor()).clamp(0.0, eff_grid - 1.0);
-        let cy = ((py / cell_h).floor()).clamp(0.0, eff_grid - 1.0);
-        let cell_highlight = if accent == "#22c55e" {
-            "rgba(34, 197, 94, 0.12)"
-        } else {
-            "rgba(122, 162, 255, 0.12)"
-        };
-        ctx.set_fill_style(&JsValue::from_str(cell_highlight));
-        ctx.fill_rect(cx * cell_w, cy * cell_h, cell_w, cell_h);
-
-        // Highlight brain's selected cell if different from correct
-        if let Some(action) = selected_action {
-            // Parse action: spotxy_cell_{n:02}_{ix:02}_{iy:02}
-            if let Some(coords) = parse_spotxy_cell_action(action, grid_n) {
-                let (sel_ix, sel_iy) = coords;
-                // Invert y for canvas (0,0 is top-left in canvas, but (0,0) in grid should be bottom-left)
-                let sel_cy = (grid_n - 1 - sel_iy) as f64;
-                let sel_cx = sel_ix as f64;
-
-                // Only draw selection highlight if different from correct cell
-                if sel_cx != cx || sel_cy != cy {
-                    ctx.set_stroke_style(&JsValue::from_str("rgba(251, 191, 36, 0.8)"));
-                    ctx.set_line_width(2.0);
-                    ctx.stroke_rect(
-                        sel_cx * cell_w + 1.0,
-                        sel_cy * cell_h + 1.0,
-                        cell_w - 2.0,
-                        cell_h - 2.0,
-                    );
-                }
-            }
-        }
-    } else {
-        // BinaryX mode: left/right split
-        // Draw center divider line
-        ctx.set_stroke_style(&JsValue::from_str("rgba(122, 162, 255, 0.35)"));
-        ctx.set_line_width(2.0);
-        ctx.begin_path();
-        ctx.move_to(w / 2.0, 0.0);
-        ctx.line_to(w / 2.0, h);
-        ctx.stroke();
-
-        // Highlight the correct half (where dot is)
-        let is_left = px < w / 2.0;
-        let correct_highlight = if accent == "#22c55e" {
-            "rgba(34, 197, 94, 0.10)"
-        } else {
-            "rgba(122, 162, 255, 0.10)"
-        };
-        ctx.set_fill_style(&JsValue::from_str(correct_highlight));
-        if is_left {
-            ctx.fill_rect(0.0, 0.0, w / 2.0, h);
-        } else {
-            ctx.fill_rect(w / 2.0, 0.0, w / 2.0, h);
-        }
-
-        // Highlight brain's selected side if different
-        if let Some(action) = selected_action {
-            let brain_is_left = action == "left";
-            if brain_is_left != is_left {
-                // Brain selected wrong side - show orange border
-                ctx.set_stroke_style(&JsValue::from_str("rgba(251, 191, 36, 0.8)"));
-                ctx.set_line_width(3.0);
-                if brain_is_left {
-                    ctx.stroke_rect(2.0, 2.0, w / 2.0 - 4.0, h - 4.0);
-                } else {
-                    ctx.stroke_rect(w / 2.0 + 2.0, 2.0, w / 2.0 - 4.0, h - 4.0);
-                }
-            }
-        }
-
-        // Add "L" and "R" labels
-        ctx.set_fill_style(&JsValue::from_str("rgba(178, 186, 210, 0.3)"));
-        ctx.set_font("bold 24px sans-serif");
-        ctx.set_text_align("center");
-        ctx.set_text_baseline("middle");
-        let _ = ctx.fill_text("L", w / 4.0, h / 2.0);
-        let _ = ctx.fill_text("R", 3.0 * w / 4.0, h / 2.0);
-    }
-
-    // Dot
-    ctx.set_fill_style(&JsValue::from_str(accent));
-    ctx.begin_path();
-    let _ = ctx.arc(px, py, 6.0, 0.0, std::f64::consts::PI * 2.0);
-    ctx.fill();
-    Ok(())
-}
-
-/// Parse a grid cell action like "spotxy_cell_02_01_00" into (ix, iy)
-fn parse_spotxy_cell_action(action: &str, expected_n: u32) -> Option<(u32, u32)> {
-    // Format: spotxy_cell_{n:02}_{ix:02}_{iy:02}
-    let parts: Vec<&str> = action.split('_').collect();
-    if parts.len() != 5 || parts[0] != "spotxy" || parts[1] != "cell" {
-        return None;
-    }
-    let n: u32 = parts[2].parse().ok()?;
-    if n != expected_n {
-        return None;
-    }
-    let ix: u32 = parts[3].parse().ok()?;
-    let iy: u32 = parts[4].parse().ok()?;
-    Some((ix, iy))
-}
-
-#[allow(deprecated)]
-fn draw_pong(canvas: &web_sys::HtmlCanvasElement, s: &PongUiState) -> Result<(), String> {
-    let ctx = canvas
-        .get_context("2d")
-        .map_err(|_| "canvas: get_context threw".to_string())?
-        .ok_or("canvas: missing 2d context".to_string())?
-        .dyn_into::<web_sys::CanvasRenderingContext2d>()
-        .map_err(|_| "canvas: context is not 2d".to_string())?;
-
-    let w = canvas.width() as f64;
-    let h = canvas.height() as f64;
-
-    // Dark gradient background
-    ctx.set_fill_style_str("#0a0f1a");
-    ctx.fill_rect(0.0, 0.0, w, h);
-
-    // Subtle grid lines for depth
-    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.06)");
-    ctx.set_line_width(1.0);
-    let grid_spacing = 30.0;
-    let mut x = grid_spacing;
-    while x < w {
-        ctx.begin_path();
-        ctx.move_to(x, 0.0);
-        ctx.line_to(x, h);
-        ctx.stroke();
-        x += grid_spacing;
-    }
-    let mut y = grid_spacing;
-    while y < h {
-        ctx.begin_path();
-        ctx.move_to(0.0, y);
-        ctx.line_to(w, y);
-        ctx.stroke();
-        y += grid_spacing;
-    }
-
-    // Field (keep it crisp; no glow)
-    let field_inset = 12.0;
-    let field_left = field_inset;
-    let field_right = (w - field_inset).max(field_left + 1.0);
-    let field_top = field_inset;
-    let field_bottom = (h - field_inset).max(field_top + 1.0);
-    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.28)");
-    ctx.set_line_width(2.0);
-    ctx.stroke_rect(
-        field_left,
-        field_top,
-        field_right - field_left,
-        field_bottom - field_top,
-    );
-
-    // Map simulation coordinates to pixels.
-    // PongSim uses ball center positions: ball_x in [0,1], ball_y in [-1,1].
-    // To make collisions *look* correct, map x=0 to the paddle face, and y=±1 to the walls.
-    let ball_r = 6.0;
-    let paddle_w = 10.0;
-    let paddle_x = field_left; // paddle runs along the left wall
-
-    let play_left = (paddle_x + paddle_w + ball_r).min(field_right - 1.0);
-    let play_right = (field_right - ball_r).max(play_left + 1.0);
-    let play_top = (field_top + ball_r).min(field_bottom - 1.0);
-    let play_bottom = (field_bottom - ball_r).max(play_top + 1.0);
-
-    let play_w = (play_right - play_left).max(1.0);
-    let play_h = (play_bottom - play_top).max(1.0);
-
-    let map_x = |x01: f32| play_left + (x01.clamp(0.0, 1.0) as f64) * play_w;
-    let map_y = |ys: f32| {
-        // ys=+1 is top wall; ys=-1 is bottom wall
-        play_top + (1.0 - ((ys.clamp(-1.0, 1.0) as f64 + 1.0) * 0.5)) * play_h
-    };
-
-    // Paddle
-    let paddle_center_y = map_y(s.paddle_y);
-    let paddle_half_px = (s.paddle_half_height.clamp(0.01, 1.0) as f64) * (play_h * 0.5);
-    let paddle_height = (paddle_half_px * 2.0).min(play_h);
-    let paddle_top =
-        (paddle_center_y - paddle_half_px).clamp(play_top, play_bottom - paddle_height);
-
-    ctx.set_fill_style_str("#7aa2ff");
-    ctx.fill_rect(paddle_x, paddle_top, paddle_w, paddle_height);
-    ctx.set_fill_style_str("rgba(255, 255, 255, 0.25)");
-    ctx.fill_rect(
-        paddle_x + 1.5,
-        paddle_top + 2.0,
-        2.0,
-        (paddle_height - 4.0).max(0.0),
-    );
-
-    // Ball (crisp; no glow)
-    if s.ball_visible {
-        let bx = map_x(s.ball_x);
-        let by = map_y(s.ball_y);
-
-        ctx.set_fill_style_str("#fbbf24");
-        ctx.begin_path();
-        let _ = ctx.arc(bx, by, ball_r, 0.0, std::f64::consts::PI * 2.0);
-        ctx.fill();
-
-        ctx.set_fill_style_str("rgba(255, 255, 255, 0.55)");
-        ctx.begin_path();
-        let _ = ctx.arc(
-            bx - ball_r * 0.35,
-            by - ball_r * 0.35,
-            ball_r * 0.45,
-            0.0,
-            std::f64::consts::PI * 2.0,
-        );
-        ctx.fill();
-    }
-
-    // Score zone indicator (right edge)
-    ctx.set_fill_style_str("rgba(239, 68, 68, 0.12)");
-    ctx.fill_rect(field_right - 6.0, field_top, 6.0, field_bottom - field_top);
-
-    Ok(())
-}
-
-fn download_bytes(filename: &str, bytes: &[u8]) -> Result<(), String> {
-    let window = web_sys::window().ok_or("no window".to_string())?;
-    let document = window.document().ok_or("no document".to_string())?;
-
-    let array = js_sys::Uint8Array::from(bytes);
-    let parts = js_sys::Array::new();
-    parts.push(&array.buffer());
-    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
-        .map_err(|_| "blob: failed to create".to_string())?;
-
-    let url = web_sys::Url::create_object_url_with_blob(&blob)
-        .map_err(|_| "url: create_object_url failed".to_string())?;
-
-    let a = document
-        .create_element("a")
-        .map_err(|_| "document: create_element failed".to_string())?
-        .dyn_into::<web_sys::HtmlAnchorElement>()
-        .map_err(|_| "document: anchor cast failed".to_string())?;
-
-    a.set_href(&url);
-    a.set_download(filename);
-    a.click();
-
-    let _ = web_sys::Url::revoke_object_url(&url);
-    Ok(())
-}
-
-async fn read_file_bytes(file: web_sys::File) -> Result<Vec<u8>, String> {
-    let promise = file_reader_array_buffer_promise(file)?;
-    let v = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(|_| "file: read failed".to_string())?;
-
-    let buf = v
-        .dyn_into::<js_sys::ArrayBuffer>()
-        .map_err(|_| "file: expected ArrayBuffer".to_string())?;
-    let arr = js_sys::Uint8Array::new(&buf);
-    let mut out = vec![0u8; arr.length() as usize];
-    arr.copy_to(&mut out);
-    Ok(out)
-}
-
-fn file_reader_array_buffer_promise(file: web_sys::File) -> Result<js_sys::Promise, String> {
-    let reader =
-        web_sys::FileReader::new().map_err(|_| "file: FileReader::new failed".to_string())?;
-    reader
-        .read_as_array_buffer(&file)
-        .map_err(|_| "file: read_as_array_buffer failed".to_string())?;
-
-    Ok(js_sys::Promise::new(&mut |resolve, reject| {
-        let reject_load = reject.clone();
-        let reject_err = reject;
-        let reader_ok = reader.clone();
-        let onload =
-            Closure::wrap(Box::new(
-                move |_ev: web_sys::ProgressEvent| match reader_ok.result() {
-                    Ok(v) => {
-                        if v.is_null() || v.is_undefined() {
-                            let _ = reject_load.call1(
-                                &JsValue::UNDEFINED,
-                                &JsValue::from_str("file: missing result"),
-                            );
-                        } else {
-                            let _ = resolve.call1(&JsValue::UNDEFINED, &v);
-                        }
-                    }
-                    Err(_) => {
-                        let _ = reject_load.call1(
-                            &JsValue::UNDEFINED,
-                            &JsValue::from_str("file: result() threw"),
-                        );
-                    }
-                },
-            ) as Box<dyn FnMut(_)>);
-        reader.set_onload(Some(onload.as_ref().unchecked_ref()));
-        onload.forget();
-
-        let onerror = Closure::wrap(Box::new(move |_ev: web_sys::ProgressEvent| {
-            let _ = reject_err.call1(&JsValue::UNDEFINED, &JsValue::from_str("file: read error"));
-        }) as Box<dyn FnMut(_)>);
-        reader.set_onerror(Some(onerror.as_ref().unchecked_ref()));
-        onerror.forget();
-    }))
-}

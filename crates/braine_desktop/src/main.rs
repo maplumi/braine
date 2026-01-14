@@ -2331,6 +2331,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
                     let mut segs: Vec<GraphEdgeSeg> = Vec::with_capacity(g.edges.len());
                     let mut hover_edges: Vec<GraphHoverEdge> = Vec::with_capacity(g.edges.len());
+                    let mut degree_by_id: HashMap<u32, usize> = HashMap::new();
                     for e in &g.edges {
                         let Some(&(x1, y1)) = pos_by_id.get(&e.from) else {
                             continue;
@@ -2338,6 +2339,9 @@ fn main() -> Result<(), slint::PlatformError> {
                         let Some(&(x2, y2)) = pos_by_id.get(&e.to) else {
                             continue;
                         };
+
+                        *degree_by_id.entry(e.from).or_insert(0) += 1;
+                        *degree_by_id.entry(e.to).or_insert(0) += 1;
 
                         let strength01 = (e.weight.abs() * inv).clamp(0.0, 1.0);
                         let positive = e.weight >= 0.0;
@@ -2383,6 +2387,26 @@ fn main() -> Result<(), slint::PlatformError> {
 
                     ui.set_graph_nodes(ModelRc::new(VecModel::from(dots)));
                     ui.set_graph_edge_segs(ModelRc::new(VecModel::from(segs)));
+
+                    let node_count = g.nodes.len();
+                    let edge_count = degree_by_id
+                        .values()
+                        .sum::<usize>()
+                        .saturating_div(2)
+                        .min(g.edges.len());
+                    let max_conn = degree_by_id.values().copied().max().unwrap_or(0);
+                    let avg_conn = if node_count > 0 {
+                        (2.0 * (edge_count as f32)) / (node_count as f32)
+                    } else {
+                        0.0
+                    };
+                    ui.set_graph_stats(
+                        format!(
+                            "Displayed: {} nodes • {} edges • avg {:.2} conn/node • max {}",
+                            node_count, edge_count, avg_conn, max_conn
+                        )
+                        .into(),
+                    );
                 }
                 ui.set_is_braine_mode(snap.mode != "human");
                 ui.set_running(snap.running);

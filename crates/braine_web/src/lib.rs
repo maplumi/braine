@@ -5,6 +5,8 @@
 //!
 //! Enable the real app with: `--features web` (and a wasm32 target).
 
+pub mod ui_model;
+
 /// Placeholder function for non-web (or non-wasm) builds.
 #[cfg(not(all(feature = "web", target_arch = "wasm32")))]
 pub fn placeholder() {

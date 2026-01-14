@@ -1,0 +1,183 @@
+use leptos::prelude::*;
+use std::sync::Arc;
+
+use super::{GameKind, Theme, Toast, ToastLevel};
+
+#[component]
+pub(super) fn Topbar(
+    sidebar_open: ReadSignal<bool>,
+    set_sidebar_open: WriteSignal<bool>,
+    gpu_status: ReadSignal<&'static str>,
+    status: ReadSignal<String>,
+    is_running: ReadSignal<bool>,
+    theme: ReadSignal<Theme>,
+    set_theme: WriteSignal<Theme>,
+    open_docs: Callback<()>,
+    open_analytics: Callback<()>,
+    open_settings: Callback<()>,
+) -> impl IntoView {
+    // These are still wired by the parent for now, but the topbar no longer
+    // renders redundant navigation buttons.
+    let _ = (open_docs, open_analytics, open_settings);
+
+    view! {
+        <header class="app-header">
+            <div class="app-header-left">
+                <button
+                    class="icon-btn sidebar-toggle"
+                    title="Menu"
+                    on:click=move |_| set_sidebar_open.set(!sidebar_open.get())
+                >
+                    "☰"
+                </button>
+                <h1 class="brand">"🧠 Braine"</h1>
+                <span class="subtle">{move || gpu_status.get()}</span>
+            </div>
+            <div class="app-header-right">
+                <span class="status">{move || status.get()}</span>
+                <Show when=move || is_running.get()>
+                    <span class="live-dot"></span>
+                </Show>
+                <button
+                    class="btn sm ghost"
+                    title=move || format!("Theme: {}", theme.get().label())
+                    on:click=move |_| set_theme.set(theme.get().toggle())
+                >
+                    {move || theme.get().icon()}" "{move || theme.get().label()}
+                </button>
+            </div>
+        </header>
+    }
+}
+
+#[component]
+pub(super) fn ToastStack(toasts: RwSignal<Vec<Toast>>) -> impl IntoView {
+    view! {
+        <div class="toast-stack" aria-live="polite" aria-relevant="additions removals">
+            <For
+                each=move || toasts.get()
+                key=|t| t.id
+                children=move |t| {
+                    let id = t.id;
+                    let class = match t.level {
+                        ToastLevel::Info => "toast info",
+                        ToastLevel::Success => "toast success",
+                        ToastLevel::Error => "toast error",
+                    };
+                    view! {
+                        <div class=class>
+                            <div style="flex: 1; white-space: pre-wrap;">{t.message}</div>
+                            <button
+                                class="toast-close"
+                                title="Dismiss"
+                                on:click=move |_| toasts.update(|ts| ts.retain(|x| x.id != id))
+                            >
+                                "×"
+                            </button>
+                        </div>
+                    }
+                }
+            />
+        </div>
+    }
+}
+
+#[component]
+pub(super) fn SystemErrorBanner(
+    system_error: ReadSignal<Option<String>>,
+    set_system_error: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    view! {
+        <Show when=move || system_error.get().is_some()>
+            <div style="margin-bottom: 10px; padding: 10px 12px; background: #ff3b3018; border: 1px solid #ff3b3055; border-radius: 10px;">
+                <div style="display:flex; gap: 10px; align-items: center; justify-content: space-between;">
+                    <div style="color: #ffb4ad; font-weight: 600;">"Error"</div>
+                    <button style="padding: 6px 10px;" on:click=move |_| set_system_error.set(None)>
+                        "Dismiss"
+                    </button>
+                </div>
+                <div style="margin-top: 6px; color: var(--text); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12px;">
+                    {move || system_error.get().unwrap_or_default()}
+                </div>
+            </div>
+        </Show>
+    }
+}
+
+#[component]
+pub(super) fn Sidebar(
+    sidebar_open: ReadSignal<bool>,
+    set_sidebar_open: WriteSignal<bool>,
+    show_about_page: ReadSignal<bool>,
+    set_show_about_page: WriteSignal<bool>,
+    game_kind: ReadSignal<GameKind>,
+    set_game: Arc<dyn Fn(GameKind) + Send + Sync>,
+    open_docs: Callback<()>,
+) -> impl IntoView {
+    view! {
+        // Sidebar overlay (mobile)
+        <div
+            class=move || {
+                if sidebar_open.get() {
+                    "sidebar-overlay open"
+                } else {
+                    "sidebar-overlay"
+                }
+            }
+            on:click=move |_| set_sidebar_open.set(false)
+        ></div>
+
+        // Left game menu
+        <aside class=move || if sidebar_open.get() { "sidebar open" } else { "sidebar" }>
+            <div class="sidebar-header">
+                <div class="sidebar-title">"Games"</div>
+                <div class="sidebar-subtle">"Choose a task; keep state"</div>
+            </div>
+
+            <div class="sidebar-section">
+                <button
+                    class=move || {
+                        if show_about_page.get() {
+                            "sidebar-item active"
+                        } else {
+                            "sidebar-item"
+                        }
+                    }
+                    on:click=move |_| open_docs.run(())
+                >
+                    <span class="sidebar-ico">"ℹ️"</span>
+                    <span class="sidebar-label">"Docs"</span>
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                {GameKind::all()
+                    .iter()
+                    .map(|&kind| {
+                        let set_game = Arc::clone(&set_game);
+                        view! {
+                            <button
+                                class=move || {
+                                    if !show_about_page.get() && game_kind.get() == kind {
+                                        "sidebar-item active"
+                                    } else {
+                                        "sidebar-item"
+                                    }
+                                }
+                                on:click=move |_| {
+                                    set_show_about_page.set(false);
+                                    set_game(kind);
+                                    set_sidebar_open.set(false);
+                                }
+                            >
+                                <span class="sidebar-ico">{kind.icon()}</span>
+                                <span class="sidebar-label">{kind.display_name()}</span>
+                                <span class="sidebar-pill">{kind.label()}</span>
+                            </button>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+        </aside>
+    }
+}
