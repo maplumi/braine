@@ -32,7 +32,6 @@ use crate::ui_model::{AnalyticsPanel, DashboardTab, GameKind};
 use canvas::{clear_canvas, draw_pong, draw_spotxy};
 use files::{download_bytes, read_file_bytes};
 use indexeddb::{idb_get_bytes, idb_put_bytes, load_game_accuracies, save_game_accuracies};
-use math::softmax_temp;
 use runtime::{AppRuntime, TickConfig, TickResult, WebGame};
 use shell::{Sidebar, SystemErrorBanner, ToastStack, Topbar};
 use storage::{
@@ -41,7 +40,7 @@ use storage::{
     local_storage_set_string, parse_exec_tier_pref, save_persisted_settings,
     save_persisted_stats_state, PersistedGameStats, PersistedSettings, PersistedStatsState,
 };
-use tokens::{choose_text_token_sensor, display_token_from_action, token_action_name_from_sensor};
+use tokens::{choose_text_token_sensor, token_action_name_from_sensor};
 use types::{PongUiState, ReplayUiState, SequenceUiState, TextUiState};
 
 type ErrorSink = std::cell::RefCell<Option<Box<dyn Fn(String)>>>;
@@ -266,13 +265,13 @@ const ABOUT_CURRENT_ARCHITECTURE_DIAGRAM: &str = r#"flowchart LR
         CLI[braine-cli]
     end
 
-    subgraph Daemon[brained (daemon)]
-        BrainD[Brain (authoritative)]
-        File[braine.bbi (filesystem)]
+    subgraph Daemon[brained daemon]
+        BrainD[Brain authoritative]
+        File[braine.bbi filesystem]
     end
 
-    subgraph Web[Web (WASM)]
-        BrainW[Brain (in-tab)]
+    subgraph Web[Web WASM]
+        BrainW[Brain in-tab]
         IDB[IndexedDB]
     end
 
@@ -676,11 +675,15 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Text prediction "lab" (inference-only on a cloned brain)
-    let (text_prompt, set_text_prompt) = signal(String::from("hello worl"));
-    let (text_prompt_regime, set_text_prompt_regime) = signal(0u32);
-    let (text_temp, set_text_temp) = signal(1.0f32);
-    let (text_preds, set_text_preds) = signal::<Vec<(String, f32, f32)>>(Vec::new());
+    // Text prediction "lab" (inference-only on a cloned brain) - currently unused but kept for future
+    #[allow(unused_variables)]
+    let (_text_prompt, _set_text_prompt) = signal(String::from("hello worl"));
+    #[allow(unused_variables)]
+    let (_text_prompt_regime, _set_text_prompt_regime) = signal(0u32);
+    #[allow(unused_variables)]
+    let (_text_temp, _set_text_temp) = signal(1.0f32);
+    #[allow(unused_variables)]
+    let (_text_preds, _set_text_preds) = signal::<Vec<(String, f32, f32)>>(Vec::new());
 
     // Text training controls (writes to the live brain)
     let (text_corpus0, set_text_corpus0) = signal(String::from("hello world\n"));
@@ -690,7 +693,7 @@ fn App() -> impl IntoView {
 
     let (text_train_prompt, set_text_train_prompt) = signal(String::from("hello world\n"));
     let (text_train_regime, set_text_train_regime) = signal(0u32);
-    let (text_train_epochs, set_text_train_epochs) = signal(1u32);
+    let (text_train_epochs, _set_text_train_epochs) = signal(1u32);
 
     let (reversal_active, set_reversal_active) = signal(false);
     let (reversal_flip_after, set_reversal_flip_after) = signal(0u32);
@@ -772,24 +775,6 @@ fn App() -> impl IntoView {
     // Game information modal (opened from the left menu).
     let (game_info_modal_kind, set_game_info_modal_kind) = signal::<Option<GameKind>>(None);
 
-    // Defer closing so we don't unmount the modal mid-event dispatch.
-    let close_game_info_modal = {
-        let set_game_info_modal_kind = set_game_info_modal_kind.clone();
-        move || {
-            if let Some(win) = web_sys::window() {
-                let cb = Closure::wrap(Box::new(move || {
-                    set_game_info_modal_kind.set(None);
-                }) as Box<dyn FnMut()>);
-                let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    cb.as_ref().unchecked_ref(),
-                    0,
-                );
-                cb.forget();
-            } else {
-                set_game_info_modal_kind.set(None);
-            }
-        }
-    };
     let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
     let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
     let brainviz_degree_by_id = StoredValue::new(std::collections::HashMap::<u32, usize>::new());
@@ -2395,7 +2380,8 @@ fn App() -> impl IntoView {
             <Show when=move || game_info_modal_kind.get().is_some()>
                 <div
                     class="modal-overlay"
-                    on:click=move |_| close_game_info_modal()
+                    style="z-index: 99999;"
+                    on:click=move |_| set_game_info_modal_kind.set(None)
                 >
                     <div
                         class="modal"
@@ -2411,11 +2397,12 @@ fn App() -> impl IntoView {
                                         <div class="modal-head">
                                             <div class="modal-title">
                                                 {format!("{} {}", kind.icon(), kind.display_name())}
+                                                <span class="subtle" style="margin-left: 10px; font-weight: 700;">{kind.label()}</span>
                                             </div>
                                             <button
                                                 class="icon-btn"
                                                 title="Close"
-                                                on:click=move |_| close_game_info_modal()
+                                                on:click=move |_| set_game_info_modal_kind.set(None)
                                             >
                                                 "×"
                                             </button>
@@ -2597,6 +2584,154 @@ fn App() -> impl IntoView {
                     sidebar_open=sidebar_open
                     set_sidebar_open=set_sidebar_open
                     show_about_page=show_about_page
+                    set_show_about_page=set_show_about_page
+                    game_kind=game_kind
+                    set_game=set_game
+                    open_docs=open_docs
+                    set_game_info_modal_kind=set_game_info_modal_kind
+                />
+
+                <div class="game-area">
+                    <SystemErrorBanner system_error=system_error set_system_error=set_system_error />
+
+                    <Show when=move || show_about_page.get()>
+                        <div class="stack">
+                            <div class="card">
+                                <h2 class="card-title">"Docs"</h2>
+                                <p class="subtle">"How the substrate works, plus protocol + integration notes."</p>
+
+                                <div class="subtabs" style="margin-top: 12px;">
+                                    {AboutSubTab::all()
+                                        .iter()
+                                        .map(|&tab| {
+                                            view! {
+                                                <button
+                                                    class=move || {
+                                                        if about_sub_tab.get() == tab {
+                                                            "subtab active"
+                                                        } else {
+                                                            "subtab"
+                                                        }
+                                                    }
+                                                    on:click=move |_| set_about_sub_tab.set(tab)
+                                                >
+                                                    {tab.label()}
+                                                </button>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </div>
+
+                                <div class="stack" style="margin-top: 14px;">
+                                    // Overview tab
+                                    <Show when=move || about_sub_tab.get() == AboutSubTab::Overview>
+                                        <div class="docs-overview-top">
+                                            <div style=STYLE_CARD>
+                                                <h3 style="margin: 0 0 10px 0; font-size: 1.1rem; color: var(--accent);">"Closed-loop learning substrate"</h3>
+                                                <p style="margin: 0; color: var(--text); font-size: 0.92rem; line-height: 1.7;">
+                                                    "Braine is a continuously running dynamical system with local plasticity and a scalar reward (neuromodulator). "
+                                                    "It is not an LLM: there is no backprop, no global loss, and no token prediction objective."
+                                                </p>
+                                                <p style="margin: 10px 0 0 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                    {format!("braine v{} • braine_web v{} • bbi format v{}", VERSION_BRAINE, VERSION_BRAINE_WEB, VERSION_BBI_FORMAT)}
+                                                </p>
+                                            </div>
+                                            <div class="docs-overview-stack">
+                                                <div style=STYLE_CARD>
+                                                    <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"What to do"</h3>
+                                                    <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                        <li>"Pick a game (left sidebar)."</li>
+                                                        <li>"Press Run; watch last-100 accuracy rise."</li>
+                                                        <li>"Tune ε (exploration), α (meaning), and trial ms."</li>
+                                                        <li>"Use BrainViz (bottom of dashboard) to inspect structure."</li>
+                                                    </ol>
+                                                </div>
+                                                <div style=STYLE_CARD>
+                                                    <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Key idea"</h3>
+                                                    <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                        "Learning modifies couplings and attractors; inference reuses the learned dynamics. "
+                                                        "Persistence and telemetry are slow side-effects and should never block the step loop."
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="docs-diagram-wrap docs-wide">
+                                            <MermaidDiagram code=ABOUT_OVERVIEW_DIAGRAM max_width_px=920 />
+                                        </div>
+
+                                        <p class="docs-diagram-caption">
+                                            "The substrate runs continuously: stimuli excite dynamics, actions are read out, and a scalar reward (neuromodulator) gates local learning. Persistence and telemetry are "
+                                            <strong>"slow paths"</strong>" that should not block the realtime step loop."
+                                        </p>
+                                    </Show>
+
+                                // Dynamics tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::Dynamics>
+                                    <div class="docs-masonry">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Unit State"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "Each unit holds only scalars — no vectors or matrices:"
+                                            </p>
+                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
+                                                "struct Unit {"<br/>
+                                                "  amp: f32,   "<span style="color: var(--muted);">"// activation amplitude"</span><br/>
+                                                "  phase: f32, "<span style="color: var(--muted);">"// oscillatory phase [0, 2π)"</span><br/>
+                                                "  bias: f32,  "<span style="color: var(--muted);">"// resting potential"</span><br/>
+                                                "  decay: f32, "<span style="color: var(--muted);">"// amplitude decay rate"</span><br/>
+                                                "}"
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Update Rule"</h3>
+                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                "At each tick, each unit updates from:"
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.6;">
+                                                <li>"Neighbor influence (sparse couplings)"</li>
+                                                <li>"External stimulus injection"</li>
+                                                <li>"Global inhibition (competition)"</li>
+                                                <li>"Decay (forgetting at state level)"</li>
+                                                <li>"Bounded noise (exploration)"</li>
+                                            </ul>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Mathematical Model"</h3>
+                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-size: 0.9rem; line-height: 1.8; color: var(--text);">
+                                                <div style="margin-bottom: 8px;">
+                                                    <strong>"Amplitude update:"</strong>
+                                                </div>
+                                                <div style="font-family: serif; font-style: italic; padding-left: 12px; margin-bottom: 12px;">
+                                                    "amp"<sub>"i"</sub>"(t+1) = amp"<sub>"i"</sub>"(t) · (1 - decay) + input"<sub>"i"</sub>" + Σ"<sub>"j"</sub>" w"<sub>"ij"</sub>" · amp"<sub>"j"</sub>" · cos(Δφ)"
+                                                </div>
+                                                <div style="margin-bottom: 8px;">
+                                                    <strong>"Phase coupling:"</strong>
+                                                </div>
+                                                <div style="font-family: serif; font-style: italic; padding-left: 12px;">
+                                                    "Δφ"<sub>"ij"</sub>" = phase"<sub>"i"</sub>" - phase"<sub>"j"</sub>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Emergent Behavior"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li><strong>"Stable attractors"</strong>" — habits, identity patterns"</li>
+                                                <li><strong>"Context-dependent recall"</strong>" — partial cues trigger full patterns"</li>
+                                                <li><strong>"Deterministic far from threshold"</strong>" — reliable actions"</li>
+                                                <li><strong>"Stochastic near threshold"</strong>" — exploration"</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    // Sparse storage diagram
+                                    <div style=STYLE_CARD>
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Sparse Connection Storage (CSR Format)"</h3>
+                                        <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                            "Connections are stored in Compressed Sparse Row (CSR) format for cache efficiency:"
                                         </p>
                                         <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
                                             "offsets: Vec<usize>  "<span style="color: var(--muted);">"// index into targets/weights for each unit"</span><br/>
@@ -4890,349 +5025,6 @@ fn App() -> impl IntoView {
                             </div>
                         </Show>
 
-                        <Show when=move || dashboard_tab.get() == DashboardTab::GameDetails>
-                            <div class="stack">
-                                <div class="hero">
-                                    <div class="hero-icon">{move || game_kind.get().icon()}</div>
-                                    <h2 class="hero-title">{move || game_kind.get().display_name()}</h2>
-                                    <p class="hero-desc">{move || game_kind.get().description()}</p>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"🧪 What This Tests"</h3>
-                                    <pre class="pre">{move || game_kind.get().what_it_tests()}</pre>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"⌨️ Inputs & Actions"</h3>
-                                    <pre class="codeblock">{move || game_kind.get().inputs_info()}</pre>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"🎁 Reward Structure"</h3>
-                                    <pre class="codeblock">{move || game_kind.get().reward_info()}</pre>
-                                </div>
-
-                                <div class="card">
-                                    <h3 class="card-title">"🎯 Learning Objectives"</h3>
-                                    <pre class="pre">{move || game_kind.get().learning_objectives()}</pre>
-                                </div>
-
-                                <div class="callout">
-                                    <p>
-                                        "💡 "<strong>"Braine"</strong>" learns via local plasticity + neuromodulation (reward). No backprop. See the About tab for details."
-                                    </p>
-                                </div>
-
-                                <Show when=move || game_kind.get() == GameKind::Text>
-                                    <div class="card">
-                                        <h3 class="card-title">"📚 Text Training Data (Task Definition)"</h3>
-                                        <p class="subtle">"This rebuilds the Text game (vocab + sensors/actions) but keeps the same brain."</p>
-
-                                        <label class="label stack">
-                                            <span>"Corpus 0"</span>
-                                            <textarea
-                                                class="input"
-                                                rows="3"
-                                                prop:value=move || text_corpus0.get()
-                                                on:input=move |ev| set_text_corpus0.set(event_target_value(&ev))
-                                            />
-                                        </label>
-
-                                        <label class="label stack">
-                                            <span>"Corpus 1"</span>
-                                            <textarea
-                                                class="input"
-                                                rows="3"
-                                                prop:value=move || text_corpus1.get()
-                                                on:input=move |ev| set_text_corpus1.set(event_target_value(&ev))
-                                            />
-                                        </label>
-
-                                        <div class="row end wrap">
-                                            <label class="label">
-                                                <span>"Max vocab"</span>
-                                                <input
-                                                    class="input compact"
-                                                    type="number"
-                                                    min="2"
-                                                    max="512"
-                                                    step="1"
-                                                    prop:value=move || text_max_vocab.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_text_max_vocab.set(v.clamp(2, 512));
-                                                        }
-                                                    }
-                                                />
-                                            </label>
-                                            <label class="label">
-                                                <span>"Shift every (outcomes)"</span>
-                                                <input
-                                                    class="input compact"
-                                                    type="number"
-                                                    min="1"
-                                                    step="1"
-                                                    prop:value=move || text_shift_every.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_text_shift_every.set(v.max(1));
-                                                        }
-                                                    }
-                                                />
-                                            </label>
-
-                                            <button
-                                                class="btn primary"
-                                                on:click=move |_| {
-                                                    do_text_apply_corpora_sv.with_value(|f| (f.as_ref())())
-                                                }
-                                            >
-                                                "Apply corpora"
-                                            </button>
-                                        </div>
-                                        <p class="subtle">"After applying, use Run/Step to train on the stream. Disable Learning Writes in Settings to probe without training."</p>
-                                    </div>
-
-                                    <div class="card">
-                                        <h3 class="card-title">"🏋️ Prompt Training (Supervised Reward)"</h3>
-                                        <p class="subtle">"Walks adjacent byte pairs in the prompt and rewards +1 for predicting the next token, −1 otherwise."</p>
-
-                                        <label class="label stack">
-                                            <span>"Prompt"</span>
-                                            <textarea
-                                                class="input"
-                                                rows="3"
-                                                prop:value=move || text_train_prompt.get()
-                                                on:input=move |ev| set_text_train_prompt.set(event_target_value(&ev))
-                                            />
-                                        </label>
-
-                                        <div class="row end wrap">
-                                            <label class="label">
-                                                <span>"Regime"</span>
-                                                <input
-                                                    class="input compact"
-                                                    type="number"
-                                                    min="0"
-                                                    max="1"
-                                                    step="1"
-                                                    prop:value=move || text_train_regime.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_text_train_regime.set(v.clamp(0, 1));
-                                                        }
-                                                    }
-                                                />
-                                            </label>
-                                            <label class="label">
-                                                <span>"Epochs"</span>
-                                                <input
-                                                    class="input compact"
-                                                    type="number"
-                                                    min="1"
-                                                    step="1"
-                                                    prop:value=move || text_train_epochs.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_text_train_epochs.set(v.max(1));
-                                                        }
-                                                    }
-                                                />
-                                            </label>
-                                            <button
-                                                class="btn"
-                                                on:click=move |_| {
-                                                    do_text_train_prompt_sv.with_value(|f| (f.as_ref())())
-                                                }
-                                            >
-                                                "Train prompt"
-                                            </button>
-                                        </div>
-
-                                        <p class="subtle">"Tip: Use the Interactive Text Prediction table below to probe changes immediately (it runs on a cloned brain)."</p>
-                                    </div>
-
-                                    <div class="card">
-                                        <h3 class="card-title">"🧪 Interactive Text Prediction (Inference)"</h3>
-                                        <p class="subtle">"Web-only inference (no daemon): this does not train; it runs on a cloned brain so it won’t perturb the running game. Predictions come from learned meaning/association memory."</p>
-
-                                        <div class="row end wrap">
-                                            <div class="subtle">"Examples:"</div>
-                                            <button class="btn sm" on:click=move |_| { set_text_prompt.set("hello worl".to_string()); set_text_prompt_regime.set(0); }>
-                                                "hello worl (r0)"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| { set_text_prompt.set("goodbye worl".to_string()); set_text_prompt_regime.set(1); }>
-                                                "goodbye worl (r1)"
-                                            </button>
-                                            <button class="btn sm" on:click=move |_| { set_text_prompt.set("hello w".to_string()); set_text_prompt_regime.set(0); }>
-                                                "hello w"
-                                            </button>
-                                        </div>
-
-                                        <label class="label">
-                                            <span>"Prompt"</span>
-                                            <input
-                                                class="input"
-                                                type="text"
-                                                prop:value=move || text_prompt.get()
-                                                on:input=move |ev| set_text_prompt.set(event_target_value(&ev))
-                                            />
-                                        </label>
-
-                                        <div class="row end wrap">
-                                            <label class="label">
-                                                <span>"Regime"</span>
-                                                <input
-                                                    class="input compact"
-                                                    type="number"
-                                                    min="0"
-                                                    max="1"
-                                                    step="1"
-                                                    prop:value=move || text_prompt_regime.get().to_string()
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                            set_text_prompt_regime.set(v.clamp(0, 1));
-                                                        }
-                                                    }
-                                                />
-                                            </label>
-                                            <label class="label">
-                                                <span>"Temp"</span>
-                                                <input
-                                                    class="input compact"
-                                                    type="number"
-                                                    min="0.1"
-                                                    max="10"
-                                                    step="0.1"
-                                                    prop:value=move || format!("{:.1}", text_temp.get())
-                                                    on:input=move |ev| {
-                                                        if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                            set_text_temp.set(v.clamp(0.1, 10.0));
-                                                        }
-                                                    }
-                                                />
-                                            </label>
-                                            <button
-                                                class="btn"
-                                                on:click={
-                                                    let runtime = runtime.clone();
-                                                    move |_| {
-                                                        // Gather current vocab/sensors from the active Text game (so we can map OOV to UNK).
-                                                        let (known_sensors, known_actions) = runtime.with_value(|r| {
-                                                            match &r.game {
-                                                                WebGame::Text(g) => (g.token_sensor_names().to_vec(), g.allowed_actions().to_vec()),
-                                                                _ => (Vec::new(), Vec::new()),
-                                                            }
-                                                        });
-
-                                                        let prompt = text_prompt.get_untracked();
-                                                        let regime = text_prompt_regime.get_untracked();
-                                                        let temp = text_temp.get_untracked();
-                                                        let alpha = meaning_alpha.get_untracked();
-
-                                                        let preds: Vec<(String, f32, f32)> = runtime.with_value(|r| {
-                                                            let mut b = r.brain.clone();
-                                                            b.set_neuromodulator(0.0);
-
-                                                            // Choose the last byte of the prompt as the current token.
-                                                            let cur_byte = prompt.as_bytes().last().copied();
-                                                            let tok_sensor = choose_text_token_sensor(cur_byte, &known_sensors);
-
-                                                            // Apply the same inputs that the Text game uses.
-                                                            b.apply_stimulus(Stimulus::new("text", 1.0));
-                                                            let regime_sensor = if regime == 1 { "txt_regime_1" } else { "txt_regime_0" };
-                                                            b.apply_stimulus(Stimulus::new(regime_sensor, 0.8));
-                                                            b.apply_stimulus(Stimulus::new(&tok_sensor, 1.0));
-
-                                                            // Context key matches the game's conditioning symbol.
-                                                            let ctx = format!(
-                                                                "txt_r{}_c{}",
-                                                                if regime == 1 { 1 } else { 0 },
-                                                                token_action_name_from_sensor(&tok_sensor)
-                                                            );
-                                                            b.note_compound_symbol(&[ctx.as_str()]);
-                                                            b.step();
-                                                            b.discard_observation();
-
-                                                            let ranked = b.ranked_actions_with_meaning(ctx.as_str(), alpha);
-                                                            let mut top: Vec<(String, f32)> = ranked
-                                                                .into_iter()
-                                                                .filter(|(a, _)| known_actions.iter().any(|k| k == a))
-                                                                .take(8)
-                                                                .collect();
-                                                            if top.is_empty() {
-                                                                top = known_actions
-                                                                    .iter()
-                                                                    .take(8)
-                                                                    .map(|a| (a.clone(), 0.0))
-                                                                    .collect();
-                                                            }
-
-                                                            // Softmax for a display-probability using temperature.
-                                                            let probs = softmax_temp(&top, temp);
-                                                            top.into_iter()
-                                                                .zip(probs.into_iter())
-                                                                .map(|((a, s), p)| (a, s, p))
-                                                                .collect()
-                                                        });
-
-                                                        set_text_preds.set(preds);
-                                                    }
-                                                }
-                                            >
-                                                "Predict next"
-                                            </button>
-                                        </div>
-
-                                        <div class="subtle" style="margin-top: 10px;">
-                                            {move || {
-                                                let preds = text_preds.get();
-                                                if let Some((a, _s, p)) = preds.first() {
-                                                    let disp = display_token_from_action(a);
-                                                    format!("Top prediction: {}  ({:.1}% softmax)", disp, p * 100.0)
-                                                } else {
-                                                    "Top prediction: —".to_string()
-                                                }
-                                            }}
-                                        </div>
-
-                                        <div class="divider"></div>
-                                        <div class="subtle">"Top predictions (score + softmax probability)"</div>
-                                        <table class="table">
-                                            <thead>
-                                                <tr>
-                                                    <th>"Token"</th>
-                                                    <th>"Action"</th>
-                                                    <th>"Score"</th>
-                                                    <th>"P"</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {move || {
-                                                    text_preds
-                                                        .get()
-                                                        .into_iter()
-                                                        .map(|(a, s, p)| {
-                                                            let disp = display_token_from_action(&a);
-                                                            view! {
-                                                                <tr>
-                                                                    <td class="mono">{disp}</td>
-                                                                    <td class="mono">{a}</td>
-                                                                    <td>{format!("{:.3}", s)}</td>
-                                                                    <td>{format!("{:.1}%", p * 100.0)}</td>
-                                                                </tr>
-                                                            }
-                                                        })
-                                                        .collect_view()
-                                                }}
-                                            </tbody>
-                                        </table>
-                                        <p class="subtle">"Note: ‘Temp’ here is a visualization knob (softmax over scores), not Braine’s learning temperature."</p>
-                                    </div>
-                                </Show>
-                            </div>
-                        </Show>
 
                         <Show when=move || dashboard_tab.get() == DashboardTab::Settings>
                             {

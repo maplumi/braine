@@ -242,11 +242,11 @@ button {
 
 .sidebar-item {
   width: 100%;
-  display: grid;
-  grid-template-columns: 26px 1fr auto;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  padding: 10px 10px;
+  padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: 12px;
   background: transparent;

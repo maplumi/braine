@@ -23,6 +23,7 @@ pub(super) fn token_action_name_from_sensor(sensor: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn display_token_from_action(action: &str) -> String {
     let Some(suffix) = action.strip_prefix("tok_") else {
         return "<unk>".to_string();

@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub(super) fn softmax_temp(items: &[(String, f32)], temp: f32) -> Vec<f32> {
     if items.is_empty() {
         return Vec::new();

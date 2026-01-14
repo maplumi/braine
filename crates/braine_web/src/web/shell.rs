@@ -114,7 +114,7 @@ pub(super) fn Sidebar(
     game_kind: ReadSignal<GameKind>,
     set_game: Arc<dyn Fn(GameKind) + Send + Sync>,
     open_docs: Callback<()>,
-    open_game_info: Callback<GameKind>,
+    set_game_info_modal_kind: WriteSignal<Option<GameKind>>,
 ) -> impl IntoView {
     view! {
         // Sidebar overlay (mobile)
@@ -189,7 +189,7 @@ pub(super) fn Sidebar(
                                     title="Game information"
                                     on:click=move |ev| {
                                         ev.stop_propagation();
-                                        open_game_info.run(kind);
+                                        set_game_info_modal_kind.set(Some(kind));
                                     }
                                 >
                                     "ⓘ"
