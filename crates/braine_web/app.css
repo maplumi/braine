@@ -275,35 +275,6 @@ button {
   font-weight: 700;
 }
 
-.sidebar-label-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.sidebar-info-btn {
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: rgba(0, 0, 0, 0.18);
-  color: var(--muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-  flex: 0 0 auto;
-}
-
-.sidebar-info-btn:hover {
-  background: color-mix(in oklab, var(--accent) 12%, transparent);
-  border-color: color-mix(in oklab, var(--accent) 25%, transparent);
-  color: var(--text);
-}
-
 .sidebar-pill {
   font-family: var(--mono);
   font-size: 0.72rem;
@@ -312,6 +283,25 @@ button {
   border-radius: 999px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(0,0,0,0.20);
+}
+
+/* The sidebar should only show the info pill. If any older/cached markup still
+ * renders a second pill (e.g., a game label), hide it. */
+.sidebar-pill:not(.sidebar-info-pill) {
+  display: none;
+}
+
+.sidebar-info-pill {
+  cursor: pointer;
+  padding: 4px 10px;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.sidebar-info-pill:hover {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 25%, transparent);
+  color: var(--text);
 }
 
 .sidebar-overlay {
@@ -326,7 +316,6 @@ button {
   overflow: auto;
   border-right: 1px solid var(--border);
   position: relative;
-  z-index: 20;
 }
 
 .dashboard {
@@ -410,7 +399,8 @@ button {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.62);
-  z-index: 1100;
+  /* Must sit above the floating analytics window and mobile drawers. */
+  z-index: 7000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -673,7 +663,8 @@ button {
 .floating-layer {
   position: fixed;
   inset: 0;
-  z-index: 950;
+  /* Must appear above the right panel and any mobile drawers. */
+  z-index: 5000;
   pointer-events: none; /* allow interacting with the game behind */
 }
 

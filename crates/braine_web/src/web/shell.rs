@@ -133,7 +133,6 @@ pub(super) fn Sidebar(
         <aside class=move || if sidebar_open.get() { "sidebar open" } else { "sidebar" }>
             <div class="sidebar-header">
                 <div class="sidebar-title">"Games"</div>
-                <div class="sidebar-subtle">"Choose a task; keep state"</div>
             </div>
 
             <div class="sidebar-section">
@@ -184,21 +183,17 @@ pub(super) fn Sidebar(
                                     }
                                 }
                             >
-                                <span class="sidebar-ico">{kind.icon()}</span>
-                                <div class="sidebar-label-row">
-                                    <span class="sidebar-label">{kind.display_name()}</span>
-                                    <button
-                                        class="sidebar-info-btn"
-                                        title="Game information"
-                                        on:click=move |ev| {
-                                            ev.stop_propagation();
-                                            open_game_info.run(kind);
-                                        }
-                                    >
-                                        "ⓘ"
-                                    </button>
-                                </div>
-                                <span class="sidebar-pill">{kind.label()}</span>
+                                <span class="sidebar-label">{kind.display_name()}</span>
+                                <button
+                                    class="sidebar-pill sidebar-info-pill"
+                                    title="Game information"
+                                    on:click=move |ev| {
+                                        ev.stop_propagation();
+                                        open_game_info.run(kind);
+                                    }
+                                >
+                                    "ⓘ"
+                                </button>
                             </div>
                         }
                     })

@@ -771,6 +771,25 @@ fn App() -> impl IntoView {
 
     // Game information modal (opened from the left menu).
     let (game_info_modal_kind, set_game_info_modal_kind) = signal::<Option<GameKind>>(None);
+
+    // Defer closing so we don't unmount the modal mid-event dispatch.
+    let close_game_info_modal = {
+        let set_game_info_modal_kind = set_game_info_modal_kind.clone();
+        move || {
+            if let Some(win) = web_sys::window() {
+                let cb = Closure::wrap(Box::new(move || {
+                    set_game_info_modal_kind.set(None);
+                }) as Box<dyn FnMut()>);
+                let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(),
+                    0,
+                );
+                cb.forget();
+            } else {
+                set_game_info_modal_kind.set(None);
+            }
+        }
+    };
     let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
     let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
     let brainviz_degree_by_id = StoredValue::new(std::collections::HashMap::<u32, usize>::new());
@@ -2376,7 +2395,7 @@ fn App() -> impl IntoView {
             <Show when=move || game_info_modal_kind.get().is_some()>
                 <div
                     class="modal-overlay"
-                    on:click=move |_| set_game_info_modal_kind.set(None)
+                    on:click=move |_| close_game_info_modal()
                 >
                     <div
                         class="modal"
@@ -2392,12 +2411,11 @@ fn App() -> impl IntoView {
                                         <div class="modal-head">
                                             <div class="modal-title">
                                                 {format!("{} {}", kind.icon(), kind.display_name())}
-                                                <span class="subtle" style="margin-left: 10px; font-weight: 700;">{kind.label()}</span>
                                             </div>
                                             <button
                                                 class="icon-btn"
                                                 title="Close"
-                                                on:click=move |_| set_game_info_modal_kind.set(None)
+                                                on:click=move |_| close_game_info_modal()
                                             >
                                                 "×"
                                             </button>
@@ -2428,6 +2446,127 @@ fn App() -> impl IntoView {
                                                 <div class="modal-section-title">"Learning objectives"</div>
                                                 <div class="modal-pre">{kind.learning_objectives()}</div>
                                             </div>
+
+                                            <Show when=move || kind == GameKind::Text>
+                                                <div class="modal-section">
+                                                    <div class="modal-section-title">"Text: Task definition"</div>
+                                                    <p class="subtle" style="margin: 0 0 10px 0;">
+                                                        "These controls rebuild the Text game (vocab + sensors/actions) while keeping the same brain."
+                                                    </p>
+
+                                                    <label class="label stack">
+                                                        <span>"Corpus 0"</span>
+                                                        <textarea
+                                                            class="input"
+                                                            rows="3"
+                                                            prop:value=move || text_corpus0.get()
+                                                            on:input=move |ev| set_text_corpus0.set(event_target_value(&ev))
+                                                        />
+                                                    </label>
+
+                                                    <label class="label stack">
+                                                        <span>"Corpus 1"</span>
+                                                        <textarea
+                                                            class="input"
+                                                            rows="3"
+                                                            prop:value=move || text_corpus1.get()
+                                                            on:input=move |ev| set_text_corpus1.set(event_target_value(&ev))
+                                                        />
+                                                    </label>
+
+                                                    <div class="row end wrap">
+                                                        <label class="label">
+                                                            <span>"Max vocab"</span>
+                                                            <input
+                                                                class="input compact"
+                                                                type="number"
+                                                                min="2"
+                                                                max="512"
+                                                                step="1"
+                                                                prop:value=move || text_max_vocab.get().to_string()
+                                                                on:input=move |ev| {
+                                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                        set_text_max_vocab.set(v.clamp(2, 512));
+                                                                    }
+                                                                }
+                                                            />
+                                                        </label>
+                                                        <label class="label">
+                                                            <span>"Shift every (outcomes)"</span>
+                                                            <input
+                                                                class="input compact"
+                                                                type="number"
+                                                                min="1"
+                                                                step="1"
+                                                                prop:value=move || text_shift_every.get().to_string()
+                                                                on:input=move |ev| {
+                                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                        set_text_shift_every.set(v.max(1));
+                                                                    }
+                                                                }
+                                                            />
+                                                        </label>
+
+                                                        <button
+                                                            class="btn primary"
+                                                            on:click=move |_| {
+                                                                do_text_apply_corpora_sv.with_value(|f| (f.as_ref())())
+                                                            }
+                                                        >
+                                                            "Apply corpora"
+                                                        </button>
+                                                    </div>
+
+                                                    <p class="subtle" style="margin: 8px 0 0 0;">
+                                                        "After applying, use Run/Step to train on the stream."
+                                                    </p>
+                                                </div>
+
+                                                <div class="modal-section">
+                                                    <div class="modal-section-title">"Text: Prompt training (supervised reward)"</div>
+                                                    <p class="subtle" style="margin: 0 0 10px 0;">
+                                                        "Walks adjacent byte pairs in the prompt and rewards +1 for predicting the next token, −1 otherwise."
+                                                    </p>
+
+                                                    <label class="label stack">
+                                                        <span>"Prompt"</span>
+                                                        <textarea
+                                                            class="input"
+                                                            rows="3"
+                                                            prop:value=move || text_train_prompt.get()
+                                                            on:input=move |ev| set_text_train_prompt.set(event_target_value(&ev))
+                                                        />
+                                                    </label>
+
+                                                    <div class="row end wrap">
+                                                        <label class="label">
+                                                            <span>"Regime"</span>
+                                                            <input
+                                                                class="input compact"
+                                                                type="number"
+                                                                min="0"
+                                                                max="1"
+                                                                step="1"
+                                                                prop:value=move || text_train_regime.get().to_string()
+                                                                on:input=move |ev| {
+                                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                        set_text_train_regime.set(v.clamp(0, 1));
+                                                                    }
+                                                                }
+                                                            />
+                                                        </label>
+
+                                                        <button
+                                                            class="btn"
+                                                            on:click=move |_| {
+                                                                do_text_train_prompt_sv.with_value(|f| (f.as_ref())())
+                                                            }
+                                                        >
+                                                            "Train"
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </Show>
                                         </div>
                                     }
                                     .into_any()
@@ -2458,156 +2597,6 @@ fn App() -> impl IntoView {
                     sidebar_open=sidebar_open
                     set_sidebar_open=set_sidebar_open
                     show_about_page=show_about_page
-                    set_show_about_page=set_show_about_page
-                    game_kind=game_kind
-                    set_game=set_game
-                    open_docs=open_docs
-                    open_game_info=Callback::new(move |kind: GameKind| {
-                        set_game_info_modal_kind.set(Some(kind));
-                    })
-                />
-
-                <div class="game-area">
-                    <SystemErrorBanner system_error=system_error set_system_error=set_system_error />
-
-                    <Show when=move || show_about_page.get()>
-                        <div class="stack">
-                            <div class="card">
-                                <h2 class="card-title">"Docs"</h2>
-                                <p class="subtle">"How the substrate works, plus protocol + integration notes."</p>
-
-                                <div class="subtabs" style="margin-top: 12px;">
-                                    {AboutSubTab::all()
-                                        .iter()
-                                        .map(|&tab| {
-                                            view! {
-                                                <button
-                                                    class=move || {
-                                                        if about_sub_tab.get() == tab {
-                                                            "subtab active"
-                                                        } else {
-                                                            "subtab"
-                                                        }
-                                                    }
-                                                    on:click=move |_| set_about_sub_tab.set(tab)
-                                                >
-                                                    {tab.label()}
-                                                </button>
-                                            }
-                                        })
-                                        .collect_view()}
-                                </div>
-
-                                <div class="stack" style="margin-top: 14px;">
-                                    // Overview tab
-                                    <Show when=move || about_sub_tab.get() == AboutSubTab::Overview>
-                                        <div class="docs-overview-top">
-                                            <div style=STYLE_CARD>
-                                                <h3 style="margin: 0 0 10px 0; font-size: 1.1rem; color: var(--accent);">"Closed-loop learning substrate"</h3>
-                                                <p style="margin: 0; color: var(--text); font-size: 0.92rem; line-height: 1.7;">
-                                                    "Braine is a continuously running dynamical system with local plasticity and a scalar reward (neuromodulator). "
-                                                    "It is not an LLM: there is no backprop, no global loss, and no token prediction objective."
-                                                </p>
-                                                <p style="margin: 10px 0 0 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                    {format!("braine v{} • braine_web v{} • bbi format v{}", VERSION_BRAINE, VERSION_BRAINE_WEB, VERSION_BBI_FORMAT)}
-                                                </p>
-                                            </div>
-                                            <div class="docs-overview-stack">
-                                                <div style=STYLE_CARD>
-                                                    <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"What to do"</h3>
-                                                    <ol style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                        <li>"Pick a game (left sidebar)."</li>
-                                                        <li>"Press Run; watch last-100 accuracy rise."</li>
-                                                        <li>"Tune ε (exploration), α (meaning), and trial ms."</li>
-                                                        <li>"Use BrainViz (bottom of dashboard) to inspect structure."</li>
-                                                    </ol>
-                                                </div>
-                                                <div style=STYLE_CARD>
-                                                    <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Key idea"</h3>
-                                                    <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                        "Learning modifies couplings and attractors; inference reuses the learned dynamics. "
-                                                        "Persistence and telemetry are slow side-effects and should never block the step loop."
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div class="docs-diagram-wrap docs-wide">
-                                            <MermaidDiagram code=ABOUT_OVERVIEW_DIAGRAM max_width_px=920 />
-                                        </div>
-
-                                        <p class="docs-diagram-caption">
-                                            "The substrate runs continuously: stimuli excite dynamics, actions are read out, and a scalar reward (neuromodulator) gates local learning. Persistence and telemetry are "
-                                            <strong>"slow paths"</strong>" that should not block the realtime step loop."
-                                        </p>
-                                    </Show>
-
-                                // Dynamics tab
-                                <Show when=move || about_sub_tab.get() == AboutSubTab::Dynamics>
-                                    <div class="docs-masonry">
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Unit State"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Each unit holds only scalars — no vectors or matrices:"
-                                            </p>
-                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
-                                                "struct Unit {"<br/>
-                                                "  amp: f32,   "<span style="color: var(--muted);">"// activation amplitude"</span><br/>
-                                                "  phase: f32, "<span style="color: var(--muted);">"// oscillatory phase [0, 2π)"</span><br/>
-                                                "  bias: f32,  "<span style="color: var(--muted);">"// resting potential"</span><br/>
-                                                "  decay: f32, "<span style="color: var(--muted);">"// amplitude decay rate"</span><br/>
-                                                "}"
-                                            </div>
-                                        </div>
-
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Update Rule"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "At each tick, each unit updates from:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.6;">
-                                                <li>"Neighbor influence (sparse couplings)"</li>
-                                                <li>"External stimulus injection"</li>
-                                                <li>"Global inhibition (competition)"</li>
-                                                <li>"Decay (forgetting at state level)"</li>
-                                                <li>"Bounded noise (exploration)"</li>
-                                            </ul>
-                                        </div>
-
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Mathematical Model"</h3>
-                                            <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-size: 0.9rem; line-height: 1.8; color: var(--text);">
-                                                <div style="margin-bottom: 8px;">
-                                                    <strong>"Amplitude update:"</strong>
-                                                </div>
-                                                <div style="font-family: serif; font-style: italic; padding-left: 12px; margin-bottom: 12px;">
-                                                    "amp"<sub>"i"</sub>"(t+1) = amp"<sub>"i"</sub>"(t) · (1 - decay) + input"<sub>"i"</sub>" + Σ"<sub>"j"</sub>" w"<sub>"ij"</sub>" · amp"<sub>"j"</sub>" · cos(Δφ)"
-                                                </div>
-                                                <div style="margin-bottom: 8px;">
-                                                    <strong>"Phase coupling:"</strong>
-                                                </div>
-                                                <div style="font-family: serif; font-style: italic; padding-left: 12px;">
-                                                    "Δφ"<sub>"ij"</sub>" = phase"<sub>"i"</sub>" - phase"<sub>"j"</sub>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Emergent Behavior"</h3>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                <li><strong>"Stable attractors"</strong>" — habits, identity patterns"</li>
-                                                <li><strong>"Context-dependent recall"</strong>" — partial cues trigger full patterns"</li>
-                                                <li><strong>"Deterministic far from threshold"</strong>" — reliable actions"</li>
-                                                <li><strong>"Stochastic near threshold"</strong>" — exploration"</li>
-                                            </ul>
-                                        </div>
-                                    </div>
-
-                                    // Sparse storage diagram
-                                    <div style=STYLE_CARD>
-                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Sparse Connection Storage (CSR Format)"</h3>
-                                        <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                            "Connections are stored in Compressed Sparse Row (CSR) format for cache efficiency:"
                                         </p>
                                         <div style="background: var(--bg); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; line-height: 1.6; color: var(--text);">
                                             "offsets: Vec<usize>  "<span style="color: var(--muted);">"// index into targets/weights for each unit"</span><br/>

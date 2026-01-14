@@ -7,7 +7,6 @@
 pub enum DashboardTab {
     Learning,
     #[default]
-    GameDetails,
     BrainViz,
     Settings,
 }
@@ -15,7 +14,6 @@ pub enum DashboardTab {
 impl DashboardTab {
     pub fn label(self) -> &'static str {
         match self {
-            DashboardTab::GameDetails => "Game Details",
             DashboardTab::Learning => "Learning",
             DashboardTab::BrainViz => "BrainViz",
             DashboardTab::Settings => "Settings",
@@ -24,7 +22,6 @@ impl DashboardTab {
 
     pub fn icon(self) -> &'static str {
         match self {
-            DashboardTab::GameDetails => "🧩",
             DashboardTab::Learning => "🧠",
             DashboardTab::BrainViz => "🕸️",
             DashboardTab::Settings => "⚙️",
@@ -35,7 +32,6 @@ impl DashboardTab {
         &[
             DashboardTab::BrainViz,
             DashboardTab::Learning,
-            DashboardTab::GameDetails,
             DashboardTab::Settings,
         ]
     }
@@ -225,7 +221,6 @@ mod tests {
         let all = DashboardTab::all();
         assert!(all.contains(&DashboardTab::Settings));
         assert!(all.contains(&DashboardTab::BrainViz));
-        assert!(all.contains(&DashboardTab::GameDetails));
     }
 
     #[test]
