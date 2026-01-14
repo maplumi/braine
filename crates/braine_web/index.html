@@ -5,6 +5,125 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Braine Web</title>
 
+    <!-- Mermaid (diagrams) -->
+    <script type="module">
+      const mermaidReady = import(
+        "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs"
+      ).then((mod) => {
+        const mermaid = mod.default;
+
+        // Expose for debugging.
+        window.mermaid = mermaid;
+
+        // Default init (dark). The app will call braineMermaidApplyTheme() after it
+        // reads localStorage and sets the document theme.
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: "dark",
+          flowchart: { curve: "basis" },
+        });
+
+        return mermaid;
+      });
+
+      window.braineMermaidReady = mermaidReady;
+
+      function mermaidThemeFromAttr(themeAttr) {
+        // Our app uses :root[data-theme='light'] with dark as default.
+        return themeAttr === "light" ? "default" : "dark";
+      }
+
+      // Mermaid rendering is async and not re-entrant; mount effects + theme
+      // toggles can race. We serialize all Mermaid operations through a tiny
+      // queue so errors don't spam and rendering stays stable.
+      let braineMermaidOpRunning = false;
+      const braineMermaidOpQueue = [];
+
+      function braineMermaidEnqueue(op) {
+        braineMermaidOpQueue.push(op);
+        if (!braineMermaidOpRunning) {
+          braineMermaidDrainQueue();
+        }
+      }
+
+      async function braineMermaidDrainQueue() {
+        braineMermaidOpRunning = true;
+        try {
+          while (braineMermaidOpQueue.length > 0) {
+            const op = braineMermaidOpQueue.shift();
+            try {
+              await op();
+            } catch (err) {
+              console.warn("Mermaid op failed", err);
+            }
+          }
+        } finally {
+          braineMermaidOpRunning = false;
+        }
+      }
+
+      async function mermaidRerenderAll(mermaid) {
+        const nodes = Array.from(document.querySelectorAll(".mermaid"));
+        if (nodes.length === 0) return;
+
+        // Mermaid marks nodes as data-processed and replaces the text with SVG.
+        // For rerendering (e.g. theme change), restore the original source.
+        for (const el of nodes) {
+          const src = el.dataset.mermaidSrc ?? el.textContent ?? "";
+          el.dataset.mermaidSrc = src;
+          el.removeAttribute("data-processed");
+          el.textContent = src;
+          el.removeAttribute("data-mermaid-error");
+        }
+
+        // Render each node independently so one bad diagram doesn't prevent
+        // the rest of the page from rendering.
+        for (const el of nodes) {
+          try {
+            await mermaid.run({ nodes: [el] });
+          } catch (err) {
+            el.setAttribute("data-mermaid-error", "true");
+            console.warn("Mermaid render failed", err);
+          }
+        }
+      }
+
+      // Called from WASM (safe to call before mermaidReady resolves).
+      window.braineMermaidRenderAll = () => {
+        mermaidReady.then((mermaid) => {
+          const raf = () =>
+            new Promise((resolve) =>
+              requestAnimationFrame(() => resolve())
+            );
+
+          // Render now, and again after the next paint. The extra pass avoids
+          // timing issues where a `.mermaid` node is inserted slightly after a
+          // mount effect fires (common with conditional/tabbed rendering).
+          braineMermaidEnqueue(() => mermaidRerenderAll(mermaid));
+          braineMermaidEnqueue(async () => {
+            await raf();
+            await mermaidRerenderAll(mermaid);
+          });
+        });
+      };
+
+      // Called from WASM on theme changes ("dark" | "light").
+      window.braineMermaidApplyTheme = (themeAttr) => {
+        mermaidReady.then((mermaid) => {
+          braineMermaidEnqueue(async () => {
+            mermaid.initialize({
+              startOnLoad: false,
+              theme: mermaidThemeFromAttr(themeAttr),
+              flowchart: { curve: "basis" },
+            });
+            await mermaidRerenderAll(mermaid);
+            await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+            await mermaidRerenderAll(mermaid);
+          });
+        });
+      };
+    </script>
+
     <!-- Trunk entrypoint: builds the crate in this folder to WASM -->
     <link data-trunk rel="rust" data-wasm-opt="z" />
 

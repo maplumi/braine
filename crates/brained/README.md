@@ -15,24 +15,17 @@ This allows:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────┐
-│         Braine Daemon (brained)         │
-│  ─────────────────────────────────────  │
-│  • Brain substrate & learning           │
-│  • Game/task execution                  │
-│  • Persistent storage                   │
-│  • TCP server (127.0.0.1:9876)          │
-│  • Auto-save brain state                │
-└──────────────┬──────────────────────────┘
-               │ JSON-RPC over TCP
-               │
-    ┌──────────┴──────────┬────────────┐
-    │                     │            │
-┌───▼────────┐    ┌──────▼────┐   ┌───▼────┐
-│  UI Client │    │ UI Client │   │  CLI   │
-│ (braine_desktop)│    │ (another) │   │ Client │
-└────────────┘    └───────────┘   └────────┘
+```mermaid
+flowchart TB
+    Daemon["Braine Daemon (brained)<br/>• Brain substrate & learning<br/>• Game/task execution<br/>• Persistent storage<br/>• TCP server (127.0.0.1:9876)<br/>• Auto-save brain state"]
+
+    UI1["UI Client (braine_desktop)"]
+    UI2["UI Client (another)"]
+    CLI["CLI Client (braine-cli)"]
+
+    UI1 <--> |"newline-delimited JSON over TCP"| Daemon
+    UI2 <--> |"newline-delimited JSON over TCP"| Daemon
+    CLI <--> |"newline-delimited JSON over TCP"| Daemon
 ```
 
 ## Data Storage

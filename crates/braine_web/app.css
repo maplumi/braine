@@ -1008,6 +1008,17 @@ a.good { color: var(--accent-2); }
   height: auto;
 }
 
+/* Mermaid renders an inner SVG; keep it responsive. */
+.mermaid {
+  width: 100%;
+  max-width: 920px;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .docs-diagram-caption {
   margin: 6px 0 0 0;
   color: var(--muted);
@@ -1372,7 +1383,11 @@ a.good { color: var(--accent-2); }
 }
 
 .settings-stack {
-  gap: 18px;
+  gap: 12px;
+}
+
+.settings-stack .card {
+  padding: 12px;
 }
 
 .settings-stack .card {
@@ -1389,18 +1404,18 @@ a.good { color: var(--accent-2); }
 .param-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 16px 12px;
+  gap: 10px 10px;
   width: 100%;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .param-field {
   grid-column: span 6;
   min-width: 0;
-  padding: 10px;
+  padding: 8px;
   background: rgba(10, 15, 26, 0.35);
   border: 1px solid rgba(122, 162, 255, 0.12);
-  border-radius: 8px;
+  border-radius: 7px;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
@@ -1409,15 +1424,15 @@ a.good { color: var(--accent-2); }
   border-color: rgba(122, 162, 255, 0.25);
 }
 
-@media (min-width: 1400px) {
+@media (min-width: 1200px) {
   .param-field {
     grid-column: span 4;
   }
 }
 
-@media (min-width: 1200px) and (max-width: 1399px) {
+@media (min-width: 1600px) {
   .param-field {
-    grid-column: span 6;
+    grid-column: span 3;
   }
 }
 
@@ -1444,13 +1459,13 @@ a.good { color: var(--accent-2); }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .param-label {
   color: var(--text);
   font-weight: 700;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   line-height: 1.3;
 }
 
@@ -1467,8 +1482,10 @@ a.good { color: var(--accent-2); }
 }
 
 .param-input-row .input {
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 110px;
+  min-width: 92px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
 }
 
 .param-input-row .btn.link {
@@ -1547,6 +1564,16 @@ a.good { color: var(--accent-2); }
   transform: translateY(-6px);
   pointer-events: none;
   transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+/* Tooltip rendered at the top-level (above sidebar overlays). */
+.tooltip.tooltip-portal {
+  position: fixed;
+  right: auto;
+  top: auto;
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: none;
 }
 
 .tooltip-wrap:hover .tooltip,

@@ -39,11 +39,11 @@ impl DashboardTab {
 
     pub fn all() -> &'static [DashboardTab] {
         &[
+            DashboardTab::BrainViz,
             DashboardTab::Learning,
             DashboardTab::GameDetails,
             DashboardTab::Stats,
             DashboardTab::Analytics,
-            DashboardTab::BrainViz,
             DashboardTab::Settings,
         ]
     }

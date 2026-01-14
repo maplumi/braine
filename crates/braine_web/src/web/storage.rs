@@ -116,6 +116,19 @@ pub(super) struct PersistedSettings {
     pub(super) settings_advanced: bool,
 }
 
+impl Default for PersistedSettings {
+    fn default() -> Self {
+        Self {
+            reward_scale: 1.0,
+            reward_bias: 0.0,
+            learning_enabled: default_true(),
+            run_interval_ms: default_run_interval_ms(),
+            trial_period_ms: default_trial_period_ms(),
+            settings_advanced: false,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }

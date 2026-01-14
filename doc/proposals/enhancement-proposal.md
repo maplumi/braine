@@ -92,24 +92,26 @@ New `META` chunk for research reproducibility:
 #### 2.1 Tabbed Dashboard Layout
 Replace single-row button bar with **tabbed panel system**:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ [Games ▼] [Learning ▼] [Brain ▼] [Storage ▼]    [Human|AI] │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌───────────────────────┐  ┌────────────────────────────┐ │
-│  │                       │  │ Live Metrics Panel         │ │
-│  │     GAME AREA         │  │ - Phase coherence          │ │
-│  │                       │  │ - Learning rate (EMA)      │ │
-│  │                       │  │ - Causal edges added       │ │
-│  │                       │  │ - Active oscillators       │ │
-│  └───────────────────────┘  └────────────────────────────┘ │
-│                                                             │
-│  ┌────────────────────────────────────────────────────────┐│
-│  │ Timeline / Flip Events                                  ││
-│  │ [▮▮▮▮▮▮░░░░░░░░░░░░░░] Next flip in 45 outcomes        ││
-│  └────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph TopBar["Tabs / Mode"]
+    direction LR
+    Games["Games ▼"]
+    Learning["Learning ▼"]
+    Brain["Brain ▼"]
+    Storage["Storage ▼"]
+    Mode["Human | AI"]
+  end
+
+  subgraph Main["Main Layout"]
+    direction LR
+    GameArea["Game Area"]
+    Metrics["Live Metrics Panel<br/>- Phase coherence<br/>- Learning rate (EMA)<br/>- Causal edges added<br/>- Active oscillators"]
+  end
+
+  Timeline["Timeline / Flip Events<br/>Next flip in 45 outcomes"]
+
+  TopBar --> Main --> Timeline
 ```
 
 #### 2.2 Learning Tab Controls

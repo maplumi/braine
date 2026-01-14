@@ -274,15 +274,23 @@ CSS classes added:
 
 ### Signal Flow for Unit Plot Updates
 
-```
-do_tick()
-  └─> runtime.update_value(|r| r.tick(&cfg))
-  └─> set_steps.update()
-  └─> refresh_ui_from_runtime()
-        └─> brain.unit_plot_points(128)
-        └─> set_unit_plot.set(plot_points)
-              └─> Effect reacts to unit_plot.get()
-                    └─> charts::draw_unit_plot_3d()
+```mermaid
+flowchart TD
+    do_tick["do_tick()"]
+    runtime["runtime.update_value(|r| r.tick(&cfg))"]
+    set_steps["set_steps.update()"]
+    refresh["refresh_ui_from_runtime()"]
+    unit_plot["brain.unit_plot_points(128)"]
+    set_unit_plot["set_unit_plot.set(plot_points)"]
+    effect["Effect reacts to unit_plot.get()"]
+    draw["charts::draw_unit_plot_3d()"]
+
+    do_tick --> runtime
+    do_tick --> set_steps
+    do_tick --> refresh
+    refresh --> unit_plot
+    refresh --> set_unit_plot
+    set_unit_plot --> effect --> draw
 ```
 
 ### Responsive Layout Strategy

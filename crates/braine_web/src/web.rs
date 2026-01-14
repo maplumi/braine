@@ -15,12 +15,14 @@ mod canvas;
 mod files;
 mod indexeddb;
 mod math;
+mod mermaid;
 mod parameter_field;
 mod runtime;
 mod settings_schema;
 mod shell;
 mod storage;
 mod tokens;
+mod tooltip;
 mod types;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -72,8 +74,10 @@ fn report_error(msg: impl Into<String>) {
     });
 }
 
+use mermaid::{apply_theme as apply_mermaid_theme, MermaidDiagram};
 use parameter_field::ParameterField;
 use settings_schema::ParamSection;
+use tooltip::{TooltipPortal, TooltipStore};
 
 const IDB_DB_NAME: &str = "braine";
 const IDB_STORE: &str = "kv";
@@ -179,17 +183,100 @@ impl AboutSubTab {
     }
 }
 
-const ABOUT_LLM_DATAFLOW: &str = r#"Braine (daemon) owns the long-lived Brain.
+const ABOUT_LLM_DATAFLOW: &str = r#"flowchart TD
+    Env[Frame / environment]
+    Stim[Stimuli]
+    Brain[Brain dynamics]
+    Act[Action]
+    Reward[Reward / neuromodulator]
+    Learn[Local learning]
 
-  (game loop)
-  stimuli ──▶ Brain dynamics ──▶ action ──▶ env/reward ──▶ neuromodulator ──▶ local learning
+    Env -->|encode| Stim --> Brain -->|readout| Act --> Env
+    Env -->|reward| Reward -->|gates| Learn -->|updates couplings| Brain
 
-  (advisor loop, slow + bounded)
-  Brain+HUD snapshot ──▶ AdvisorContext (Braine → LLM)
-                        └──▶ external LLM
-                               └──▶ AdvisorAdvice (LLM → Braine)
-                                        └──▶ daemon clamps + applies bounded knobs
-                                                (exploration_eps, meaning_alpha, ttl)
+    Snap[Brain + HUD snapshot]
+    Ctx[AdvisorContext (Braine to LLM)]
+    LLM[External LLM (untrusted)]
+    Advice[AdvisorAdvice (LLM to Braine)]
+    Clamp[Daemon clamps + applies (exploration_eps, meaning_alpha, ttl)]
+
+    Snap --> Ctx --> LLM --> Advice --> Clamp
+    Clamp -. nudges .-> Brain
+"#;
+
+const ABOUT_OVERVIEW_DIAGRAM: &str = r#"flowchart LR
+    subgraph Frame[Frame / environment]
+        Env[Environment]
+        Stim[Stimuli symbols]
+        Act[Action symbols]
+    end
+
+    subgraph Substrate[Brain substrate]
+        Dyn[Wave dynamics]
+        Plastic[Local plasticity]
+    end
+
+    Reward[Reward / neuromodulator]
+    Persist["Persistence<br/>(brain image • BBI)"]
+    Viz["Telemetry / viz<br/>(stats • BrainViz • analytics)"]
+
+    Env -->|stimuli| Stim
+    Stim --> Dyn
+    Dyn -->|actions| Act
+    Act --> Env
+
+    Reward -. neuromodulates .-> Plastic
+    Dyn --> Plastic --> Dyn
+
+    Dyn -. save/load .-> Persist
+    Dyn -. slow side-effects .-> Viz
+"#;
+
+const ABOUT_LEARNING_HIERARCHY_DIAGRAM: &str = r#"flowchart LR
+    CB["Child brains<br/>(sec–hours)"] --> NG["Neurogenesis<br/>(steps–min)"] --> H["Hebbian<br/>(per-step)"] --> I["Imprinting<br/>(one-shot)"]
+"#;
+
+const ABOUT_MEMORY_STRUCTURE_DIAGRAM: &str = r#"flowchart LR
+    Persisted[Structural state (persisted)]
+    Runtime[Runtime state (transient)]
+
+    Persisted --> P1[Units + sparse connections]
+    Persisted --> P2[Sensor/action groups]
+    Persisted --> P3[Symbol table]
+    Persisted --> P4[Causal memory edges]
+
+    Runtime --> R1[Pending input current]
+    Runtime --> R2[Telemetry buffers]
+    Runtime --> R3[Transient vectors]
+"#;
+
+const ABOUT_CURRENT_ARCHITECTURE_DIAGRAM: &str = r#"flowchart LR
+    Desktop[braine_desktop (Slint UI)]
+    CLI[braine-cli (commands)]
+    D[brained (Substrate + TCP server)]
+    File[braine.bbi (file system)]
+
+    Web[braine_web (WASM) - in-memory]
+    IDB[IndexedDB (browser storage)]
+
+    Desktop <--> D
+    CLI <--> D
+    D --> File
+    Web --> IDB
+"#;
+
+const ABOUT_FUTURE_ARCHITECTURE_DIAGRAM: &str = r#"flowchart TB
+    Central["Central Daemon<br/>Authoritative Brain state<br/>Learning + Persistence"]
+
+    Desktop["Desktop<br/>Local brain copy<br/>(sync: real-time)"]
+    Web["Web (WASM)<br/>Local brain copy<br/>(sync: WebSocket)"]
+    Mobile["Mobile/IoT<br/>Local brain copy<br/>(sync: MQTT/WS)"]
+    Scripts["CLI / Scripts<br/>No local copy<br/>(direct commands)"]
+
+    Desktop <-->|sync| Central
+    Web <-->|sync| Central
+    Mobile <-->|sync| Central
+    Scripts -->|direct| Central
 "#;
 
 const ABOUT_LLM_ADVISOR_CONTEXT_REQ: &str =
@@ -208,19 +295,56 @@ pub fn start() {
     }));
 
     if let Some(window) = web_sys::window() {
+        fn js_value_to_pretty_string(v: &wasm_bindgen::JsValue) -> String {
+            if let Some(s) = v.as_string() {
+                return s;
+            }
+
+            if let Ok(s) = js_sys::Reflect::get(v, &wasm_bindgen::JsValue::from_str("message")) {
+                if let Some(s) = s.as_string() {
+                    return s;
+                }
+            }
+
+            if let Ok(s) = js_sys::JSON::stringify(v) {
+                if let Some(s) = s.as_string() {
+                    if s != "{}" {
+                        return s;
+                    }
+                }
+            }
+
+            format!("{v:?}")
+        }
+
         // window.onerror
-        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
-            let _ = e;
-            report_error("window error".to_string());
-        });
+        let on_error =
+            Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |e: web_sys::ErrorEvent| {
+                let msg = e.message();
+                if msg.trim().is_empty() {
+                    report_error("window error".to_string());
+                } else {
+                    report_error(format!("window error: {msg}"));
+                }
+            });
         let _ = window.add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref());
         on_error.forget();
 
         // window.onunhandledrejection
-        let on_rejection = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
-            let _ = e;
-            report_error("unhandled rejection".to_string());
-        });
+        let on_rejection = Closure::<dyn FnMut(web_sys::PromiseRejectionEvent)>::new(
+            move |e: web_sys::PromiseRejectionEvent| {
+                let reason = e.reason();
+                let msg = js_value_to_pretty_string(&reason);
+
+                // Trunk live-reload uses a websocket; embedded/locked-down browsers can fail it.
+                // Don't surface that as a fatal app error.
+                if msg.contains("/.well-known/trunk/ws") {
+                    return;
+                }
+
+                report_error(format!("unhandled rejection: {msg}"));
+            },
+        );
         let _ = window.add_event_listener_with_callback(
             "unhandledrejection",
             on_rejection.as_ref().unchecked_ref(),
@@ -244,6 +368,9 @@ pub fn start() {
 #[component]
 fn App() -> impl IntoView {
     let runtime = StoredValue::new(AppRuntime::new());
+
+    let tooltip_store: TooltipStore = RwSignal::new(None);
+    provide_context(tooltip_store);
 
     let (system_error, set_system_error) = signal::<Option<String>>(None);
 
@@ -286,13 +413,31 @@ fn App() -> impl IntoView {
         }));
     });
 
-    let (theme, set_theme) = signal(Theme::Dark);
+    let theme0 = local_storage_get_string(LOCALSTORAGE_THEME_KEY)
+        .as_deref()
+        .map(str::trim)
+        .and_then(Theme::from_attr)
+        .unwrap_or(Theme::Dark);
+    apply_theme_to_document(theme0);
+    let (theme, set_theme) = signal(theme0);
+
+    // Persist + apply theme to CSS variables.
+    // (CSS consumes :root[data-theme='light'] / default dark.)
+    Effect::new(move |_| {
+        let t = theme.get();
+        apply_theme_to_document(t);
+        local_storage_set_string(LOCALSTORAGE_THEME_KEY, t.as_attr());
+        apply_mermaid_theme(t.as_attr());
+    });
 
     let (steps, set_steps) = signal(0u64);
     let (diag, set_diag) = signal(runtime.with_value(|r| r.brain.diagnostics()));
 
+    // Load persisted runtime knobs (web-only).
+    let settings0: PersistedSettings = load_persisted_settings().unwrap_or_default();
+
     let (game_kind, set_game_kind) = signal(GameKind::Spot);
-    let (dashboard_tab, set_dashboard_tab) = signal(DashboardTab::Learning);
+    let (dashboard_tab, set_dashboard_tab) = signal(DashboardTab::BrainViz);
     // Mobile responsive: dashboard drawer (hidden by default on small screens)
     let (dashboard_open, set_dashboard_open) = signal(false);
     // Mobile responsive: left sidebar (hidden by default on small screens)
@@ -328,13 +473,27 @@ fn App() -> impl IntoView {
     let (status, set_status) = signal(String::from("ready"));
 
     // Core learning/runtime controls.
-    let (learning_enabled, set_learning_enabled) = signal(true);
-    let (trial_period_ms, set_trial_period_ms) = signal::<u32>(500);
-    let (run_interval_ms, set_run_interval_ms) = signal::<u32>(33);
-    let (reward_scale, set_reward_scale) = signal::<f32>(1.0);
-    let (reward_bias, set_reward_bias) = signal::<f32>(0.0);
+    let (learning_enabled, set_learning_enabled) = signal(settings0.learning_enabled);
+    let (trial_period_ms, set_trial_period_ms) = signal::<u32>(settings0.trial_period_ms);
+    let (run_interval_ms, set_run_interval_ms) = signal::<u32>(settings0.run_interval_ms);
+    let (reward_scale, set_reward_scale) = signal::<f32>(settings0.reward_scale);
+    let (reward_bias, set_reward_bias) = signal::<f32>(settings0.reward_bias);
     let (exploration_eps, set_exploration_eps) = signal::<f32>(0.10);
     let (meaning_alpha, set_meaning_alpha) = signal::<f32>(8.0);
+
+    // Persist settings when they change.
+    // (We keep this narrow: only the core knobs in PersistedSettings.)
+    Effect::new(move |_| {
+        let s = PersistedSettings {
+            reward_scale: reward_scale.get(),
+            reward_bias: reward_bias.get(),
+            learning_enabled: learning_enabled.get(),
+            run_interval_ms: run_interval_ms.get(),
+            trial_period_ms: trial_period_ms.get(),
+            settings_advanced: false,
+        };
+        save_persisted_settings(&s);
+    });
 
     // Stats signals used across dashboard pages.
     let (trials, set_trials) = signal::<u32>(0);
@@ -2011,8 +2170,8 @@ fn App() -> impl IntoView {
                 let mut degree: std::collections::HashMap<u32, usize> =
                     std::collections::HashMap::new();
                 for e in &causal.edges {
-                    let from = e.from as u32;
-                    let to = e.to as u32;
+                    let from = e.from;
+                    let to = e.to;
                     *degree.entry(from).or_insert(0) += 1;
                     *degree.entry(to).or_insert(0) += 1;
                 }
@@ -2163,6 +2322,7 @@ fn App() -> impl IntoView {
     };
 
     view! {
+        <TooltipPortal store=tooltip_store />
         <div class="app">
             <Topbar
                 sidebar_open=sidebar_open
@@ -2231,6 +2391,9 @@ fn App() -> impl IntoView {
                                                     "Braine is a continuously running dynamical system with local plasticity and a scalar reward (neuromodulator). "
                                                     "It is not an LLM: there is no backprop, no global loss, and no token prediction objective."
                                                 </p>
+                                                <p style="margin: 10px 0 0 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                    {format!("braine v{} • braine_web v{} • bbi format v{}", VERSION_BRAINE, VERSION_BRAINE_WEB, VERSION_BBI_FORMAT)}
+                                                </p>
                                             </div>
                                             <div class="docs-overview-stack">
                                                 <div style=STYLE_CARD>
@@ -2253,70 +2416,7 @@ fn App() -> impl IntoView {
                                         </div>
 
                                         <div class="docs-diagram-wrap docs-wide">
-                                            <svg class="docs-diagram" viewBox="0 0 920 320">
-                                                <defs>
-                                                    <marker id="overview-arrow-text" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text)" />
-                                                    </marker>
-                                                    <marker id="overview-arrow-reward" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#4ade80" />
-                                                    </marker>
-                                                    <marker id="overview-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" />
-                                                    </marker>
-                                                </defs>
-
-                                                // Frame
-                                                <rect x="40" y="60" width="230" height="170" rx="16" fill="rgba(122, 162, 255, 0.08)" stroke="var(--accent)" stroke-width="1.5"/>
-                                                <text x="155" y="92" fill="var(--text)" font-size="12" text-anchor="middle" font-weight="700">"Frame / environment"</text>
-                                                <text x="155" y="114" fill="var(--muted)" font-size="10" text-anchor="middle">"stimuli + actions"</text>
-                                                <rect x="70" y="132" width="170" height="36" rx="10" fill="rgba(122, 162, 255, 0.06)" stroke="rgba(122, 162, 255, 0.25)" stroke-width="1"/>
-                                                <text x="155" y="155" fill="var(--text)" font-size="10" text-anchor="middle">"Stimuli symbols"</text>
-                                                <rect x="70" y="176" width="170" height="36" rx="10" fill="rgba(122, 162, 255, 0.06)" stroke="rgba(122, 162, 255, 0.25)" stroke-width="1"/>
-                                                <text x="155" y="199" fill="var(--text)" font-size="10" text-anchor="middle">"Action symbols"</text>
-
-                                                // Substrate
-                                                <rect x="300" y="70" width="360" height="150" rx="18" fill="rgba(10, 15, 26, 0.35)" stroke="var(--border)" stroke-width="1.5"/>
-                                                <text x="480" y="100" fill="var(--text)" font-size="12" text-anchor="middle" font-weight="800">"Brain substrate"</text>
-                                                <text x="480" y="122" fill="var(--muted)" font-size="10" text-anchor="middle">"sparse recurrent dynamics + local learning"</text>
-
-                                                // Reward
-                                                <rect x="360" y="232" width="240" height="52" rx="14" fill="rgba(74, 222, 128, 0.08)" stroke="#4ade80" stroke-width="1.5"/>
-                                                <text x="480" y="262" fill="var(--text)" font-size="11" text-anchor="middle" font-weight="700">"Reward / neuromodulator"</text>
-
-                                                // Persistence
-                                                <rect x="690" y="70" width="210" height="70" rx="12" fill="rgba(244, 114, 182, 0.08)" stroke="#f472b6" stroke-width="1.5"/>
-                                                <text x="795" y="96" fill="var(--text)" font-size="11" text-anchor="middle" font-weight="700">"Persistence"</text>
-                                                <text x="795" y="116" fill="var(--muted)" font-size="10" text-anchor="middle">"brain image (BBI)"</text>
-
-                                                // Telemetry / viz
-                                                <rect x="690" y="162" width="210" height="70" rx="12" fill="rgba(244, 114, 182, 0.08)" stroke="#f472b6" stroke-width="1.5"/>
-                                                <text x="795" y="188" fill="var(--text)" font-size="11" text-anchor="middle" font-weight="700">"Telemetry / viz"</text>
-                                                <text x="795" y="208" fill="var(--muted)" font-size="10" text-anchor="middle">"stats • BrainViz • analytics"</text>
-
-                                                // Fast loop arrows
-                                                <line x1="270" y1="150" x2="300" y2="150" stroke="var(--text)" stroke-width="1.7" marker-end="url(#overview-arrow-text)"/>
-                                                <text x="285" y="139" fill="var(--muted)" font-size="9" text-anchor="middle">"stimuli"</text>
-                                                <line x1="300" y1="186" x2="270" y2="186" stroke="var(--text)" stroke-width="1.7" marker-end="url(#overview-arrow-text)"/>
-                                                <text x="285" y="175" fill="var(--muted)" font-size="9" text-anchor="middle">"actions"</text>
-
-                                                // Reward gating
-                                                <line x1="270" y1="216" x2="360" y2="252" stroke="#4ade80" stroke-width="1.9" marker-end="url(#overview-arrow-reward)"/>
-                                                <text x="320" y="236" fill="#4ade80" font-size="9" text-anchor="middle">"neuromodulates"</text>
-
-                                                // Slow paths
-                                                <line x1="660" y1="105" x2="690" y2="105" stroke="var(--accent)" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#overview-arrow-accent)"/>
-                                                <text x="675" y="95" fill="var(--muted)" font-size="9" text-anchor="middle">"save/load"</text>
-                                                <line x1="660" y1="197" x2="690" y2="197" stroke="var(--border)" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#overview-arrow-text)"/>
-
-                                                // Legend
-                                                <line x1="120" y1="300" x2="180" y2="300" stroke="var(--text)" stroke-width="1.7" marker-end="url(#overview-arrow-text)"/>
-                                                <text x="190" y="304" fill="var(--muted)" font-size="10">"fast step loop"</text>
-                                                <line x1="320" y1="300" x2="380" y2="300" stroke="#4ade80" stroke-width="1.9" marker-end="url(#overview-arrow-reward)"/>
-                                                <text x="390" y="304" fill="var(--muted)" font-size="10">"reward / neuromodulation"</text>
-                                                <line x1="600" y1="300" x2="660" y2="300" stroke="var(--accent)" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#overview-arrow-accent)"/>
-                                                <text x="670" y="304" fill="var(--muted)" font-size="10">"slow side-effects"</text>
-                                            </svg>
+                                            <MermaidDiagram code=ABOUT_OVERVIEW_DIAGRAM max_width_px=920 />
                                         </div>
 
                                         <p class="docs-diagram-caption">
@@ -2477,45 +2577,8 @@ fn App() -> impl IntoView {
                                     // Learning hierarchy diagram
                                     <div style=STYLE_CARD>
                                         <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Learning Hierarchy"</h3>
-                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
-                                            <svg viewBox="0 0 500 180" style="width: 100%; max-width: 500px; height: auto;">
-                                                // Macro level
-                                                <rect x="10" y="10" width="120" height="35" rx="6" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="1.5"/>
-                                                <text x="70" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Child Brains"</text>
-
-                                                // Meso level
-                                                <rect x="140" y="10" width="120" height="35" rx="6" fill="rgba(74, 222, 128, 0.2)" stroke="#4ade80" stroke-width="1.5"/>
-                                                <text x="200" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Neurogenesis"</text>
-
-                                                // Micro level
-                                                <rect x="270" y="10" width="120" height="35" rx="6" fill="rgba(251, 191, 36, 0.2)" stroke="#fbbf24" stroke-width="1.5"/>
-                                                <text x="330" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Hebbian"</text>
-
-                                                // Nano level
-                                                <rect x="400" y="10" width="90" height="35" rx="6" fill="rgba(244, 114, 182, 0.2)" stroke="#f472b6" stroke-width="1.5"/>
-                                                <text x="445" y="32" fill="var(--text)" font-size="10" text-anchor="middle" font-weight="bold">"Imprinting"</text>
-
-                                                // Labels
-                                                <text x="70" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"sec-hours"</text>
-                                                <text x="200" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"steps-min"</text>
-                                                <text x="330" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"per-step"</text>
-                                                <text x="445" y="60" fill="var(--muted)" font-size="9" text-anchor="middle">"one-shot"</text>
-
-                                                // Descriptions
-                                                <text x="70" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Behavioral"</text>
-                                                <text x="70" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"strategies"</text>
-                                                <text x="200" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Fresh capacity"</text>
-                                                <text x="200" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"for concepts"</text>
-                                                <text x="330" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Connection"</text>
-                                                <text x="330" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"weights"</text>
-                                                <text x="445" y="80" fill="var(--text)" font-size="8" text-anchor="middle">"Stimulus-"</text>
-                                                <text x="445" y="92" fill="var(--text)" font-size="8" text-anchor="middle">"concept links"</text>
-
-                                                // Arrow connecting them
-                                                <line x1="125" y1="27" x2="140" y2="27" stroke="var(--border)" stroke-width="1"/>
-                                                <line x1="260" y1="27" x2="270" y2="27" stroke="var(--border)" stroke-width="1"/>
-                                                <line x1="390" y1="27" x2="400" y2="27" stroke="var(--border)" stroke-width="1"/>
-                                            </svg>
+                                        <div class="docs-diagram-wrap">
+                                            <MermaidDiagram code=ABOUT_LEARNING_HIERARCHY_DIAGRAM max_width_px=500 />
                                         </div>
                                     </div>
                                 </Show>
@@ -2578,24 +2641,8 @@ fn App() -> impl IntoView {
                                     // Memory structure diagram
                                     <div style=STYLE_CARD>
                                         <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Memory Structure"</h3>
-                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
-                                            <svg viewBox="0 0 500 140" style="width: 100%; max-width: 500px; height: auto;">
-                                                // Structural state box
-                                                <rect x="10" y="20" width="220" height="100" rx="8" fill="rgba(122, 162, 255, 0.1)" stroke="var(--accent)" stroke-width="1.5"/>
-                                                <text x="120" y="40" fill="var(--accent)" font-size="11" text-anchor="middle" font-weight="bold">"Structural State (persisted)"</text>
-                                                <text x="30" y="60" fill="var(--text)" font-size="10">"• Units + sparse connections"</text>
-                                                <text x="30" y="75" fill="var(--text)" font-size="10">"• Sensor/action groups"</text>
-                                                <text x="30" y="90" fill="var(--text)" font-size="10">"• Symbol table"</text>
-                                                <text x="30" y="105" fill="var(--text)" font-size="10">"• Causal memory edges"</text>
-
-                                                // Runtime state box
-                                                <rect x="270" y="20" width="220" height="100" rx="8" fill="rgba(251, 191, 36, 0.1)" stroke="#fbbf24" stroke-width="1.5"/>
-                                                <text x="380" y="40" fill="#fbbf24" font-size="11" text-anchor="middle" font-weight="bold">"Runtime State (transient)"</text>
-                                                <text x="290" y="60" fill="var(--text)" font-size="10">"• Pending input current"</text>
-                                                <text x="290" y="75" fill="var(--text)" font-size="10">"• Telemetry buffers"</text>
-                                                <text x="290" y="90" fill="var(--text)" font-size="10">"• Transient vectors"</text>
-                                                <text x="290" y="105" fill="var(--muted)" font-size="10">"(can be reset on load)"</text>
-                                            </svg>
+                                        <div class="docs-diagram-wrap">
+                                            <MermaidDiagram code=ABOUT_MEMORY_STRUCTURE_DIAGRAM max_width_px=700 />
                                         </div>
                                     </div>
                                 </Show>
@@ -2665,59 +2712,8 @@ fn App() -> impl IntoView {
                                         <p style="margin: 0 0 12px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
                                             "The web version hosts Braine entirely in-memory within the browser (WASM). Desktop and CLI connect to a local daemon."
                                         </p>
-                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
-                                            <svg viewBox="0 0 600 200" style="width: 100%; max-width: 600px; height: auto;">
-                                                // DAEMON SIDE (left)
-                                                <text x="130" y="18" fill="var(--muted)" font-size="10" text-anchor="middle" font-weight="bold">"DAEMON-BASED"</text>
-
-                                                // Daemon
-                                                <rect x="80" y="30" width="100" height="45" rx="6" fill="rgba(122, 162, 255, 0.2)" stroke="var(--accent)" stroke-width="2"/>
-                                                <text x="130" y="48" fill="var(--accent)" font-size="9" text-anchor="middle" font-weight="bold">"brained"</text>
-                                                <text x="130" y="62" fill="var(--muted)" font-size="8" text-anchor="middle">"Substrate + TCP server"</text>
-
-                                                // Desktop client
-                                                <rect x="10" y="100" width="90" height="40" rx="5" fill="rgba(74, 222, 128, 0.15)" stroke="#4ade80" stroke-width="1.5"/>
-                                                <text x="55" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"braine_desktop"</text>
-                                                <text x="55" y="130" fill="var(--muted)" font-size="7" text-anchor="middle">"(Slint UI)"</text>
-
-                                                // CLI client
-                                                <rect x="110" y="100" width="80" height="40" rx="5" fill="rgba(251, 191, 36, 0.15)" stroke="#fbbf24" stroke-width="1.5"/>
-                                                <text x="150" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"braine-cli"</text>
-                                                <text x="150" y="130" fill="var(--muted)" font-size="7" text-anchor="middle">"(commands)"</text>
-
-                                                // Storage (daemon side)
-                                                <rect x="200" y="30" width="70" height="45" rx="5" fill="rgba(100, 116, 139, 0.15)" stroke="var(--muted)" stroke-width="1.5"/>
-                                                <text x="235" y="48" fill="var(--text)" font-size="8" text-anchor="middle">"braine.bbi"</text>
-                                                <text x="235" y="62" fill="var(--muted)" font-size="7" text-anchor="middle">"(file system)"</text>
-
-                                                // Protocol label
-                                                <text x="100" y="88" fill="var(--muted)" font-size="7">"TCP 9876"</text>
-
-                                                // Arrows to daemon
-                                                <line x1="55" y1="100" x2="100" y2="75" stroke="var(--border)" stroke-width="1"/>
-                                                <line x1="150" y1="100" x2="160" y2="75" stroke="var(--border)" stroke-width="1"/>
-                                                <line x1="180" y1="52" x2="200" y2="52" stroke="var(--border)" stroke-width="1"/>
-
-                                                // SEPARATOR
-                                                <line x1="295" y1="20" x2="295" y2="180" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,4"/>
-
-                                                // WEB SIDE (right) - STANDALONE
-                                                <text x="450" y="18" fill="var(--muted)" font-size="10" text-anchor="middle" font-weight="bold">"STANDALONE (THIS APP)"</text>
-
-                                                // Web app with embedded brain
-                                                <rect x="370" y="30" width="160" height="70" rx="8" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="2"/>
-                                                <text x="450" y="50" fill="#f472b6" font-size="10" text-anchor="middle" font-weight="bold">"braine_web (WASM)"</text>
-                                                <text x="450" y="68" fill="var(--text)" font-size="8" text-anchor="middle">"Braine runs IN-MEMORY"</text>
-                                                <text x="450" y="82" fill="var(--muted)" font-size="7" text-anchor="middle">"No daemon connection"</text>
-
-                                                // Browser storage
-                                                <rect x="400" y="120" width="100" height="40" rx="5" fill="rgba(100, 116, 139, 0.15)" stroke="var(--muted)" stroke-width="1.5"/>
-                                                <text x="450" y="138" fill="var(--text)" font-size="8" text-anchor="middle">"IndexedDB"</text>
-                                                <text x="450" y="150" fill="var(--muted)" font-size="7" text-anchor="middle">"(browser storage)"</text>
-
-                                                // Arrow from web to storage
-                                                <line x1="450" y1="100" x2="450" y2="120" stroke="var(--border)" stroke-width="1"/>
-                                            </svg>
+                                        <div class="docs-diagram-wrap">
+                                            <MermaidDiagram code=ABOUT_CURRENT_ARCHITECTURE_DIAGRAM max_width_px=900 />
                                         </div>
                                     </div>
 
@@ -2727,232 +2723,79 @@ fn App() -> impl IntoView {
                                         <p style="margin: 0 0 12px 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
                                             "Planned architecture: a central daemon hosts the authoritative Brain, while edge clients maintain local copies that sync in real-time."
                                         </p>
-                                        <div style="display: flex; justify-content: center; padding: 12px 0;">
-                                            <svg viewBox="0 0 550 180" style="width: 100%; max-width: 550px; height: auto;">
-                                                // Central daemon (larger, emphasized)
-                                                <rect x="200" y="10" width="150" height="55" rx="8" fill="rgba(122, 162, 255, 0.25)" stroke="var(--accent)" stroke-width="2"/>
-                                                <text x="275" y="30" fill="var(--accent)" font-size="11" text-anchor="middle" font-weight="bold">"Central Daemon"</text>
-                                                <text x="275" y="46" fill="var(--text)" font-size="8" text-anchor="middle">"Authoritative Brain State"</text>
-                                                <text x="275" y="58" fill="var(--muted)" font-size="7" text-anchor="middle">"Learning + Persistence"</text>
-
-                                                // Edge clients with local copies
-                                                <rect x="10" y="100" width="110" height="55" rx="6" fill="rgba(74, 222, 128, 0.15)" stroke="#4ade80" stroke-width="1.5"/>
-                                                <text x="65" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"Desktop"</text>
-                                                <text x="65" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"Local Brain copy"</text>
-                                                <text x="65" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(sync: real-time)"</text>
-
-                                                <rect x="140" y="100" width="110" height="55" rx="6" fill="rgba(244, 114, 182, 0.15)" stroke="#f472b6" stroke-width="1.5"/>
-                                                <text x="195" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"Web (WASM)"</text>
-                                                <text x="195" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"Local Brain copy"</text>
-                                                <text x="195" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(sync: WebSocket)"</text>
-
-                                                <rect x="270" y="100" width="110" height="55" rx="6" fill="rgba(34, 211, 238, 0.15)" stroke="#22d3ee" stroke-width="1.5"/>
-                                                <text x="325" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"Mobile/IoT"</text>
-                                                <text x="325" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"Local Brain copy"</text>
-                                                <text x="325" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(sync: MQTT/WS)"</text>
-
-                                                <rect x="400" y="100" width="110" height="55" rx="6" fill="rgba(251, 191, 36, 0.15)" stroke="#fbbf24" stroke-width="1.5"/>
-                                                <text x="455" y="118" fill="var(--text)" font-size="9" text-anchor="middle">"CLI / Scripts"</text>
-                                                <text x="455" y="132" fill="var(--muted)" font-size="7" text-anchor="middle">"No local copy"</text>
-                                                <text x="455" y="145" fill="var(--muted)" font-size="7" text-anchor="middle">"(direct commands)"</text>
-
-                                                // Sync arrows (bidirectional)
-                                                <line x1="65" y1="100" x2="220" y2="65" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3,2"/>
-                                                <line x1="195" y1="100" x2="250" y2="65" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3,2"/>
-                                                <line x1="325" y1="100" x2="300" y2="65" stroke="var(--accent)" stroke-width="1" stroke-dasharray="3,2"/>
-                                                <line x1="455" y1="100" x2="330" y2="65" stroke="var(--accent)" stroke-width="1"/>
-
-                                                // Label
-                                                <text x="275" y="85" fill="var(--muted)" font-size="8" text-anchor="middle">"↕ Real-time sync"</text>
-                                            </svg>
+                                        <div class="docs-diagram-wrap">
+                                            <MermaidDiagram code=ABOUT_FUTURE_ARCHITECTURE_DIAGRAM max_width_px=900 />
                                         </div>
                                     </div>
                                 </Show>
 
                                 // Applications sub-tab - real-world use cases
                                 <Show when=move || about_sub_tab.get() == AboutSubTab::Applications>
+                                    <div style="padding: 14px; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 12px;">
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: #fbbf24;">"Important note"</h3>
+                                        <p style="margin: 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                            "These are potential application categories, not claims of deployed or validated systems. Braine is a research substrate; any real-world use would require careful engineering, evaluation, and safety work."
+                                        </p>
+                                    </div>
+
                                     <div class="docs-masonry">
                                         <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🤖 Embodied Robotics"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Real-time sensorimotor control for robots and drones:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                <li>"Adaptive locomotion (terrain adaptation)"</li>
-                                                <li>"Object manipulation and grasping"</li>
-                                                <li>"Navigation with obstacle avoidance"</li>
-                                                <li>"Multi-sensor fusion (vision, touch, IMU)"</li>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🎛️ Adaptive Control (small loops)"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"Online tuning from scalar reward"</li>
+                                                <li>"Handles regime shifts (distribution changes)"</li>
+                                                <li>"Works with low-dimensional sensors/actions"</li>
                                             </ul>
+                                            <div style="margin-top: 8px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Examples: simple process control, scheduling heuristics, UI latency/throughput tuning."
+                                            </div>
                                         </div>
 
                                         <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🏠 Smart Home & IoT"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Edge intelligence for connected devices:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                <li>"Personalized automation (learns your patterns)"</li>
-                                                <li>"Energy optimization based on behavior"</li>
-                                                <li>"Anomaly detection (security, maintenance)"</li>
-                                                <li>"Voice-free intent recognition"</li>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🎮 Interactive Experiences"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"NPC behavior adaptation within a session"</li>
+                                                <li>"Persistent state across runs (when persisted)"</li>
+                                                <li>"Interpretable structure via BrainViz"</li>
                                             </ul>
+                                            <div style="margin-top: 8px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Examples: adaptive opponents, tutorials that adjust difficulty, toy worlds for learning dynamics."
+                                            </div>
                                         </div>
 
                                         <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🎮 Game AI & NPCs"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Believable, adaptive game characters:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                <li>"NPCs that learn from player interactions"</li>
-                                                <li>"Adaptive difficulty (genuine skill matching)"</li>
-                                                <li>"Emergent behaviors from simple rules"</li>
-                                                <li>"Persistent memory across sessions"</li>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🌐 Edge Personalization (privacy-first)"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"On-device adaptation (no cloud required)"</li>
+                                                <li>"Learns from local interaction signals"</li>
+                                                <li>"Can run in the browser (WASM)"</li>
                                             </ul>
+                                            <div style="margin-top: 8px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Examples: preference learning, lightweight anomaly flags, personalization for offline-first apps."
+                                            </div>
                                         </div>
 
                                         <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🧠 Cognitive Prosthetics"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Assistive technologies with learning:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                <li>"Adaptive prosthetic limb control"</li>
-                                                <li>"Brain-computer interfaces"</li>
-                                                <li>"Personalized sensory substitution"</li>
-                                                <li>"Rehabilitation assistance"</li>
+                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🧪 Research + Education"</h3>
+                                            <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                                <li>"Inspectable learning (local updates, no backprop)"</li>
+                                                <li>"Stress tests with controlled games (Spot/Bandit/SpotXY/Pong)"</li>
+                                                <li>"Long-running dynamics + persistence"</li>
                                             </ul>
-                                        </div>
-
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"📊 Time-Series Control"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Industrial and process control:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                <li>"Manufacturing process optimization"</li>
-                                                <li>"HVAC and climate control"</li>
-                                                <li>"Traffic signal adaptation"</li>
-                                                <li>"Agricultural automation"</li>
-                                            </ul>
-                                        </div>
-
-                                        <div style=STYLE_CARD>
-                                            <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"🔬 Research Platform"</h3>
-                                            <p style="margin: 0 0 10px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                                "Scientific exploration of intelligence:"
-                                            </p>
-                                            <ul style="margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                <li>"Neuromorphic computing testbed"</li>
-                                                <li>"Embodied cognition experiments"</li>
-                                                <li>"Emergence and self-organization studies"</li>
-                                                <li>"Educational tool for AI concepts"</li>
-                                            </ul>
-                                        </div>
-                                    </div>
-
-                                    // Web-based Edge Computing Applications
-                                    <div style=STYLE_CARD>
-                                        <h3 style="margin: 0 0 12px 0; font-size: 1.1rem; color: var(--accent);">"🌐 Web-Based Edge Intelligence"</h3>
-                                        <p style="margin: 0 0 12px 0; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
-                                            "Braine runs natively in the browser via WebAssembly, enabling intelligent applications at the edge without server round-trips:"
-                                        </p>
-                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px;">
-                                            <div style="padding: 12px; background: rgba(122, 162, 255, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"📝 Smart Form Assistants"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Learn user input patterns to auto-complete, validate, and suggest corrections—all client-side with no data leaving the browser."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(74, 222, 128, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🛒 Personalized E-commerce"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Real-time product recommendations that adapt to browsing behavior without tracking servers or cookies."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(251, 191, 36, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🎨 Adaptive UI/UX"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Interfaces that learn user preferences—button placements, color schemes, information density—and adapt in real-time."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(244, 114, 182, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🔐 Behavioral Authentication"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Continuous authentication via typing rhythm, mouse patterns, and interaction cadence—private and local."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(34, 211, 238, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"💬 Offline-First Chat Bots"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Conversational agents that work without network—perfect for kiosks, field devices, or privacy-sensitive contexts."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(167, 139, 250, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"📊 Real-Time Analytics"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Stream processing in the browser—anomaly detection, trend prediction, and alerts without backend latency."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(251, 113, 133, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🎮 Browser-Based Games"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "NPCs and opponents that learn player strategies in-session, creating personalized challenge without cloud sync."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(100, 116, 139, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"📱 Progressive Web Apps"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "PWAs with embedded intelligence—fitness coaches, language tutors, task managers that learn and work offline."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(56, 189, 248, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🏥 Medical Triage Assistants"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Symptom checkers that run entirely on-device, ensuring patient data never leaves their control."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(163, 230, 53, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🌍 Offline Education"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "Adaptive learning platforms for regions with unreliable connectivity—personalized tutoring without cloud."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(232, 121, 249, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🔧 Industrial Dashboards"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "HMI panels that predict equipment issues locally, reducing latency for time-critical alerts."
-                                                </p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(248, 113, 113, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🚗 Fleet Management"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.5;">
-                                                    "In-browser driver behavior analysis for logistics—route optimization and safety scoring without cloud upload."
-                                                </p>
+                                            <div style="margin-top: 8px; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "Examples: neuromodulation studies, memory bottleneck experiments, demos for learning systems."
                                             </div>
                                         </div>
                                     </div>
 
                                     <div style=STYLE_CARD>
-                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Why Braine for These Applications?"</h3>
-                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 12px;">
-                                            <div style="padding: 12px; background: rgba(122, 162, 255, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"⚡ Real-time"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"O(1) step complexity, no batching needed"</p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(74, 222, 128, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"💾 Edge-friendly"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Runs on MCUs, no cloud dependency"</p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(251, 191, 36, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🔄 Online learning"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Adapts continuously, no retraining"</p>
-                                            </div>
-                                            <div style="padding: 12px; background: rgba(244, 114, 182, 0.08); border-radius: 8px;">
-                                                <strong style="color: var(--text);">"🔍 Interpretable"</strong>
-                                                <p style="margin: 6px 0 0 0; color: var(--muted); font-size: 0.8rem;">"Inspect dynamics, not black box"</p>
-                                            </div>
-                                        </div>
+                                        <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Capability summary"</h3>
+                                        <ul style="margin: 0; padding-left: 20px; color: var(--text); font-size: 0.9rem; line-height: 1.7;">
+                                            <li>"Online learning from bounded scalar reward"</li>
+                                            <li>"Context-conditioned meaning + causal memory"</li>
+                                            <li>"Bounded compute: step-by-step dynamics (no batch training)"</li>
+                                            <li>"Persistence of long-lived structure (BBI / IndexedDB)"</li>
+                                        </ul>
                                     </div>
                                 </Show>
 
@@ -2991,7 +2834,9 @@ fn App() -> impl IntoView {
 
                                     <div style=STYLE_CARD>
                                         <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Data Flow"</h3>
-                                        <pre style="margin: 0; white-space: pre-wrap; background: var(--bg); padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.82rem; line-height: 1.6; color: var(--text);">{ABOUT_LLM_DATAFLOW}</pre>
+                                        <div class="docs-diagram-wrap">
+                                            <MermaidDiagram code=ABOUT_LLM_DATAFLOW max_width_px=920 />
+                                        </div>
                                     </div>
 
                                     <div class="docs-masonry">
@@ -4238,6 +4083,319 @@ fn App() -> impl IntoView {
                     </div>
 
                     <div class="dashboard-content">
+                        <Show when=move || dashboard_tab.get() == DashboardTab::BrainViz>
+                            <div class="stack">
+                                <div class="dashboard-pinned brainviz-dock">
+                                    <div class="dashboard-pinned-head">
+                                        <div class="dashboard-pinned-title">"🧠 BrainViz"</div>
+                                        <div class="dashboard-pinned-meta">
+                                            {move || {
+                                                let n = brainviz_display_nodes.get();
+                                                let e = brainviz_display_edges.get();
+                                                let avg = brainviz_display_avg_conn.get();
+                                                let maxc = brainviz_display_max_conn.get();
+                                                format!("{} nodes • {} edges • avg {:.2} • max {}", n, e, avg, maxc)
+                                            }}
+                                        </div>
+                                        <button
+                                            class="icon-btn"
+                                            title=move || if brainviz_is_expanded.get() { "Compact BrainViz" } else { "Expand BrainViz" }
+                                            on:click=move |_| {
+                                                set_brainviz_is_expanded.update(|v| *v = !*v);
+                                            }
+                                        >
+                                            {move || if brainviz_is_expanded.get() { "⤡" } else { "⤢" }}
+                                        </button>
+                                    </div>
+
+                                    <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
+                                    <div class="callout">
+                                        <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
+                                    </div>
+
+                                    <div class="subtle" style="margin-top: 8px;">
+                                        {move || {
+                                            let src = if idb_loaded.get() { "IndexedDB (brain_image)" } else { "fresh" };
+                                            let autosave = if idb_autosave.get() { "on" } else { "off" };
+                                            let ts = idb_last_save.get();
+                                            if ts.is_empty() {
+                                                format!("BBI source: {src} • Autosave: {autosave} • Last save: —")
+                                            } else {
+                                                format!("BBI source: {src} • Autosave: {autosave} • Last save: {ts}")
+                                            }
+                                        }}
+                                    </div>
+
+                                    <div class="row end wrap" style="margin-top: 10px;">
+                                        <label class="label">
+                                            <span>"View"</span>
+                                            <select
+                                                class="input"
+                                                on:change=move |ev| {
+                                                    let v = event_target_value(&ev);
+                                                    set_brainviz_view_mode.set(if v == "causal" { "causal" } else { "substrate" });
+                                                }
+                                            >
+                                                <option value="substrate" selected=move || brainviz_view_mode.get() == "substrate">"Substrate"</option>
+                                                <option value="causal" selected=move || brainviz_view_mode.get() == "causal">"Causal"</option>
+                                            </select>
+                                        </label>
+                                        <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
+                                            <span>"Nodes"</span>
+                                            <div style="display: flex; gap: 2px; align-items: center;">
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(50).max(16));
+                                                }>-50</button>
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(10).max(16));
+                                                }>-10</button>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="16"
+                                                    max="1024"
+                                                    step="16"
+                                                    style="width: 60px;"
+                                                    prop:value=move || brainviz_node_sample.get().to_string()
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                            set_brainviz_node_sample.set(v.clamp(16, 1024));
+                                                        }
+                                                    }
+                                                />
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_node_sample.update(|v| *v = (*v + 10).min(1024));
+                                                }>+10</button>
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_node_sample.update(|v| *v = (*v + 50).min(1024));
+                                                }>+50</button>
+                                            </div>
+                                        </div>
+                                        <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
+                                            <span>"Edges/node"</span>
+                                            <div style="display: flex; gap: 2px; align-items: center;">
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(5).max(1));
+                                                }>-5</button>
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(1).max(1));
+                                                }>-1</button>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="1"
+                                                    max="32"
+                                                    step="1"
+                                                    style="width: 50px;"
+                                                    prop:value=move || brainviz_edges_per_node.get().to_string()
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                            set_brainviz_edges_per_node.set(v.clamp(1, 32));
+                                                        }
+                                                    }
+                                                />
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_edges_per_node.update(|v| *v = (*v + 1).min(32));
+                                                }>+1</button>
+                                                <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
+                                                    set_brainviz_edges_per_node.update(|v| *v = (*v + 5).min(32));
+                                                }>+5</button>
+                                            </div>
+                                        </div>
+                                        <button
+                                            class="btn sm"
+                                            on:click=move |_| {
+                                                set_brainviz_zoom.set(1.0);
+                                                set_brainviz_pan_x.set(0.0);
+                                                set_brainviz_pan_y.set(0.0);
+                                                set_brainviz_manual_rotation.set(0.0);
+                                                set_brainviz_rotation_x.set(0.0);
+                                            }
+                                        >
+                                            "Reset view"
+                                        </button>
+                                    </div>
+
+                                    <div style="position: relative;">
+                                        <canvas
+                                            node_ref=brain_viz_ref
+                                            width="900"
+                                            height="520"
+                                            class=move || {
+                                                if brainviz_is_expanded.get() {
+                                                    "canvas brainviz brainviz-expanded"
+                                                } else {
+                                                    "canvas brainviz"
+                                                }
+                                            }
+                                            style="touch-action: none;"
+                                            on:wheel=move |ev| {
+                                                ev.prevent_default();
+                                                let dy = ev.delta_y() as f32;
+                                                let factor = (1.0 + (-dy * 0.001)).clamp(0.85, 1.18);
+                                                set_brainviz_zoom.update(|z| {
+                                                    *z = (*z * factor).clamp(0.5, 4.0);
+                                                });
+                                            }
+                                            on:mousedown=move |ev| {
+                                                let Some(canvas) = brain_viz_ref.get() else { return; };
+                                                let rect = canvas.get_bounding_client_rect();
+                                                let css_x = (ev.client_x() as f64) - rect.left();
+                                                let css_y = (ev.client_y() as f64) - rect.top();
+                                                brainviz_dragging.set_value(true);
+                                                brainviz_last_drag_xy.set_value((css_x, css_y));
+                                            }
+                                            on:mouseup=move |_| {
+                                                brainviz_dragging.set_value(false);
+                                            }
+                                            on:mouseleave=move |_| {
+                                                brainviz_dragging.set_value(false);
+                                                set_brainviz_hover.set(None);
+                                            }
+                                            on:mousemove=move |ev| {
+                                                let Some(canvas) = brain_viz_ref.get() else { return; };
+                                                let rect = canvas.get_bounding_client_rect();
+                                                let css_x = (ev.client_x() as f64) - rect.left();
+                                                let css_y = (ev.client_y() as f64) - rect.top();
+
+                                                let rw = rect.width().max(1.0);
+                                                let rh = rect.height().max(1.0);
+                                                if css_x < 0.0 || css_y < 0.0 || css_x > rw || css_y > rh {
+                                                    set_brainviz_hover.set(None);
+                                                    return;
+                                                }
+
+                                                if brainviz_dragging.get_value() {
+                                                    let (lx, ly) = brainviz_last_drag_xy.get_value();
+                                                    let dx = css_x - lx;
+                                                    let dy = css_y - ly;
+
+                                                    // Shift+drag = pan, regular drag = rotate (both axes)
+                                                    if ev.shift_key() {
+                                                        set_brainviz_pan_x.update(|v| *v += dx as f32);
+                                                        set_brainviz_pan_y.update(|v| *v += dy as f32);
+                                                    } else {
+                                                        // Horizontal drag = Y-axis rotation
+                                                        set_brainviz_manual_rotation.update(|v| *v += (dx as f32) * 0.01);
+                                                        // Vertical drag = X-axis rotation
+                                                        set_brainviz_rotation_x.update(|v| *v += (dy as f32) * 0.01);
+                                                    }
+                                                    brainviz_last_drag_xy.set_value((css_x, css_y));
+                                                    return;
+                                                }
+
+                                                let mut best: Option<(u32, f64, f64)> = None; // (id, css_x, css_y)
+                                                brainviz_hit_nodes.with_value(|hits| {
+                                                    let mut best_d2: f64 = f64::INFINITY;
+                                                    for hn in hits {
+                                                        let dx = hn.x - css_x;
+                                                        let dy = hn.y - css_y;
+                                                        let d2 = dx * dx + dy * dy;
+                                                        let r = hn.r + 4.0;
+                                                        if d2 <= r * r && d2 < best_d2 {
+                                                            best_d2 = d2;
+                                                            best = Some((hn.id, hn.x, hn.y));
+                                                        }
+                                                    }
+                                                });
+
+                                                set_brainviz_hover.set(best);
+                                            }
+                                        ></canvas>
+
+                                        <Show when=move || brainviz_hover.get().is_some()>
+                                            <div style=move || {
+                                                let Some((_id, x, y)) = brainviz_hover.get() else { return "display: none;".to_string(); };
+                                                format!(
+                                                    "position: absolute; left: {:.0}px; top: {:.0}px; transform: translate(10px, -10px); padding: 8px 10px; background: rgba(10,15,26,0.92); border: 1px solid rgba(122,162,255,0.25); border-radius: 10px; font-size: 12px; color: rgba(232,236,255,0.95); pointer-events: none; max-width: 260px;",
+                                                    x,
+                                                    y
+                                                )
+                                            }>
+                                                {move || {
+                                                    let Some((id, _x, _y)) = brainviz_hover.get() else { return "".to_string(); };
+                                                    let degree = brainviz_degree_by_id
+                                                        .with_value(|m| m.get(&id).copied().unwrap_or(0));
+                                                    if brainviz_view_mode.get() == "causal" {
+                                                        let g = brainviz_causal_graph.get();
+                                                        let n = g
+                                                            .nodes
+                                                            .iter()
+                                                            .find(|n| n.id == id);
+                                                        if let Some(n) = n {
+                                                            format!(
+                                                                "symbol={}  count={:.1}  conn={}",
+                                                                n.name, n.base_count, degree
+                                                            )
+                                                        } else {
+                                                            format!("id={}  conn={}", id, degree)
+                                                        }
+                                                    } else {
+                                                        let p = brainviz_points
+                                                            .get()
+                                                            .into_iter()
+                                                            .find(|p| p.id == id);
+                                                        if let Some(p) = p {
+                                                            let kind = if p.is_sensor_member {
+                                                                "sensor"
+                                                            } else if p.is_group_member {
+                                                                "group"
+                                                            } else if p.is_reserved {
+                                                                "reserved"
+                                                            } else {
+                                                                "unit"
+                                                            };
+                                                            format!(
+                                                                "id={}  kind={}  conn={}  amp01={:.2}  age={:.2}",
+                                                                p.id, kind, degree, p.amp01, p.rel_age
+                                                            )
+                                                        } else {
+                                                            format!("id={}  conn={}", id, degree)
+                                                        }
+                                                    }
+                                                }}
+                                            </div>
+                                        </Show>
+                                    </div>
+
+                                    // Legend with node type descriptions
+                                    <div style="margin-top: 12px; padding: 10px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px;">
+                                        <div style="font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-weight: 600;">"Node Types"</div>
+                                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; font-size: 0.75rem;">
+                                            <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(255, 153, 102); flex-shrink: 0; margin-top: 2px;"></div>
+                                                <div>
+                                                    <strong style="color: var(--text);">"Sensors"</strong>
+                                                    <div style="color: var(--muted);">"Input units that receive external stimuli from the environment"</div>
+                                                </div>
+                                            </div>
+                                            <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(74, 222, 128); flex-shrink: 0; margin-top: 2px;"></div>
+                                                <div>
+                                                    <strong style="color: var(--text);">"Groups"</strong>
+                                                    <div style="color: var(--muted);">"Action units that form output groups for behavior/decisions"</div>
+                                                </div>
+                                            </div>
+                                            <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(251, 191, 36); flex-shrink: 0; margin-top: 2px;"></div>
+                                                <div>
+                                                    <strong style="color: var(--text);">"Regular"</strong>
+                                                    <div style="color: var(--muted);">"Free units that form associations through learning dynamics"</div>
+                                                </div>
+                                            </div>
+                                            <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                                <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(148, 163, 184); flex-shrink: 0; margin-top: 2px;"></div>
+                                                <div>
+                                                    <strong style="color: var(--text);">"Concepts"</strong>
+                                                    <div style="color: var(--muted);">"Reserved units that have formed stable engrams via imprinting"</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </Show>
+
                         <Show when=move || dashboard_tab.get() == DashboardTab::GameDetails>
                             <div class="stack">
                                 <div class="hero">
@@ -4793,7 +4951,6 @@ fn App() -> impl IntoView {
                                                         ToastLevel::Error,
                                                         "This build does not include the web `gpu` feature".to_string(),
                                                     );
-                                                    return;
                                                 }
 
                                                 #[cfg(feature = "gpu")]
@@ -5419,323 +5576,6 @@ fn App() -> impl IntoView {
 
                     </div>
 
-                    <div class="dashboard-bottom">
-                        <div class=move || {
-                            if brainviz_is_expanded.get() {
-                                "dashboard-pinned brainviz-dock brainviz-overlay"
-                            } else {
-                                "dashboard-pinned brainviz-dock"
-                            }
-                        }>
-                            <div class="dashboard-pinned-head">
-                                <div class="dashboard-pinned-title">"🧠 BrainViz"</div>
-                                <div class="dashboard-pinned-meta">
-                                    {move || {
-                                        let n = brainviz_display_nodes.get();
-                                        let e = brainviz_display_edges.get();
-                                        let avg = brainviz_display_avg_conn.get();
-                                        let maxc = brainviz_display_max_conn.get();
-                                        format!("{} nodes • {} edges • avg {:.2} • max {}", n, e, avg, maxc)
-                                    }}
-                                </div>
-                                <button
-                                    class="icon-btn"
-                                    title=move || if brainviz_is_expanded.get() { "Minimize BrainViz" } else { "Maximize BrainViz" }
-                                    on:click=move |_| {
-                                        set_brainviz_is_expanded.update(|v| *v = !*v);
-                                        set_dashboard_open.set(true);
-                                    }
-                                >
-                                    {move || if brainviz_is_expanded.get() { "⤡" } else { "⤢" }}
-                                </button>
-                            </div>
-
-                            <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
-                            <div class="callout">
-                                <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
-                            </div>
-
-                            <div class="subtle" style="margin-top: 8px;">
-                                {move || {
-                                    let src = if idb_loaded.get() { "IndexedDB (brain_image)" } else { "fresh" };
-                                    let autosave = if idb_autosave.get() { "on" } else { "off" };
-                                    let ts = idb_last_save.get();
-                                    if ts.is_empty() {
-                                        format!("BBI source: {src} • Autosave: {autosave} • Last save: —")
-                                    } else {
-                                        format!("BBI source: {src} • Autosave: {autosave} • Last save: {ts}")
-                                    }
-                                }}
-                            </div>
-
-                            <div class="row end wrap" style="margin-top: 10px;">
-                                <label class="label">
-                                    <span>"View"</span>
-                                    <select
-                                        class="input"
-                                        on:change=move |ev| {
-                                            let v = event_target_value(&ev);
-                                            set_brainviz_view_mode.set(if v == "causal" { "causal" } else { "substrate" });
-                                        }
-                                    >
-                                        <option value="substrate" selected=move || brainviz_view_mode.get() == "substrate">"Substrate"</option>
-                                        <option value="causal" selected=move || brainviz_view_mode.get() == "causal">"Causal"</option>
-                                    </select>
-                                </label>
-                                <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
-                                    <span>"Nodes"</span>
-                                    <div style="display: flex; gap: 2px; align-items: center;">
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(50).max(16));
-                                        }>-50</button>
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_node_sample.update(|v| *v = (*v).saturating_sub(10).max(16));
-                                        }>-10</button>
-                                        <input
-                                            class="input compact"
-                                            type="number"
-                                            min="16"
-                                            max="1024"
-                                            step="16"
-                                            style="width: 60px;"
-                                            prop:value=move || brainviz_node_sample.get().to_string()
-                                            on:input=move |ev| {
-                                                if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                    set_brainviz_node_sample.set(v.clamp(16, 1024));
-                                                }
-                                            }
-                                        />
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_node_sample.update(|v| *v = (*v + 10).min(1024));
-                                        }>+10</button>
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_node_sample.update(|v| *v = (*v + 50).min(1024));
-                                        }>+50</button>
-                                    </div>
-                                </div>
-                                <div class="label" style="display: flex; flex-direction: column; gap: 2px;">
-                                    <span>"Edges/node"</span>
-                                    <div style="display: flex; gap: 2px; align-items: center;">
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(5).max(1));
-                                        }>-5</button>
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_edges_per_node.update(|v| *v = (*v).saturating_sub(1).max(1));
-                                        }>-1</button>
-                                        <input
-                                            class="input compact"
-                                            type="number"
-                                            min="1"
-                                            max="32"
-                                            step="1"
-                                            style="width: 50px;"
-                                            prop:value=move || brainviz_edges_per_node.get().to_string()
-                                            on:input=move |ev| {
-                                                if let Ok(v) = event_target_value(&ev).parse::<u32>() {
-                                                    set_brainviz_edges_per_node.set(v.clamp(1, 32));
-                                                }
-                                            }
-                                        />
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_edges_per_node.update(|v| *v = (*v + 1).min(32));
-                                        }>+1</button>
-                                        <button class="btn sm" style="padding: 2px 6px; font-size: 10px;" on:click=move |_| {
-                                            set_brainviz_edges_per_node.update(|v| *v = (*v + 5).min(32));
-                                        }>+5</button>
-                                    </div>
-                                </div>
-                                <button
-                                    class="btn sm"
-                                    on:click=move |_| {
-                                        set_brainviz_zoom.set(1.0);
-                                        set_brainviz_pan_x.set(0.0);
-                                        set_brainviz_pan_y.set(0.0);
-                                        set_brainviz_manual_rotation.set(0.0);
-                                        set_brainviz_rotation_x.set(0.0);
-                                    }
-                                >
-                                    "Reset view"
-                                </button>
-                            </div>
-
-                            <div style="position: relative;">
-                                <canvas
-                                    node_ref=brain_viz_ref
-                                    width="900"
-                                    height="520"
-                                    class=move || {
-                                        if brainviz_is_expanded.get() {
-                                            "canvas brainviz brainviz-expanded"
-                                        } else {
-                                            "canvas brainviz"
-                                        }
-                                    }
-                                    style="touch-action: none;"
-                                    on:wheel=move |ev| {
-                                        ev.prevent_default();
-                                        let dy = ev.delta_y() as f32;
-                                        let factor = (1.0 + (-dy * 0.001)).clamp(0.85, 1.18);
-                                        set_brainviz_zoom.update(|z| {
-                                            *z = (*z * factor).clamp(0.5, 4.0);
-                                        });
-                                    }
-                                    on:mousedown=move |ev| {
-                                        let Some(canvas) = brain_viz_ref.get() else { return; };
-                                        let rect = canvas.get_bounding_client_rect();
-                                        let css_x = (ev.client_x() as f64) - rect.left();
-                                        let css_y = (ev.client_y() as f64) - rect.top();
-                                        brainviz_dragging.set_value(true);
-                                        brainviz_last_drag_xy.set_value((css_x, css_y));
-                                    }
-                                    on:mouseup=move |_| {
-                                        brainviz_dragging.set_value(false);
-                                    }
-                                    on:mouseleave=move |_| {
-                                        brainviz_dragging.set_value(false);
-                                        set_brainviz_hover.set(None);
-                                    }
-                                    on:mousemove=move |ev| {
-                                        let Some(canvas) = brain_viz_ref.get() else { return; };
-                                        let rect = canvas.get_bounding_client_rect();
-                                        let css_x = (ev.client_x() as f64) - rect.left();
-                                        let css_y = (ev.client_y() as f64) - rect.top();
-
-                                        let rw = rect.width().max(1.0);
-                                        let rh = rect.height().max(1.0);
-                                        if css_x < 0.0 || css_y < 0.0 || css_x > rw || css_y > rh {
-                                            set_brainviz_hover.set(None);
-                                            return;
-                                        }
-
-                                        if brainviz_dragging.get_value() {
-                                            let (lx, ly) = brainviz_last_drag_xy.get_value();
-                                            let dx = css_x - lx;
-                                            let dy = css_y - ly;
-
-                                            // Shift+drag = pan, regular drag = rotate (both axes)
-                                            if ev.shift_key() {
-                                                set_brainviz_pan_x.update(|v| *v += dx as f32);
-                                                set_brainviz_pan_y.update(|v| *v += dy as f32);
-                                            } else {
-                                                // Horizontal drag = Y-axis rotation
-                                                set_brainviz_manual_rotation.update(|v| *v += (dx as f32) * 0.01);
-                                                // Vertical drag = X-axis rotation
-                                                set_brainviz_rotation_x.update(|v| *v += (dy as f32) * 0.01);
-                                            }
-                                            brainviz_last_drag_xy.set_value((css_x, css_y));
-                                            return;
-                                        }
-
-                                        let mut best: Option<(u32, f64, f64)> = None; // (id, css_x, css_y)
-                                        brainviz_hit_nodes.with_value(|hits| {
-                                            let mut best_d2: f64 = f64::INFINITY;
-                                            for hn in hits {
-                                                let dx = hn.x - css_x;
-                                                let dy = hn.y - css_y;
-                                                let d2 = dx * dx + dy * dy;
-                                                let r = hn.r + 4.0;
-                                                if d2 <= r * r && d2 < best_d2 {
-                                                    best_d2 = d2;
-                                                    best = Some((hn.id, hn.x, hn.y));
-                                                }
-                                            }
-                                        });
-
-                                        set_brainviz_hover.set(best);
-                                    }
-                                ></canvas>
-
-                                <Show when=move || brainviz_hover.get().is_some()>
-                                    <div style=move || {
-                                        let Some((_id, x, y)) = brainviz_hover.get() else { return "display: none;".to_string(); };
-                                        format!(
-                                            "position: absolute; left: {:.0}px; top: {:.0}px; transform: translate(10px, -10px); padding: 8px 10px; background: rgba(10,15,26,0.92); border: 1px solid rgba(122,162,255,0.25); border-radius: 10px; font-size: 12px; color: rgba(232,236,255,0.95); pointer-events: none; max-width: 260px;",
-                                            x,
-                                            y
-                                        )
-                                    }>
-                                        {move || {
-                                            let Some((id, _x, _y)) = brainviz_hover.get() else { return "".to_string(); };
-                                            let degree = brainviz_degree_by_id
-                                                .with_value(|m| m.get(&id).copied().unwrap_or(0));
-                                            if brainviz_view_mode.get() == "causal" {
-                                                let g = brainviz_causal_graph.get();
-                                                let n = g
-                                                    .nodes
-                                                    .iter()
-                                                    .find(|n| (n.id as u32) == id);
-                                                if let Some(n) = n {
-                                                    format!(
-                                                        "symbol={}  count={:.1}  conn={}",
-                                                        n.name, n.base_count, degree
-                                                    )
-                                                } else {
-                                                    format!("id={}  conn={}", id, degree)
-                                                }
-                                            } else {
-                                                let p = brainviz_points
-                                                    .get()
-                                                    .into_iter()
-                                                    .find(|p| p.id == id);
-                                                if let Some(p) = p {
-                                                    let kind = if p.is_sensor_member {
-                                                        "sensor"
-                                                    } else if p.is_group_member {
-                                                        "group"
-                                                    } else if p.is_reserved {
-                                                        "reserved"
-                                                    } else {
-                                                        "unit"
-                                                    };
-                                                    format!(
-                                                        "id={}  kind={}  conn={}  amp01={:.2}  age={:.2}",
-                                                        p.id, kind, degree, p.amp01, p.rel_age
-                                                    )
-                                                } else {
-                                                    format!("id={}  conn={}", id, degree)
-                                                }
-                                            }
-                                        }}
-                                    </div>
-                                </Show>
-                            </div>
-
-                            // Legend with node type descriptions
-                            <div style="margin-top: 12px; padding: 10px; background: rgba(10,15,26,0.5); border: 1px solid var(--border); border-radius: 8px;">
-                                <div style="font-size: 0.8rem; color: var(--muted); margin-bottom: 8px; font-weight: 600;">"Node Types"</div>
-                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; font-size: 0.75rem;">
-                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(255, 153, 102); flex-shrink: 0; margin-top: 2px;"></div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Sensors"</strong>
-                                            <div style="color: var(--muted);">"Input units that receive external stimuli from the environment"</div>
-                                        </div>
-                                    </div>
-                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(74, 222, 128); flex-shrink: 0; margin-top: 2px;"></div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Groups"</strong>
-                                            <div style="color: var(--muted);">"Action units that form output groups for behavior/decisions"</div>
-                                        </div>
-                                    </div>
-                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(251, 191, 36); flex-shrink: 0; margin-top: 2px;"></div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Regular"</strong>
-                                            <div style="color: var(--muted);">"Free units that form associations through learning dynamics"</div>
-                                        </div>
-                                    </div>
-                                    <div style="display: flex; align-items: flex-start; gap: 8px;">
-                                        <div style="width: 12px; height: 12px; border-radius: 50%; background: rgb(148, 163, 184); flex-shrink: 0; margin-top: 2px;"></div>
-                                        <div>
-                                            <strong style="color: var(--text);">"Concepts"</strong>
-                                            <div style="color: var(--muted);">"Reserved units that have formed stable engrams via imprinting"</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>

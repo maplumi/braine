@@ -95,6 +95,54 @@ This repo also includes a small “frame” implementation as a background daemo
 
 They communicate over a simple line-delimited JSON protocol over TCP on `127.0.0.1:9876`.
 
+```mermaid
+flowchart TD
+	subgraph Clients["Clients"]
+		UI["braine_desktop (UI client)"]
+		CLI["braine-cli (CLI client)"]
+	end
+
+	subgraph Daemon["brained (daemon)"]
+		TCP["TCP JSON protocol\n(127.0.0.1:9876)"]
+		Loop["Game task loop"]
+		EM["ExpertManager"]
+
+		subgraph Brains["Brain state owned by daemon"]
+			P["Parent Brain (authoritative)"]
+			C["Child pool (0..N experts)"]
+		end
+
+		Snap["State snapshot builder"]
+		Save["Persistence (brain image save/load)"]
+	end
+
+	subgraph Core["Core substrate"]
+		Brain["Brain dynamics + local plasticity"]
+		Meaning["Meaning / causality memory"]
+	end
+
+	UI <-->|"requests and responses"| TCP
+	CLI <-->|"requests and responses"| TCP
+
+	TCP --> Loop
+	Loop -->|"context_key"| EM
+	EM -->|"route controller"| P
+	EM -->|"route controller"| C
+
+	Loop -->|"stimulus + step + action-select"| Brain
+	Brain --> Meaning
+
+	Loop -->|"reward neuromod"| EM
+	EM -->|"reinforce and commit controller"| Brain
+	EM -->|"optional shadow observation"| P
+
+	EM -->|"periodic consolidate sparse delta"| P
+	P --> Save
+
+	Loop --> Snap
+	Snap --> TCP
+```
+
 ### Web client (braine_web) — standalone mode
 The web client (`braine_web`) is **different**: it runs the Brain entirely **in-memory within the browser** (WASM). It does NOT connect to the daemon. This is true edge computing — the entire substrate runs locally in the browser tab with persistence to IndexedDB.
 

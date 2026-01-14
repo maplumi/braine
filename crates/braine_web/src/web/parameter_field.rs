@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use std::rc::Rc;
 
 use super::settings_schema::{ParamSpec, RecommendedRange, Risk};
+use super::tooltip::{TooltipPayload, TooltipStore};
 
 fn decimals_for_step(step: f32) -> usize {
     if step >= 1.0 {
@@ -54,6 +55,9 @@ pub fn ParameterField(
     let key = spec.key.to_string();
     let input_id = format!("param-{}", spec.key);
     let tip_id = format!("tip-{}", spec.key);
+
+    let tooltip_store = use_context::<TooltipStore>();
+    let info_btn_ref = NodeRef::<leptos::html::Button>::new();
 
     let editing = RwSignal::new(false);
     let text = RwSignal::new(format_float(value.get_untracked(), spec.step));
@@ -109,6 +113,85 @@ pub fn ParameterField(
 
     let rec_hint = recommended_hint(spec.recommended);
 
+    let show_tooltip: Rc<dyn Fn()> = {
+        let spec = spec.clone();
+        let tip_id = tip_id.clone();
+        let key = key.clone();
+        let rec_hint = rec_hint.clone();
+        Rc::new(move || {
+            let Some(store) = tooltip_store else {
+                return;
+            };
+            let Some(btn) = info_btn_ref.get() else {
+                return;
+            };
+
+            let rect = btn.get_bounding_client_rect();
+            let (win_w, win_h) = web_sys::window()
+                .map(|w| {
+                    let w0 = w
+                        .inner_width()
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(1024.0);
+                    let h0 = w
+                        .inner_height()
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(768.0);
+                    (w0, h0)
+                })
+                .unwrap_or((1024.0, 768.0));
+
+            // Keep the tooltip within the viewport without needing a layout pass.
+            let est_w = 440.0_f64.min((win_w - 24.0).max(240.0));
+            let est_h = 260.0_f64;
+
+            let mut left = rect.right() - est_w;
+            let max_left = (win_w - est_w - 12.0).max(12.0);
+            left = left.clamp(12.0, max_left);
+
+            let mut top = rect.bottom() + 10.0;
+            if top + est_h > win_h - 12.0 {
+                top = (rect.top() - 10.0 - est_h).max(12.0);
+            }
+
+            let mut meta = Vec::new();
+            meta.push(format!(
+                "Default: {}",
+                format_float(spec.default, spec.step)
+            ));
+            if let Some(s) = rec_hint.clone() {
+                meta.push(s);
+            }
+            meta.push(format!(
+                "Hard limits: {} – {}",
+                format_float(spec.min, spec.step),
+                format_float(spec.max, spec.step)
+            ));
+
+            store.set(Some(TooltipPayload {
+                id: tip_id.clone(),
+                title: spec.label.to_string(),
+                body: spec.description.to_string(),
+                meta,
+                when_to_change: Some(spec.when_to_change.to_string()),
+                risk: Some(risk_label(spec.risk).to_string()),
+                top_px: top,
+                left_px: left,
+            }));
+
+            // Touch key so clippy doesn't complain about unused captures if this closure changes.
+            let _ = &key;
+        })
+    };
+
+    let hide_tooltip: Rc<dyn Fn()> = Rc::new(move || {
+        if let Some(store) = tooltip_store {
+            store.set(None);
+        }
+    });
+
     view! {
         <div class="param-field">
             <div class="param-label-row">
@@ -123,29 +206,35 @@ pub fn ParameterField(
                     <button
                         type="button"
                         class="info-btn"
+                        node_ref=info_btn_ref
                         aria-label=format!("Info: {}", spec.label)
                         aria-describedby=tip_id.clone()
+                        on:mouseenter={
+                            let show_tooltip = Rc::clone(&show_tooltip);
+                            move |_| show_tooltip()
+                        }
+                        on:mouseleave={
+                            let hide_tooltip = Rc::clone(&hide_tooltip);
+                            move |_| hide_tooltip()
+                        }
+                        on:focus={
+                            let show_tooltip = Rc::clone(&show_tooltip);
+                            move |_| show_tooltip()
+                        }
+                        on:blur={
+                            let hide_tooltip = Rc::clone(&hide_tooltip);
+                            move |_| hide_tooltip()
+                        }
                     >
                         "i"
                     </button>
-                    <div id=tip_id.clone() class="tooltip" role="tooltip">
-                        <div class="tooltip-title">{spec.label}</div>
-                        <div class="tooltip-body">{spec.description}</div>
-                        <div class="tooltip-meta">
-                            <div>{format!("Default: {}", format_float(spec.default, spec.step))}</div>
-                            {rec_hint.clone().map(|s| view!{ <div>{s}</div> }).into_view()}
-                            <div>{format!("Hard limits: {} – {}", format_float(spec.min, spec.step), format_float(spec.max, spec.step))}</div>
-                            <div class="tooltip-when">{format!("When to change: {}", spec.when_to_change)}</div>
-                            <div class="tooltip-risk">{format!("Risk: {}", risk_label(spec.risk))}</div>
-                        </div>
-                    </div>
                 </span>
             </div>
 
             <div class="param-input-row">
                 <input
                     id=input_id
-                    class="input"
+                    class="input compact"
                     type="number"
                     inputmode="decimal"
                     min=spec.min
@@ -200,6 +289,8 @@ pub fn ParameterField(
                 <button
                     type="button"
                     class="btn link"
+                    title="Reset to default"
+                    aria-label="Reset to default"
                     on:click={
                         let set_valid = Rc::clone(&set_valid);
                         move |_| {
@@ -209,7 +300,7 @@ pub fn ParameterField(
                         }
                     }
                 >
-                    "Reset"
+                    "↺"
                 </button>
             </div>
 
