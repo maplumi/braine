@@ -51,8 +51,8 @@ pub(super) async fn save_game_accuracies(
 }
 
 /// Load game accuracies from IndexedDB
-pub(super) async fn load_game_accuracies(
-) -> Result<std::collections::HashMap<String, f32>, String> {
+pub(super) async fn load_game_accuracies() -> Result<std::collections::HashMap<String, f32>, String>
+{
     match idb_get_bytes(super::IDB_KEY_GAME_ACCURACY).await? {
         Some(bytes) => {
             let json = String::from_utf8(bytes).map_err(|_| "invalid utf8")?;

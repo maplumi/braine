@@ -3410,7 +3410,7 @@ impl Brain {
         self.step_dynamics_scalar();
     }
 
-    #[cfg(all(feature = "gpu", not(target_arch = "wasm32"))) ]
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     fn step_dynamics_gpu(&mut self) {
         use crate::gpu::{GpuInfluence, GpuParams, GpuUnit};
 
@@ -3505,7 +3505,8 @@ impl Brain {
     /// Returns true if a WebGPU (wasm) dynamics step is currently in flight.
     #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
     pub fn wasm_gpu_step_in_flight(&self) -> bool {
-        self.effective_execution_tier() == ExecutionTier::Gpu && crate::gpu::wasm_gpu_step_in_flight()
+        self.effective_execution_tier() == ExecutionTier::Gpu
+            && crate::gpu::wasm_gpu_step_in_flight()
     }
 
     #[cfg(not(all(feature = "gpu", target_arch = "wasm32")))]
