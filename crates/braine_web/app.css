@@ -777,6 +777,7 @@ button {
 
 .canvas.brainviz {
   height: 280px;
+  touch-action: none;
 }
 
 .canvas.brainviz.brainviz-mini {

@@ -937,6 +937,11 @@ fn App() -> impl IntoView {
     let (brainviz_display_nodes, set_brainviz_display_nodes) = signal::<usize>(0);
     let (brainviz_display_edges, set_brainviz_display_edges) = signal::<usize>(0);
 
+    // BrainViz interactivity state (purely view transforms; does not trigger resampling).
+    // Tuple: (pointer_id, start_x, start_y, start_pan_x, start_pan_y, start_rot_y, start_rot_x, pan_mode)
+    let (brainviz_drag, set_brainviz_drag) =
+        signal::<Option<(i32, f64, f64, f32, f32, f32, f32, bool)>>(None);
+
     // Research disclaimer: shown on every load/refresh (not persisted).
     let (show_research_disclaimer, set_show_research_disclaimer) = signal(true);
 
@@ -5547,7 +5552,7 @@ fn App() -> impl IntoView {
 
                                     <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
                                     <div class="callout">
-                                        <p>"Rotating snapshot • Click Refresh to resample • Use Replay to inspect history"</p>
+                                        <p>"Static data • Drag to rotate • Shift+drag to pan • Wheel to zoom • Refresh to resample • Replay to inspect history"</p>
                                     </div>
 
                                     <div class="subtle" style="margin-top: 6px;">
@@ -5983,6 +5988,98 @@ fn App() -> impl IntoView {
                                                 } else {
                                                     "canvas brainviz"
                                                 }
+                                            }
+                                            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                                                if ev.button() != 0 {
+                                                    return;
+                                                }
+                                                ev.prevent_default();
+
+                                                let pid = ev.pointer_id();
+                                                let sx = ev.client_x() as f64;
+                                                let sy = ev.client_y() as f64;
+
+                                                // Shift+drag pans; otherwise rotate.
+                                                let pan_mode = ev.shift_key();
+
+                                                set_brainviz_drag.set(Some((
+                                                    pid,
+                                                    sx,
+                                                    sy,
+                                                    brainviz_pan_x.get_untracked(),
+                                                    brainviz_pan_y.get_untracked(),
+                                                    brainviz_manual_rotation.get_untracked(),
+                                                    brainviz_rotation_x.get_untracked(),
+                                                    pan_mode,
+                                                )));
+
+                                                if let Some(t) = ev.current_target() {
+                                                    if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                                                        let _ = el.set_pointer_capture(pid);
+                                                    }
+                                                }
+                                            }
+                                            on:pointermove=move |ev: web_sys::PointerEvent| {
+                                                let Some((pid, sx, sy, ox, oy, ory, orx, pan_mode)) =
+                                                    brainviz_drag.get_untracked()
+                                                else {
+                                                    return;
+                                                };
+                                                if ev.pointer_id() != pid {
+                                                    return;
+                                                }
+
+                                                ev.prevent_default();
+
+                                                let dx = (ev.client_x() as f64 - sx) as f32;
+                                                let dy = (ev.client_y() as f64 - sy) as f32;
+
+                                                if pan_mode {
+                                                    set_brainviz_pan_x.set(ox + dx);
+                                                    set_brainviz_pan_y.set(oy + dy);
+                                                } else {
+                                                    // Rotation sensitivity tuned for both mouse and touch.
+                                                    let ry = ory + dx * 0.010;
+                                                    let rx = (orx + dy * 0.010).clamp(-1.2, 1.2);
+                                                    set_brainviz_manual_rotation.set(ry);
+                                                    set_brainviz_rotation_x.set(rx);
+                                                }
+                                            }
+                                            on:pointerup=move |ev: web_sys::PointerEvent| {
+                                                let Some((pid, ..)) = brainviz_drag.get_untracked() else {
+                                                    return;
+                                                };
+                                                if ev.pointer_id() != pid {
+                                                    return;
+                                                }
+                                                set_brainviz_drag.set(None);
+                                                if let Some(t) = ev.current_target() {
+                                                    if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                                                        let _ = el.release_pointer_capture(pid);
+                                                    }
+                                                }
+                                            }
+                                            on:pointercancel=move |ev: web_sys::PointerEvent| {
+                                                let Some((pid, ..)) = brainviz_drag.get_untracked() else {
+                                                    return;
+                                                };
+                                                if ev.pointer_id() != pid {
+                                                    return;
+                                                }
+                                                set_brainviz_drag.set(None);
+                                                if let Some(t) = ev.current_target() {
+                                                    if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                                                        let _ = el.release_pointer_capture(pid);
+                                                    }
+                                                }
+                                            }
+                                            on:wheel=move |ev: web_sys::WheelEvent| {
+                                                ev.prevent_default();
+                                                let base = brainviz_zoom.get_untracked();
+                                                let speed = if ev.ctrl_key() { 0.002 } else { 0.001 };
+                                                let scale = (-(ev.delta_y() as f32) * speed).exp();
+                                                let next = (base * scale).clamp(0.25, 8.0);
+                                                set_brainviz_zoom.set(next);
                                             }
                                         ></canvas>
                                     </div>
