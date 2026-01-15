@@ -73,7 +73,7 @@ struct BrainvizDeltaFrame {
     edge_deltas: Vec<BrainvizEdgeDelta>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct BrainvizGameRecording {
     n: usize,
     edges_per_node: usize,
@@ -89,23 +89,6 @@ struct BrainvizGameRecording {
     // Delta stream + periodic keyframes for random access replay.
     deltas: Vec<BrainvizDeltaFrame>,
     keyframes: Vec<(usize, BrainvizKeyframe)>,
-}
-
-impl Default for BrainvizGameRecording {
-    fn default() -> Self {
-        Self {
-            n: 0,
-            edges_per_node: 0,
-            base_points: Vec::new(),
-            edge_pairs: Vec::new(),
-            cur_amp01: Vec::new(),
-            cur_phase: Vec::new(),
-            cur_salience01: Vec::new(),
-            cur_edge_weights: Vec::new(),
-            deltas: Vec::new(),
-            keyframes: Vec::new(),
-        }
-    }
 }
 
 const GAME_KIND_COUNT: usize = 8;
@@ -1554,7 +1537,7 @@ fn App() -> impl IntoView {
                                 brainviz_record_edges_every_trials.get_untracked().max(1);
                             let trial_idx = steps.get_untracked() as u32;
 
-                            if trial_idx % record_every != 0 {
+                            if !trial_idx.is_multiple_of(record_every) {
                                 return;
                             }
 
@@ -1711,7 +1694,7 @@ fn App() -> impl IntoView {
                                         // Edge deltas (optional + decimated).
                                         if record_edges
                                             && !rec.edge_pairs.is_empty()
-                                            && (trial_idx % record_edges_every == 0)
+                                            && trial_idx.is_multiple_of(record_edges_every)
                                         {
                                             // Scan neighbors once per source.
                                             let mut by_src: std::collections::HashMap<

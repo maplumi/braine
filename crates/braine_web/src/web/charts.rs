@@ -186,6 +186,34 @@ impl Default for BrainVizRenderOptions {
     }
 }
 
+fn brainviz_node_rgb(node: &braine::substrate::UnitPlotPoint, learning_mode: bool) -> (u8, u8, u8) {
+    if learning_mode {
+        if node.is_sensor_member {
+            (255, 153, 102) // Warm orange for sensors
+        } else if node.is_group_member {
+            (74, 222, 128) // Green for groups
+        } else if node.is_reserved {
+            (148, 163, 184) // Gray for reserved
+        } else {
+            (251, 191, 36) // Amber for regular units
+        }
+    } else if node.is_sensor_member {
+        (122, 162, 255) // Blue for sensors
+    } else if node.is_group_member {
+        (34, 211, 238) // Cyan for groups
+    } else if node.is_reserved {
+        (148, 163, 184) // Gray for reserved
+    } else {
+        (167, 139, 250) // Purple for regular units
+    }
+}
+
+fn mix_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| -> u8 { ((x as f64) * (1.0 - t) + (y as f64) * t).round() as u8 };
+    (lerp(a.0, b.0), lerp(a.1, b.1), lerp(a.2, b.2))
+}
+
 pub fn draw_brain_connectivity_sphere(
     canvas: &HtmlCanvasElement,
     nodes: &[braine::substrate::UnitPlotPoint],
@@ -318,57 +346,123 @@ pub fn draw_brain_connectivity_sphere(
         max_abs_w = max_abs_w.max(w.abs());
     }
 
-    // Batch edges into a few buckets to avoid per-edge state changes.
-    // Tradeoff: less endpoint-color fidelity, much higher FPS and less jank.
-    const BUCKETS: usize = 4;
-    let mut seg_pos: [Vec<(f64, f64, f64, f64)>; BUCKETS] = std::array::from_fn(|_| Vec::new());
-    let mut seg_neg: [Vec<(f64, f64, f64, f64)>; BUCKETS] = std::array::from_fn(|_| Vec::new());
+    // Prefer per-edge gradient coloring + continuous width scaling when the edge count
+    // is modest (higher fidelity). Fall back to bucketed drawing for very dense graphs.
+    const GRADIENT_EDGE_LIMIT: usize = 1400;
+    if edges.len() <= GRADIENT_EDGE_LIMIT {
+        let pos_tint = (122, 162, 255);
+        let neg_tint = (251, 113, 133);
+        for &(s, t, w) in edges {
+            if s >= n_usize || t >= n_usize {
+                continue;
+            }
+            let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
+            if absw < 0.15 {
+                continue;
+            }
 
-    for &(s, t, w) in edges {
-        if s >= n_usize || t >= n_usize {
-            continue;
-        }
-        let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
-        if absw < 0.15 {
-            continue;
-        }
-        let bucket = ((absw * (BUCKETS as f64)).floor() as usize).min(BUCKETS - 1);
-        let x1 = proj_x[s];
-        let y1 = proj_y[s];
-        let x2 = proj_x[t];
-        let y2 = proj_y[t];
-        if w >= 0.0 {
-            seg_pos[bucket].push((x1, y1, x2, y2));
-        } else {
-            seg_neg[bucket].push((x1, y1, x2, y2));
-        }
-    }
+            let x1 = proj_x[s];
+            let y1 = proj_y[s];
+            let x2 = proj_x[t];
+            let y2 = proj_y[t];
 
-    for bucket in 0..BUCKETS {
-        let mid = (bucket as f64 + 0.5) / (BUCKETS as f64);
-        let width = 0.6 + 2.0 * mid;
-        let alpha = 0.08 + 0.22 * mid;
+            // Depth-aware alpha: edges on the far side get dimmer.
+            let z_avg = (proj_z[s] + proj_z[t]) * 0.5;
+            let depth = ((z_avg + 1.0) * 0.5).clamp(0.0, 1.0);
 
-        if !seg_pos[bucket].is_empty() {
-            ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", alpha));
+            let width = 0.6 + 2.4 * absw.powf(0.75);
+            let mut alpha = 0.05 + 0.28 * absw;
+            alpha *= 0.35 + 0.65 * depth;
+            alpha = alpha.clamp(0.03, 0.45);
+
+            let src_rgb = brainviz_node_rgb(&nodes[s], opts.learning_mode);
+            let dst_rgb = brainviz_node_rgb(&nodes[t], opts.learning_mode);
+            let tint = if w >= 0.0 { pos_tint } else { neg_tint };
+
+            // Mix endpoint colors toward sign tint to make polarity obvious while
+            // still keeping endpoint identity.
+            let src_rgb = mix_rgb(src_rgb, tint, 0.55);
+            let dst_rgb = mix_rgb(dst_rgb, tint, 0.55);
+
+            let grad = ctx.create_linear_gradient(x1, y1, x2, y2);
+            let _ = grad.add_color_stop(
+                0.0,
+                &format!(
+                    "rgba({}, {}, {}, {:.3})",
+                    src_rgb.0, src_rgb.1, src_rgb.2, alpha
+                ),
+            );
+            let _ = grad.add_color_stop(
+                1.0,
+                &format!(
+                    "rgba({}, {}, {}, {:.3})",
+                    dst_rgb.0, dst_rgb.1, dst_rgb.2, alpha
+                ),
+            );
+            #[allow(deprecated)]
+            {
+                // web-sys exposes `set_stroke_style` for non-string styles (gradients/patterns).
+                // It is marked deprecated upstream but remains the practical option here.
+                ctx.set_stroke_style(&grad);
+            }
             ctx.set_line_width(width);
             ctx.begin_path();
-            for &(x1, y1, x2, y2) in &seg_pos[bucket] {
-                ctx.move_to(x1, y1);
-                ctx.line_to(x2, y2);
-            }
+            ctx.move_to(x1, y1);
+            ctx.line_to(x2, y2);
             ctx.stroke();
         }
+    } else {
+        // Bucketed fallback: avoids per-edge state changes.
+        const BUCKETS: usize = 4;
+        let mut seg_pos: [Vec<(f64, f64, f64, f64)>; BUCKETS] = std::array::from_fn(|_| Vec::new());
+        let mut seg_neg: [Vec<(f64, f64, f64, f64)>; BUCKETS] = std::array::from_fn(|_| Vec::new());
 
-        if !seg_neg[bucket].is_empty() {
-            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
-            ctx.set_line_width(width);
-            ctx.begin_path();
-            for &(x1, y1, x2, y2) in &seg_neg[bucket] {
-                ctx.move_to(x1, y1);
-                ctx.line_to(x2, y2);
+        for &(s, t, w) in edges {
+            if s >= n_usize || t >= n_usize {
+                continue;
             }
-            ctx.stroke();
+            let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
+            if absw < 0.15 {
+                continue;
+            }
+            let bucket = ((absw * (BUCKETS as f64)).floor() as usize).min(BUCKETS - 1);
+            let x1 = proj_x[s];
+            let y1 = proj_y[s];
+            let x2 = proj_x[t];
+            let y2 = proj_y[t];
+            if w >= 0.0 {
+                seg_pos[bucket].push((x1, y1, x2, y2));
+            } else {
+                seg_neg[bucket].push((x1, y1, x2, y2));
+            }
+        }
+
+        for bucket in 0..BUCKETS {
+            let mid = (bucket as f64 + 0.5) / (BUCKETS as f64);
+            let width = 0.6 + 2.0 * mid;
+            let alpha = 0.08 + 0.22 * mid;
+
+            if !seg_pos[bucket].is_empty() {
+                ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", alpha));
+                ctx.set_line_width(width);
+                ctx.begin_path();
+                for &(x1, y1, x2, y2) in &seg_pos[bucket] {
+                    ctx.move_to(x1, y1);
+                    ctx.line_to(x2, y2);
+                }
+                ctx.stroke();
+            }
+
+            if !seg_neg[bucket].is_empty() {
+                ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
+                ctx.set_line_width(width);
+                ctx.begin_path();
+                for &(x1, y1, x2, y2) in &seg_neg[bucket] {
+                    ctx.move_to(x1, y1);
+                    ctx.line_to(x2, y2);
+                }
+                ctx.stroke();
+            }
         }
     }
 
@@ -420,29 +514,8 @@ pub fn draw_brain_connectivity_sphere(
         // Color nodes based on type AND learning/inference mode
         // Learning mode: warmer tones (orange/amber accents)
         // Inference mode: cooler tones (cyan/blue accents)
-        let color = if opts.learning_mode {
-            // Learning mode colors - warmer palette
-            if node.is_sensor_member {
-                format!("rgba(255, 153, 102, {:.3})", alpha) // Warm orange for sensors
-            } else if node.is_group_member {
-                format!("rgba(74, 222, 128, {:.3})", alpha) // Green for groups
-            } else if node.is_reserved {
-                format!("rgba(148, 163, 184, {:.3})", alpha) // Gray for reserved
-            } else {
-                format!("rgba(251, 191, 36, {:.3})", alpha) // Amber for regular units
-            }
-        } else {
-            // Inference mode colors - cooler palette
-            if node.is_sensor_member {
-                format!("rgba(122, 162, 255, {:.3})", alpha) // Blue for sensors
-            } else if node.is_group_member {
-                format!("rgba(34, 211, 238, {:.3})", alpha) // Cyan for groups
-            } else if node.is_reserved {
-                format!("rgba(148, 163, 184, {:.3})", alpha) // Gray for reserved
-            } else {
-                format!("rgba(167, 139, 250, {:.3})", alpha) // Purple for regular units
-            }
-        };
+        let (r, g, b) = brainviz_node_rgb(node, opts.learning_mode);
+        let color = format!("rgba({r}, {g}, {b}, {alpha:.3})");
 
         ctx.set_fill_style_str(&color);
         ctx.begin_path();
