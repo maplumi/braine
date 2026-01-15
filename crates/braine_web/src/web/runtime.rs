@@ -39,6 +39,7 @@ struct PendingTick {
     cfg: TickConfig,
     allow_learning: bool,
     context_key: String,
+    response_made_at_start: bool,
 }
 
 pub(super) struct AppRuntime {
@@ -109,10 +110,16 @@ impl AppRuntime {
         cfg: TickConfig,
         allow_learning: bool,
         context_key: String,
+        response_made_at_start: bool,
     ) -> TickResult {
         let context_key = context_key.as_str();
 
-        if self.game.response_made() {
+        // IMPORTANT: For GPU/nonblocking steps, the game state may advance while a step is
+        // in-flight (to avoid UI/gameplay appearing "stuck"). Action selection must remain
+        // consistent with the state used to apply stimuli for the in-flight step.
+        // Therefore, `response_made_at_start` is captured when the step begins and is used
+        // here to decide whether we are in the "post-response" commit-only phase.
+        if response_made_at_start {
             self.brain.set_neuromodulator(0.0);
             if allow_learning {
                 self.brain.commit_observation();
@@ -465,16 +472,28 @@ impl AppRuntime {
     pub(super) fn tick(&mut self, cfg: &TickConfig) -> TickResult {
         // If a GPU step is already in flight, do not re-apply stimuli or update timing.
         if let Some(pending) = self.pending_tick.as_ref() {
-            let _ = pending;
+            // Allow the game clock to advance while we're waiting on the GPU IF this tick was
+            // already in the post-response phase. This keeps e.g. Pong animation and trial
+            // timeout responsive, while avoiding action/state mismatch.
+            if pending.response_made_at_start {
+                self.game.update_timing(pending.cfg.trial_period_ms);
+            }
             if !self.brain.step_nonblocking() {
                 return TickResult::PendingGpu;
             }
             let pending = self.pending_tick.take().expect("pending tick disappeared");
-            return self.finish_tick(pending.cfg, pending.allow_learning, pending.context_key);
+            return self.finish_tick(
+                pending.cfg,
+                pending.allow_learning,
+                pending.context_key,
+                pending.response_made_at_start,
+            );
         }
 
         let cfg = *cfg;
         self.game.update_timing(cfg.trial_period_ms);
+
+        let response_made_at_start = self.game.response_made();
 
         // SpotXY eval mode is a holdout run: no causal/meaning writes.
         let allow_learning = cfg.learning_enabled && !self.game.spotxy_eval_mode();
@@ -526,11 +545,17 @@ impl AppRuntime {
                 cfg,
                 allow_learning,
                 context_key: context_key_owned,
+                response_made_at_start,
             });
             return TickResult::PendingGpu;
         }
 
-        self.finish_tick(cfg, allow_learning, context_key_owned)
+        self.finish_tick(
+            cfg,
+            allow_learning,
+            context_key_owned,
+            response_made_at_start,
+        )
     }
 
     pub(crate) fn rng_next_u64(&mut self) -> u64 {

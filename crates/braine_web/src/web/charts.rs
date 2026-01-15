@@ -1,7 +1,6 @@
 //! Canvas-based charting and visualization for braine_web.
 
-use js_sys::Reflect;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 const SERIES_COLORS: [&str; 8] = [
@@ -146,6 +145,7 @@ pub fn draw_brain_activity(
 /// Draw a compact connectivity visualization: sampled nodes on a rotating sphere and
 /// edges between sampled nodes colored/thickened by connection strength.
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct BrainVizHitNode {
     pub id: u32,
     pub x: f64,
@@ -189,9 +189,10 @@ impl Default for BrainVizRenderOptions {
 pub fn draw_brain_connectivity_sphere(
     canvas: &HtmlCanvasElement,
     nodes: &[braine::substrate::UnitPlotPoint],
-    edges: &[(u32, u32, f32)],
-    _rotation: f32, // DEPRECATED: use opts.rotation_y instead
+    base_positions: &[(f64, f64, f64)],
+    edges: &[(usize, usize, f32)],
     bg_color: &str,
+    pulse_freqs: Option<&[f32]>,
     opts: BrainVizRenderOptions,
 ) -> Result<Vec<BrainVizHitNode>, String> {
     let ctx = canvas
@@ -254,77 +255,62 @@ pub fn draw_brain_connectivity_sphere(
         return Ok(Vec::new());
     }
 
-    // Golden spiral distribution on sphere
-    let n = nodes.len() as f64;
-    let golden = 2.399_963_229_728_653_5_f64; // ~pi*(3-sqrt(5))
-
     // Use rotation from opts (supports both X and Y axes)
     let rot_y = opts.rotation_y as f64;
     let rot_x = opts.rotation_x as f64;
 
-    let mut pos: std::collections::HashMap<u32, (f64, f64, f64)> =
-        std::collections::HashMap::with_capacity(nodes.len());
-    for (i, node) in nodes.iter().enumerate() {
-        let i = i as f64;
-        let y = 1.0 - 2.0 * ((i + 0.5) / n);
-        let r = (1.0 - y * y).sqrt();
-        let theta = golden * i;
-        let x = r * theta.cos();
-        let z = r * theta.sin();
+    let n_usize = nodes.len();
 
+    // If the caller didn't supply valid base positions, fall back to generating
+    // a golden-spiral distribution here.
+    let generated_base_positions: Vec<(f64, f64, f64)>;
+    let base_positions = if base_positions.len() == n_usize {
+        base_positions
+    } else {
+        let n = n_usize as f64;
+        let golden = 2.399_963_229_728_653_5_f64; // ~pi*(3-sqrt(5))
+        let mut tmp: Vec<(f64, f64, f64)> = Vec::with_capacity(n_usize);
+        for i in 0..n_usize {
+            let i_f = i as f64;
+            let y = 1.0 - 2.0 * ((i_f + 0.5) / n);
+            let r = (1.0 - y * y).sqrt();
+            let theta = golden * i_f;
+            let x = r * theta.cos();
+            let z = r * theta.sin();
+            tmp.push((x, y, z));
+        }
+        generated_base_positions = tmp;
+        &generated_base_positions
+    };
+
+    // Precompute trig for rotation.
+    let (sin_y, cos_y) = rot_y.sin_cos();
+    let (sin_x, cos_x) = rot_x.sin_cos();
+
+    // 3D rotated positions and projected screen positions (index-based).
+    let dist = 2.8;
+    let mut proj_x: Vec<f64> = Vec::with_capacity(n_usize);
+    let mut proj_y: Vec<f64> = Vec::with_capacity(n_usize);
+    let mut proj_z: Vec<f64> = Vec::with_capacity(n_usize);
+
+    for &(x, y, z) in base_positions.iter() {
         // Rotate around Y axis (horizontal drag)
-        let xr = x * rot_y.cos() + z * rot_y.sin();
-        let zr = -x * rot_y.sin() + z * rot_y.cos();
+        let xr = x * cos_y + z * sin_y;
+        let zr = -x * sin_y + z * cos_y;
 
         // Rotate around X axis (vertical drag)
-        let yr = y * rot_x.cos() - zr * rot_x.sin();
-        let zr2 = y * rot_x.sin() + zr * rot_x.cos();
+        let yr = y * cos_x - zr * sin_x;
+        let zr2 = y * sin_x + zr * cos_x;
 
-        pos.insert(node.id, (xr, yr, zr2));
+        let p = radius / (zr2 + dist);
+        proj_x.push(cx + xr * p);
+        proj_y.push(cy + yr * p);
+        proj_z.push(zr2);
     }
 
-    // Precompute projected screen positions for all nodes.
-    // Edges MUST use the exact same projection as nodes, otherwise they can appear
-    // visually disconnected.
-    let dist = 2.8;
-    let mut proj: std::collections::HashMap<u32, (f64, f64, f64)> =
-        std::collections::HashMap::with_capacity(nodes.len());
-    for node in nodes {
-        let Some(&(x, y, z)) = pos.get(&node.id) else {
-            continue;
-        };
-        let p = radius / (z + dist);
-        let px = cx + x * p;
-        let py = cy + y * p;
-        proj.insert(node.id, (px, py, z));
-    }
-
-    // Fast lookup for per-node coloring (used by gradient edges).
-    let node_by_id: std::collections::HashMap<u32, &braine::substrate::UnitPlotPoint> =
-        nodes.iter().map(|n| (n.id, n)).collect();
-
-    let node_base_rgb =
-        |node: &braine::substrate::UnitPlotPoint, learning_mode: bool| -> (u8, u8, u8) {
-            if learning_mode {
-                if node.is_sensor_member {
-                    (255, 153, 102) // warm orange
-                } else if node.is_group_member {
-                    (74, 222, 128) // green
-                } else if node.is_reserved {
-                    (148, 163, 184) // gray
-                } else {
-                    (251, 191, 36) // amber
-                }
-            } else if node.is_sensor_member {
-                (122, 162, 255) // blue
-            } else if node.is_group_member {
-                (34, 211, 238) // cyan
-            } else if node.is_reserved {
-                (148, 163, 184) // gray
-            } else {
-                (167, 139, 250) // purple
-            }
-        };
+    // Snapshot-style BrainViz: keep drawing cheap and stable.
+    // We intentionally ignore pulsing/gradient features (they were costly and noisy).
+    let _ = (pulse_freqs, opts.anim_time);
 
     // Draw edges (projected). Limit visual density by weight.
     let mut max_abs_w = 0.0001f32;
@@ -332,112 +318,68 @@ pub fn draw_brain_connectivity_sphere(
         max_abs_w = max_abs_w.max(w.abs());
     }
 
-    for &(s, t, w) in edges {
-        let Some(&(x1, y1, sz)) = proj.get(&s) else {
-            continue;
-        };
-        let Some(&(x2, y2, tz)) = proj.get(&t) else {
-            continue;
-        };
+    // Batch edges into a few buckets to avoid per-edge state changes.
+    // Tradeoff: less endpoint-color fidelity, much higher FPS and less jank.
+    const BUCKETS: usize = 4;
+    let mut seg_pos: [Vec<(f64, f64, f64, f64)>; BUCKETS] = std::array::from_fn(|_| Vec::new());
+    let mut seg_neg: [Vec<(f64, f64, f64, f64)>; BUCKETS] = std::array::from_fn(|_| Vec::new());
 
-        let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
-        if absw < 0.12 {
+    for &(s, t, w) in edges {
+        if s >= n_usize || t >= n_usize {
             continue;
         }
+        let absw = (w.abs() / max_abs_w).clamp(0.0, 1.0) as f64;
+        if absw < 0.15 {
+            continue;
+        }
+        let bucket = ((absw * (BUCKETS as f64)).floor() as usize).min(BUCKETS - 1);
+        let x1 = proj_x[s];
+        let y1 = proj_y[s];
+        let x2 = proj_x[t];
+        let y2 = proj_y[t];
+        if w >= 0.0 {
+            seg_pos[bucket].push((x1, y1, x2, y2));
+        } else {
+            seg_neg[bucket].push((x1, y1, x2, y2));
+        }
+    }
 
-        // Depth (0..1 approx): 1=front, 0=back.
-        let adj_depth = ((sz + tz) * 0.5 + 1.0) * 0.5;
+    for bucket in 0..BUCKETS {
+        let mid = (bucket as f64 + 0.5) / (BUCKETS as f64);
+        let width = 0.6 + 2.0 * mid;
+        let alpha = 0.08 + 0.22 * mid;
 
-        // Width is primarily based on connection strength, with slight depth influence
-        // Strong connections = thick lines, weak connections = thin lines
-        let strength_width = 0.5 + 2.5 * absw; // Range: 0.5 to 3.0 (strong emphasis)
-        let depth_factor = 0.7 + 0.3 * adj_depth; // Slight boost for front edges
-        let edge_width = strength_width * depth_factor;
-
-        // Alpha combines strength (strong = more visible) and depth (front = more visible)
-        let alpha = (0.10 + 0.45 * absw) * (0.30 + 0.70 * adj_depth);
-
-        // Edge gradient is derived from endpoint node colors.
-        // If either endpoint is missing (shouldn't happen), fall back to sign-based colors.
-        let (r1, g1, b1, r2, g2, b2) = match (node_by_id.get(&s), node_by_id.get(&t)) {
-            (Some(ns), Some(nt)) => {
-                let (r1, g1, b1) = node_base_rgb(ns, opts.learning_mode);
-                let (r2, g2, b2) = node_base_rgb(nt, opts.learning_mode);
-                (r1, g1, b1, r2, g2, b2)
-            }
-            _ => {
-                if w >= 0.0 {
-                    (122, 162, 255, 122, 162, 255)
-                } else {
-                    (251, 113, 133, 251, 113, 133)
-                }
-            }
-        };
-
-        let grad = ctx.create_linear_gradient(x1, y1, x2, y2);
-        let _ = grad.add_color_stop(0.0, &format!("rgba({r1}, {g1}, {b1}, {:.3})", alpha));
-        let _ = grad.add_color_stop(1.0, &format!("rgba({r2}, {g2}, {b2}, {:.3})", alpha));
-        let _ = Reflect::set(
-            ctx.as_ref(),
-            &JsValue::from_str("strokeStyle"),
-            grad.as_ref(),
-        );
-        ctx.set_line_width(edge_width);
-        ctx.begin_path();
-        ctx.move_to(x1, y1);
-        ctx.line_to(x2, y2);
-        ctx.stroke();
-
-        // Draw a subtle extra pass for very strong edges (they're already pulled forward)
-        if absw > 0.6 {
-            let tension_alpha = (absw - 0.6) * 0.4 * adj_depth;
-            let grad = ctx.create_linear_gradient(x1, y1, x2, y2);
-            let _ = grad.add_color_stop(
-                0.0,
-                &format!("rgba({r1}, {g1}, {b1}, {:.3})", tension_alpha),
-            );
-            let _ = grad.add_color_stop(
-                1.0,
-                &format!("rgba({r2}, {g2}, {b2}, {:.3})", tension_alpha),
-            );
-            let _ = Reflect::set(
-                ctx.as_ref(),
-                &JsValue::from_str("strokeStyle"),
-                grad.as_ref(),
-            );
-            ctx.set_line_width(edge_width * 1.8);
+        if !seg_pos[bucket].is_empty() {
+            ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", alpha));
+            ctx.set_line_width(width);
             ctx.begin_path();
-            ctx.move_to(x1, y1);
-            ctx.line_to(x2, y2);
+            for &(x1, y1, x2, y2) in &seg_pos[bucket] {
+                ctx.move_to(x1, y1);
+                ctx.line_to(x2, y2);
+            }
+            ctx.stroke();
+        }
+
+        if !seg_neg[bucket].is_empty() {
+            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
+            ctx.set_line_width(width);
+            ctx.begin_path();
+            for &(x1, y1, x2, y2) in &seg_neg[bucket] {
+                ctx.move_to(x1, y1);
+                ctx.line_to(x2, y2);
+            }
             ctx.stroke();
         }
     }
 
-    // Draw nodes on top with pulsing based on amplitude and phase.
-    let anim_time = opts.anim_time as f64;
+    // Draw nodes on top (snapshot: no pulsing).
     let mut hit_nodes: Vec<BrainVizHitNode> = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        let Some(&(x, y, z)) = pos.get(&node.id) else {
-            continue;
-        };
-        let p = radius / (z + dist);
-        let px = cx + x * p;
-        let py = cy + y * p;
+    for (i, node) in nodes.iter().enumerate() {
+        let px = proj_x[i];
+        let py = proj_y[i];
 
         let amp = (node.amp01 as f64).clamp(0.0, 1.0);
-        let phase = node.phase as f64;
         let salience = (node.salience01 as f64).clamp(0.0, 1.0);
-
-        // Pulsing effect: ONLY truly active nodes pulse (amp > 0.5 threshold)
-        // Higher threshold ensures only genuinely active nodes animate
-        let is_active = amp > 0.5;
-        let pulse_freq = 0.15; // Pulse frequency (slower for better visibility)
-                               // Per-node local animation: each node pulses independently based on phase
-        let pulse = if is_active {
-            ((anim_time * pulse_freq + phase).sin() * 0.5 + 0.5) * amp
-        } else {
-            0.0 // No pulsing for inactive nodes
-        };
 
         // Base size depends on node type (REDUCED from original)
         // Unit type classification:
@@ -464,9 +406,7 @@ pub fn draw_brain_connectivity_sphere(
         let base = type_base + salience_size;
 
         // Scale down nodes (and a touch with zoom) to keep density readable.
-        // Only add pulsing to size for ACTIVE nodes
-        let pulse_size_factor = if is_active { 1.0 + pulse * 0.25 } else { 1.0 };
-        let mut size = (base + amp_size) * opts.node_size_scale * pulse_size_factor;
+        let mut size = (base + amp_size) * opts.node_size_scale;
         size *= zoom.sqrt();
 
         // Cap node size so high-salience / high-amp nodes don't overwhelm the view.
@@ -474,13 +414,8 @@ pub fn draw_brain_connectivity_sphere(
         let max_size = 9.0 * zoom.sqrt();
         size = size.clamp(1.2, max_size);
 
-        // Alpha: salience contributes to base visibility, amplitude adds dynamic
-        // Active nodes are more visible, inactive nodes fade into background
-        let alpha = if is_active {
-            (0.4 + 0.3 * salience + 0.3 * amp) * (0.85 + 0.15 * pulse)
-        } else {
-            0.25 + 0.25 * salience // Static low visibility for inactive
-        };
+        // Alpha: keep it readable but not flashy.
+        let alpha = (0.22 + 0.38 * salience + 0.30 * amp).clamp(0.10, 0.95);
 
         // Color nodes based on type AND learning/inference mode
         // Learning mode: warmer tones (orange/amber accents)
@@ -508,22 +443,6 @@ pub fn draw_brain_connectivity_sphere(
                 format!("rgba(167, 139, 250, {:.3})", alpha) // Purple for regular units
             }
         };
-
-        // Draw glow for highly active nodes only (amp > 0.65 threshold)
-        // Only nodes with strong activity get the pulsing glow effect
-        if amp > 0.65 {
-            let glow_alpha = pulse * 0.35 * amp;
-            let glow_color = if opts.learning_mode {
-                format!("rgba(255, 200, 100, {:.3})", glow_alpha)
-            } else {
-                format!("rgba(122, 200, 255, {:.3})", glow_alpha)
-            };
-            ctx.set_fill_style_str(&glow_color);
-            ctx.begin_path();
-            ctx.arc(px, py, size * 1.8, 0.0, std::f64::consts::PI * 2.0)
-                .ok();
-            ctx.fill();
-        }
 
         ctx.set_fill_style_str(&color);
         ctx.begin_path();
@@ -941,6 +860,77 @@ pub fn draw_neuromod_trace(
         }
     }
 
+    Ok(())
+}
+
+/// Draw a tiny sparkline (single series) on a canvas.
+///
+/// Intended for cheap "always-on" diagnostics; keep it simple.
+pub fn draw_sparkline(
+    canvas: &HtmlCanvasElement,
+    data: &[f32],
+    bg_color: &str,
+    line_color: &str,
+    grid_color: &str,
+) -> Result<(), String> {
+    let ctx = canvas
+        .get_context("2d")
+        .map_err(|_| "get_context failed")?
+        .ok_or("no 2d context")?
+        .dyn_into::<CanvasRenderingContext2d>()
+        .map_err(|_| "cast failed")?;
+
+    let w = canvas.width() as f64;
+    let h = canvas.height() as f64;
+
+    ctx.set_fill_style_str(bg_color);
+    ctx.fill_rect(0.0, 0.0, w, h);
+
+    if data.len() < 2 {
+        return Ok(());
+    }
+
+    let mut min_v = f32::INFINITY;
+    let mut max_v = f32::NEG_INFINITY;
+    for &v in data {
+        min_v = min_v.min(v);
+        max_v = max_v.max(v);
+    }
+    if !min_v.is_finite() || !max_v.is_finite() {
+        return Ok(());
+    }
+    let span = (max_v - min_v).abs().max(1.0e-6);
+
+    ctx.set_stroke_style_str(grid_color);
+    ctx.set_line_width(1.0);
+    for k in 1..3 {
+        let y = (h * (k as f64)) / 3.0;
+        ctx.begin_path();
+        ctx.move_to(0.0, y);
+        ctx.line_to(w, y);
+        ctx.stroke();
+    }
+
+    let step_x = if data.len() <= 1 {
+        w
+    } else {
+        w / ((data.len() - 1) as f64)
+    };
+
+    ctx.set_stroke_style_str(line_color);
+    ctx.set_line_width(2.0);
+    ctx.begin_path();
+    for (i, &v) in data.iter().enumerate() {
+        let x = (i as f64) * step_x;
+        let t = ((v - min_v) / span).clamp(0.0, 1.0) as f64;
+        let y = h - t * h;
+        if i == 0 {
+            ctx.move_to(x, y);
+        } else {
+            ctx.line_to(x, y);
+        }
+    }
+    ctx.stroke();
     Ok(())
 }
 

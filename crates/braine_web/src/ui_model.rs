@@ -8,6 +8,7 @@ pub enum DashboardTab {
     Learning,
     #[default]
     BrainViz,
+    Inspect,
     Settings,
 }
 
@@ -16,6 +17,7 @@ impl DashboardTab {
         match self {
             DashboardTab::Learning => "Learning",
             DashboardTab::BrainViz => "BrainViz",
+            DashboardTab::Inspect => "Inspect",
             DashboardTab::Settings => "Settings",
         }
     }
@@ -24,6 +26,7 @@ impl DashboardTab {
         match self {
             DashboardTab::Learning => "🧠",
             DashboardTab::BrainViz => "🕸️",
+            DashboardTab::Inspect => "🔎",
             DashboardTab::Settings => "⚙️",
         }
     }
@@ -31,6 +34,7 @@ impl DashboardTab {
     pub fn all() -> &'static [DashboardTab] {
         &[
             DashboardTab::BrainViz,
+            DashboardTab::Inspect,
             DashboardTab::Learning,
             DashboardTab::Settings,
         ]
@@ -221,6 +225,7 @@ mod tests {
         let all = DashboardTab::all();
         assert!(all.contains(&DashboardTab::Settings));
         assert!(all.contains(&DashboardTab::BrainViz));
+        assert!(all.contains(&DashboardTab::Inspect));
     }
 
     #[test]

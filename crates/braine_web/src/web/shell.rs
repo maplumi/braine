@@ -10,6 +10,7 @@ pub(super) fn Topbar(
     set_sidebar_open: WriteSignal<bool>,
     gpu_status: ReadSignal<&'static str>,
     status: ReadSignal<String>,
+    gpu_pending: ReadSignal<bool>,
     is_running: ReadSignal<bool>,
     theme: ReadSignal<Theme>,
     set_theme: WriteSignal<Theme>,
@@ -36,6 +37,11 @@ pub(super) fn Topbar(
             </div>
             <div class="app-header-right">
                 <span class="status">{move || status.get()}</span>
+                <Show when=move || gpu_pending.get()>
+                    <span class="gpu-pending" title="Waiting for GPU brain step">
+                        "GPU pending"
+                    </span>
+                </Show>
                 <Show when=move || is_running.get()>
                     <span class="live-dot"></span>
                 </Show>

@@ -14,9 +14,9 @@ mod brain_factory;
 mod canvas;
 mod files;
 mod indexeddb;
-mod math;
 mod latex;
 mod markdown;
+mod math;
 mod mermaid;
 mod parameter_field;
 mod runtime;
@@ -30,6 +30,112 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
+
+#[derive(Clone, Debug)]
+struct InspectTrialEvent {
+    step: u64,
+    game: GameKind,
+    trial: u32,
+    action: String,
+    reward: f32,
+    recent_rate: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BrainvizNodeDelta {
+    idx: u16,
+    /// bit0=amp01, bit1=phase, bit2=salience01
+    mask: u8,
+    amp01: f32,
+    phase: f32,
+    salience01: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BrainvizEdgeDelta {
+    idx: u32,
+    weight: f32,
+}
+
+#[derive(Clone, Debug)]
+struct BrainvizKeyframe {
+    step: u64,
+    amp01: Vec<f32>,
+    phase: Vec<f32>,
+    salience01: Vec<f32>,
+    edge_weights: Vec<f32>,
+}
+
+#[derive(Clone, Debug)]
+struct BrainvizDeltaFrame {
+    step: u64,
+    node_deltas: Vec<BrainvizNodeDelta>,
+    edge_deltas: Vec<BrainvizEdgeDelta>,
+}
+
+#[derive(Clone, Debug)]
+struct BrainvizGameRecording {
+    n: usize,
+    edges_per_node: usize,
+    // Stable metadata (IDs, flags, rel_age). Dynamic fields are reconstructed per frame.
+    base_points: Vec<UnitPlotPoint>,
+    // Stable edge endpoints for delta encoding.
+    edge_pairs: Vec<(usize, usize)>,
+    // Current state (for computing deltas while recording).
+    cur_amp01: Vec<f32>,
+    cur_phase: Vec<f32>,
+    cur_salience01: Vec<f32>,
+    cur_edge_weights: Vec<f32>,
+    // Delta stream + periodic keyframes for random access replay.
+    deltas: Vec<BrainvizDeltaFrame>,
+    keyframes: Vec<(usize, BrainvizKeyframe)>,
+}
+
+impl Default for BrainvizGameRecording {
+    fn default() -> Self {
+        Self {
+            n: 0,
+            edges_per_node: 0,
+            base_points: Vec::new(),
+            edge_pairs: Vec::new(),
+            cur_amp01: Vec::new(),
+            cur_phase: Vec::new(),
+            cur_salience01: Vec::new(),
+            cur_edge_weights: Vec::new(),
+            deltas: Vec::new(),
+            keyframes: Vec::new(),
+        }
+    }
+}
+
+const GAME_KIND_COUNT: usize = 8;
+
+fn game_kind_index(kind: crate::ui_model::GameKind) -> usize {
+    match kind {
+        crate::ui_model::GameKind::Spot => 0,
+        crate::ui_model::GameKind::Bandit => 1,
+        crate::ui_model::GameKind::SpotReversal => 2,
+        crate::ui_model::GameKind::SpotXY => 3,
+        crate::ui_model::GameKind::Pong => 4,
+        crate::ui_model::GameKind::Sequence => 5,
+        crate::ui_model::GameKind::Text => 6,
+        crate::ui_model::GameKind::Replay => 7,
+    }
+}
+
+fn wrap_delta_phase_to_pi(mut d: f32) -> f32 {
+    // UnitPlotPoint.phase is in [0, 2π). For estimating velocity from deltas,
+    // wrap to the minimal delta in (-π, π].
+    let pi = std::f32::consts::PI;
+    let tau = 2.0 * pi;
+    while d > pi {
+        d -= tau;
+    }
+    while d <= -pi {
+        d += tau;
+    }
+    d
+}
 
 use crate::ui_model::{AnalyticsPanel, DashboardTab, GameKind};
 
@@ -77,7 +183,9 @@ fn report_error(msg: impl Into<String>) {
     });
 }
 
-use mermaid::{apply_theme as apply_mermaid_theme, render_all as render_all_mermaid, MermaidDiagram};
+use mermaid::{
+    apply_theme as apply_mermaid_theme, render_all as render_all_mermaid, MermaidDiagram,
+};
 use parameter_field::ParameterField;
 use settings_schema::ParamSection;
 use tooltip::{TooltipPortal, TooltipStore};
@@ -498,6 +606,10 @@ fn App() -> impl IntoView {
     // Status line for the header.
     let (status, set_status) = signal(String::from("ready"));
 
+    // True while we're waiting for a nonblocking GPU step to complete.
+    // (Useful for debugging perceived UI stalls.)
+    let (gpu_step_pending, set_gpu_step_pending) = signal(false);
+
     // Core learning/runtime controls.
     let (learning_enabled, set_learning_enabled) = signal(settings0.learning_enabled);
     let (trial_period_ms, set_trial_period_ms) = signal::<u32>(settings0.trial_period_ms);
@@ -722,6 +834,7 @@ fn App() -> impl IntoView {
 
     // Performance history for charting
     let perf_history = StoredValue::new(RollingHistory::new(200));
+    let (perf_version, set_perf_version) = signal(0u32);
 
     // Neuromodulator (reward) history
     let neuromod_history = StoredValue::new(RollingHistory::new(50));
@@ -761,9 +874,8 @@ fn App() -> impl IntoView {
 
     // Render once; the source is a compile-time embedded repo doc.
     // Use StoredValue so the view closures remain `Fn` (not `FnOnce`).
-    let math_behind_html = StoredValue::new(markdown::render_markdown_with_mermaid(
-        DOC_THE_MATH_BEHIND,
-    ));
+    let math_behind_html =
+        StoredValue::new(markdown::render_markdown_with_mermaid(DOC_THE_MATH_BEHIND));
 
     // When switching to the Math tab, ask Mermaid to render any fenced diagrams.
     Effect::new(move |_| {
@@ -778,9 +890,38 @@ fn App() -> impl IntoView {
     });
 
     // BrainViz uses its own sampling so it can be tuned independently.
+    // Snapshot mode: sampling happens only on explicit refresh.
     let (brainviz_points, set_brainviz_points) = signal::<Vec<UnitPlotPoint>>(Vec::new());
+    let (brainviz_edges, set_brainviz_edges) = signal::<Vec<(usize, usize, f32)>>(Vec::new());
+    let brainviz_base_positions = StoredValue::new(Vec::<(f64, f64, f64)>::new());
+    let brainviz_base_positions_n = StoredValue::new(0usize);
     let (brainviz_node_sample, set_brainviz_node_sample) = signal(128u32);
     let (brainviz_edges_per_node, set_brainviz_edges_per_node) = signal(4u32);
+    let (brainviz_snapshot_refresh, set_brainviz_snapshot_refresh) = signal(1u32);
+    let brainviz_last_snapshot_refresh = StoredValue::new(0u32);
+
+    // BrainViz recording/replay:
+    // - While running: BrainViz rendering/sampling is paused (to protect game FPS)
+    // - We record per-trial sampled point+edge snapshots per game
+    // - When stopped: user can replay those snapshots on demand
+    let (brainviz_record_enabled, set_brainviz_record_enabled) = signal(true);
+    // Delta encoding knobs (UI-tunable):
+    // - classify "active" nodes to capture fine phase motion without recording everything
+    // - larger epsilons reduce recorded delta volume and CPU work
+    let (brainviz_active_amp_threshold, set_brainviz_active_amp_threshold) = signal(0.5f32);
+    let (brainviz_eps_phase_active, set_brainviz_eps_phase_active) = signal(0.02f32);
+    let (brainviz_eps_phase_inactive, set_brainviz_eps_phase_inactive) = signal(0.08f32);
+    let (brainviz_eps_amp01, _set_brainviz_eps_amp01) = signal(0.01f32);
+    let (brainviz_eps_salience01, _set_brainviz_eps_salience01) = signal(0.01f32);
+    let (brainviz_record_edges, set_brainviz_record_edges) = signal(true);
+    let (brainviz_eps_weight, set_brainviz_eps_weight) = signal(0.005f32);
+    let (brainviz_record_every_trials, set_brainviz_record_every_trials) = signal(1u32);
+    let (brainviz_record_edges_every_trials, set_brainviz_record_edges_every_trials) = signal(2u32);
+    let brainviz_recordings: StoredValue<Vec<BrainvizGameRecording>> =
+        StoredValue::new(vec![BrainvizGameRecording::default(); GAME_KIND_COUNT]);
+    let (brainviz_replay_active, set_brainviz_replay_active) = signal(false);
+    let (brainviz_replay_kind, set_brainviz_replay_kind) = signal(game_kind.get_untracked());
+    let (brainviz_replay_idx, set_brainviz_replay_idx) = signal::<usize>(0);
     let (brainviz_is_expanded, set_brainviz_is_expanded) = signal(false);
     let (brainviz_zoom, set_brainviz_zoom) = signal(1.5f32);
     let (brainviz_pan_x, set_brainviz_pan_x) = signal(0.0f32);
@@ -790,7 +931,6 @@ fn App() -> impl IntoView {
     let (brainviz_rotation_x, set_brainviz_rotation_x) = signal(0.0f32); // X-axis rotation (vertical drag)
     let (brainviz_vibration, _set_brainviz_vibration) = signal(0.0f32); // Activity-based vibration
     let (brainviz_idle_time, set_brainviz_idle_time) = signal(0.0f32); // Idle animation time (dreaming mode)
-    let (brainviz_hover, set_brainviz_hover) = signal::<Option<(u32, f64, f64)>>(None);
     let (brainviz_view_mode, set_brainviz_view_mode) = signal::<&'static str>("substrate"); // "substrate" or "causal"
     let (brainviz_causal_graph, set_brainviz_causal_graph) =
         signal::<CausalGraphViz>(CausalGraphViz::default());
@@ -825,10 +965,6 @@ fn App() -> impl IntoView {
 
     let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
     let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
-    let brainviz_degree_by_id = StoredValue::new(std::collections::HashMap::<u32, usize>::new());
-    let brainviz_dragging = StoredValue::new(false);
-    let brainviz_last_drag_xy = StoredValue::new((0.0f64, 0.0f64));
-    let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
 
     // Idle state tracking for actual dreaming/sync operations
     let (idle_sync_done, set_idle_sync_done) = signal(false); // Has sync been performed this idle period?
@@ -1086,6 +1222,7 @@ fn App() -> impl IntoView {
 
             // Update performance history
             perf_history.update_value(|h| h.push(rate));
+            set_perf_version.update(|v| *v = v.wrapping_add(1));
 
             // Update learning milestones
             if rate >= 0.95 {
@@ -1156,6 +1293,36 @@ fn App() -> impl IntoView {
                 };
                 save_persisted_stats_state(kind, &state);
             }
+        }
+    };
+
+    // A lightweight refresh used while a GPU step is in-flight. Keeps game canvases (especially
+    // Pong) responsive without doing heavy per-tick analytics or brain sampling.
+    let refresh_game_ui_from_runtime = {
+        let runtime = runtime.clone();
+        move || {
+            let snap = runtime.with_value(|r| r.game_ui_snapshot());
+
+            set_spotxy_pos.set(snap.spotxy_pos);
+            set_spotxy_stimulus_key.set(snap.spotxy_stimulus_key);
+            set_spotxy_eval.set(snap.spotxy_eval);
+            set_spotxy_mode.set(snap.spotxy_mode);
+            set_spotxy_grid_n.set(snap.spotxy_grid_n);
+            set_reversal_active.set(snap.reversal_active);
+            set_reversal_flip_after.set(snap.reversal_flip_after_trials);
+            set_pong_state.set(snap.pong_state);
+            set_pong_stimulus_key.set(snap.pong_stimulus_key);
+            set_pong_paddle_speed.set(snap.pong_paddle_speed);
+            set_pong_paddle_half_height.set(snap.pong_paddle_half_height);
+            set_pong_ball_speed.set(snap.pong_ball_speed);
+            set_pong_paddle_bounce_y.set(snap.pong_paddle_bounce_y);
+            set_pong_respawn_delay_s.set(snap.pong_respawn_delay_s);
+            set_pong_distractor_enabled.set(snap.pong_distractor_enabled);
+            set_pong_distractor_speed_scale.set(snap.pong_distractor_speed_scale);
+            set_sequence_state.set(snap.sequence_state);
+            set_text_state.set(snap.text_state);
+            set_replay_state.set(snap.replay_state);
+            set_spot_is_left.set(snap.spot_is_left);
         }
     };
 
@@ -1283,6 +1450,11 @@ fn App() -> impl IntoView {
         }
     });
 
+    // Inspect: state-change log (structured; render formatting only when Inspect tab is open).
+    // Declared before `do_tick` so the tick loop can append cheap structured events.
+    let inspect_trial_events = StoredValue::new(Vec::<InspectTrialEvent>::new());
+    let (inspect_trial_events_version, set_inspect_trial_events_version) = signal(0u32);
+
     let do_tick = {
         let runtime = runtime.clone();
         move || {
@@ -1303,9 +1475,12 @@ fn App() -> impl IntoView {
             match tick_result {
                 TickResult::PendingGpu => {
                     // A GPU step is in-flight; don't count this as a completed step.
-                    // We'll try again on the next interval tick.
+                    // Still refresh *game UI only* so e.g. Pong animation doesn't appear frozen.
+                    set_gpu_step_pending.set(true);
+                    refresh_game_ui_from_runtime();
                 }
                 TickResult::Advanced(out) => {
+                    set_gpu_step_pending.set(false);
                     set_brain_dirty.set(true);
                     if let Some(out) = out {
                         let last_action = out.last_action.clone();
@@ -1325,6 +1500,297 @@ fn App() -> impl IntoView {
                         // Track neuromod history
                         neuromod_history.update_value(|h| h.push(out.reward));
                         set_neuromod_version.update(|v| *v = v.wrapping_add(1));
+
+                        // Inspect state-change log (cheap structured append; formatting happens in the view).
+                        {
+                            let kind = game_kind.get_untracked();
+                            let trial = trials.get_untracked();
+                            let rate = recent_rate.get_untracked();
+                            let ev = InspectTrialEvent {
+                                step: steps.get_untracked(),
+                                game: kind,
+                                trial,
+                                action: out.last_action.clone(),
+                                reward: out.reward,
+                                recent_rate: rate,
+                            };
+                            inspect_trial_events.update_value(|v| {
+                                v.push(ev);
+                                if v.len() > 300 {
+                                    let extra = v.len() - 300;
+                                    v.drain(0..extra);
+                                }
+                            });
+                            set_inspect_trial_events_version.update(|v| *v = v.wrapping_add(1));
+                        }
+
+                        // Record state changes per-game for later BrainViz replay.
+                        // We record only when a trial completes (i.e., `out` is Some), which
+                        // is much cheaper than recording on every interval tick.
+                        if brainviz_record_enabled.get_untracked() {
+                            // Keep the tick callback cheap: do recording work in a microtask.
+                            let runtime = runtime.clone();
+                            let kind = game_kind.get_untracked();
+                            let n = brainviz_node_sample.get_untracked().clamp(16, 1024) as usize;
+                            let edges_per_node =
+                                brainviz_edges_per_node.get_untracked().clamp(1, 32) as usize;
+                            let step_now = steps.get_untracked();
+                            let active_thr = brainviz_active_amp_threshold.get_untracked();
+                            let eps_phase_active =
+                                brainviz_eps_phase_active.get_untracked().max(0.0);
+                            let eps_phase_inactive =
+                                brainviz_eps_phase_inactive.get_untracked().max(0.0);
+                            let eps_amp01 = brainviz_eps_amp01.get_untracked().max(0.0);
+                            let eps_salience01 = brainviz_eps_salience01.get_untracked().max(0.0);
+                            let record_edges = brainviz_record_edges.get_untracked();
+                            let eps_weight = brainviz_eps_weight.get_untracked().max(0.0);
+                            let record_every = brainviz_record_every_trials.get_untracked().max(1);
+                            let record_edges_every =
+                                brainviz_record_edges_every_trials.get_untracked().max(1);
+                            let trial_idx = steps.get_untracked() as u32;
+
+                            if trial_idx % record_every != 0 {
+                                return;
+                            }
+
+                            spawn_local(async move {
+                                const MAX_FRAMES_PER_GAME: usize = 2_000;
+                                const KEYFRAME_EVERY: usize = 50;
+
+                                brainviz_recordings.update_value(|recs| {
+                                    let rec = &mut recs[game_kind_index(kind)];
+
+                                    // Start a fresh clip if settings changed.
+                                    let settings_changed =
+                                        rec.n != n || rec.edges_per_node != edges_per_node;
+                                    if settings_changed {
+                                        *rec = BrainvizGameRecording::default();
+                                        rec.n = n;
+                                        rec.edges_per_node = edges_per_node;
+                                    }
+
+                                    // (Re)initialize stable nodes + stable edge endpoints if needed.
+                                    if rec.base_points.is_empty() {
+                                        runtime.with_value(|r| {
+                                            let pts = r.brain.unit_plot_points(n);
+
+                                            let mut id_to_index: std::collections::HashMap<
+                                                usize,
+                                                usize,
+                                            > = std::collections::HashMap::with_capacity(pts.len());
+                                            for (i, p) in pts.iter().enumerate() {
+                                                id_to_index.insert(p.id as usize, i);
+                                            }
+
+                                            // Stable edge endpoints: top-k neighbors per sampled node.
+                                            let mut edge_pairs: Vec<(usize, usize)> = Vec::new();
+                                            let mut edge_weights: Vec<f32> = Vec::new();
+                                            if record_edges {
+                                                for (src_i, p) in pts.iter().enumerate() {
+                                                    let src_id = p.id as usize;
+                                                    let mut candidates: Vec<(usize, f32)> = r
+                                                        .brain
+                                                        .neighbors(src_id)
+                                                        .filter_map(|(t, w)| {
+                                                            id_to_index
+                                                                .get(&t)
+                                                                .copied()
+                                                                .map(|ti| (ti, w))
+                                                        })
+                                                        .collect();
+                                                    candidates.sort_by(|a, b| {
+                                                        b.1.abs().total_cmp(&a.1.abs())
+                                                    });
+                                                    for (ti, w) in
+                                                        candidates.into_iter().take(edges_per_node)
+                                                    {
+                                                        edge_pairs.push((src_i, ti));
+                                                        edge_weights.push(w);
+                                                    }
+                                                }
+                                            }
+
+                                            rec.base_points = pts;
+                                            rec.edge_pairs = edge_pairs;
+                                            rec.cur_amp01 =
+                                                rec.base_points.iter().map(|p| p.amp01).collect();
+                                            rec.cur_phase =
+                                                rec.base_points.iter().map(|p| p.phase).collect();
+                                            rec.cur_salience01 = rec
+                                                .base_points
+                                                .iter()
+                                                .map(|p| p.salience01)
+                                                .collect();
+                                            rec.cur_edge_weights = edge_weights.clone();
+
+                                            // Seed a keyframe at index 0.
+                                            rec.keyframes.push((
+                                                0,
+                                                BrainvizKeyframe {
+                                                    step: step_now,
+                                                    amp01: rec.cur_amp01.clone(),
+                                                    phase: rec.cur_phase.clone(),
+                                                    salience01: rec.cur_salience01.clone(),
+                                                    edge_weights,
+                                                },
+                                            ));
+                                        });
+                                    }
+
+                                    // Compute deltas against current recording state.
+                                    let mut node_deltas: Vec<BrainvizNodeDelta> = Vec::new();
+                                    let mut edge_deltas: Vec<BrainvizEdgeDelta> = Vec::new();
+
+                                    runtime.with_value(|r| {
+                                        let pts = r.brain.unit_plot_points(n);
+
+                                        // If sampling IDs shifted (e.g., brain grew), restart clip.
+                                        let ids_match = pts.len() == rec.base_points.len()
+                                            && pts
+                                                .iter()
+                                                .zip(rec.base_points.iter())
+                                                .all(|(a, b)| a.id == b.id);
+                                        if !ids_match {
+                                            *rec = BrainvizGameRecording::default();
+                                            rec.n = n;
+                                            rec.edges_per_node = edges_per_node;
+                                            return;
+                                        }
+
+                                        // Node deltas (vibration-relevant fields).
+                                        for (i, p) in pts.iter().enumerate() {
+                                            let mut mask: u8 = 0;
+
+                                            let da = (p.amp01 - rec.cur_amp01[i]).abs();
+                                            if da > eps_amp01 {
+                                                mask |= 1;
+                                            }
+
+                                            let eps_phase = if p.amp01 >= active_thr {
+                                                eps_phase_active
+                                            } else {
+                                                eps_phase_inactive
+                                            };
+                                            let dp =
+                                                wrap_delta_phase_to_pi(p.phase - rec.cur_phase[i])
+                                                    .abs();
+                                            if dp > eps_phase {
+                                                mask |= 2;
+                                            }
+
+                                            let ds = (p.salience01 - rec.cur_salience01[i]).abs();
+                                            if ds > eps_salience01 {
+                                                mask |= 4;
+                                            }
+
+                                            if mask != 0 {
+                                                node_deltas.push(BrainvizNodeDelta {
+                                                    idx: i as u16,
+                                                    mask,
+                                                    amp01: p.amp01,
+                                                    phase: p.phase,
+                                                    salience01: p.salience01,
+                                                });
+                                                if (mask & 1) != 0 {
+                                                    rec.cur_amp01[i] = p.amp01;
+                                                }
+                                                if (mask & 2) != 0 {
+                                                    rec.cur_phase[i] = p.phase;
+                                                }
+                                                if (mask & 4) != 0 {
+                                                    rec.cur_salience01[i] = p.salience01;
+                                                }
+                                            }
+                                        }
+
+                                        // Edge deltas (optional + decimated).
+                                        if record_edges
+                                            && !rec.edge_pairs.is_empty()
+                                            && (trial_idx % record_edges_every == 0)
+                                        {
+                                            // Scan neighbors once per source.
+                                            let mut by_src: std::collections::HashMap<
+                                                usize,
+                                                Vec<(usize, usize)>,
+                                            > = std::collections::HashMap::new();
+                                            for (edge_idx, &(src_i, dst_i)) in
+                                                rec.edge_pairs.iter().enumerate()
+                                            {
+                                                let src_id = pts[src_i].id as usize;
+                                                let dst_id = pts[dst_i].id as usize;
+                                                by_src
+                                                    .entry(src_id)
+                                                    .or_default()
+                                                    .push((dst_id, edge_idx));
+                                            }
+
+                                            let mut new_w: Vec<f32> =
+                                                vec![0.0; rec.edge_pairs.len()];
+                                            for (src_id, wants) in by_src {
+                                                let mut want_map: std::collections::HashMap<
+                                                    usize,
+                                                    usize,
+                                                > = std::collections::HashMap::with_capacity(
+                                                    wants.len(),
+                                                );
+                                                for (dst_id, edge_idx) in wants {
+                                                    want_map.insert(dst_id, edge_idx);
+                                                }
+                                                for (t, w) in r.brain.neighbors(src_id) {
+                                                    if let Some(&edge_idx) = want_map.get(&t) {
+                                                        new_w[edge_idx] = w;
+                                                    }
+                                                }
+                                            }
+
+                                            for (i, &w) in new_w.iter().enumerate() {
+                                                if (w - rec.cur_edge_weights[i]).abs() > eps_weight
+                                                {
+                                                    edge_deltas.push(BrainvizEdgeDelta {
+                                                        idx: i as u32,
+                                                        weight: w,
+                                                    });
+                                                    rec.cur_edge_weights[i] = w;
+                                                }
+                                            }
+                                        }
+                                    });
+
+                                    if rec.base_points.is_empty() {
+                                        return;
+                                    }
+
+                                    rec.deltas.push(BrainvizDeltaFrame {
+                                        step: step_now,
+                                        node_deltas,
+                                        edge_deltas,
+                                    });
+
+                                    let idx = rec.deltas.len().saturating_sub(1);
+                                    if idx % KEYFRAME_EVERY == 0 {
+                                        rec.keyframes.push((
+                                            idx,
+                                            BrainvizKeyframe {
+                                                step: step_now,
+                                                amp01: rec.cur_amp01.clone(),
+                                                phase: rec.cur_phase.clone(),
+                                                salience01: rec.cur_salience01.clone(),
+                                                edge_weights: rec.cur_edge_weights.clone(),
+                                            },
+                                        ));
+                                    }
+
+                                    if rec.deltas.len() > MAX_FRAMES_PER_GAME {
+                                        let extra = rec.deltas.len() - MAX_FRAMES_PER_GAME;
+                                        rec.deltas.drain(0..extra);
+                                        rec.keyframes.retain(|(i, _)| *i >= extra);
+                                        for (i, _) in rec.keyframes.iter_mut() {
+                                            *i = i.saturating_sub(extra);
+                                        }
+                                    }
+                                });
+                            });
+                        }
                     }
 
                     set_steps.update(|s| *s += 1);
@@ -2142,61 +2608,222 @@ fn App() -> impl IntoView {
         let _ = charts::draw_unit_plot_3d(&canvas, &points, "#0a0f1a");
     });
 
-    // BrainViz: sample plot points based on UI settings (does not affect learning/perf history).
-    // NOTE: edges are re-derived every render; we must refresh nodes periodically too,
-    // otherwise node sizes/colors can look "stuck" while edges change.
+    // Inspect: lightweight sparklines (only draw when Inspect tab is open).
+    let inspect_perf_spark_ref = NodeRef::<leptos::html::Canvas>::new();
+    let inspect_reward_spark_ref = NodeRef::<leptos::html::Canvas>::new();
+    let (inspect_neighbor_unit_id, set_inspect_neighbor_unit_id) = signal(0u32);
+    let (inspect_neighbors_text, set_inspect_neighbors_text) = signal(String::new());
+
+    // Inspect: oscilloscope (single unit over time; updated only on snapshot refresh / replay step).
+    let (inspect_scope_unit_id, set_inspect_scope_unit_id) = signal(0u32);
+    let inspect_scope_amp = StoredValue::new(RollingHistory::new(120));
+    let inspect_scope_phase_sin = StoredValue::new(RollingHistory::new(120));
+    let (inspect_scope_version, set_inspect_scope_version) = signal(0u32);
+    let inspect_scope_amp_ref = NodeRef::<leptos::html::Canvas>::new();
+    let inspect_scope_phase_ref = NodeRef::<leptos::html::Canvas>::new();
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = perf_version.get();
+        let Some(canvas) = inspect_perf_spark_ref.get() else {
+            return;
+        };
+        let data: Vec<f32> = perf_history.with_value(|h| h.data().to_vec());
+        let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#7aa2ff", "#1a2540");
+    });
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = neuromod_version.get();
+        let Some(canvas) = inspect_reward_spark_ref.get() else {
+            return;
+        };
+        let data: Vec<f32> = neuromod_history.with_value(|h| h.data().to_vec());
+        let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#fbbf24", "#1a2540");
+    });
+
+    // Inspect: oscilloscope sampling (only when Inspect is open).
+    // Trigger on snapshot refresh, replay idx changes, or unit id changes.
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = brainviz_snapshot_refresh.get();
+        let _ = brainviz_replay_active.get();
+        let _ = brainviz_replay_idx.get();
+        let unit_id = inspect_scope_unit_id.get();
+
+        if unit_id == 0 {
+            return;
+        }
+
+        let mut amp01: Option<f32> = None;
+        let mut phase_sin: Option<f32> = None;
+        brainviz_points.with(|pts| {
+            if let Some(p) = pts.iter().find(|p| p.id == unit_id) {
+                amp01 = Some(p.amp01);
+                phase_sin = Some(p.phase.sin());
+            }
+        });
+
+        if let (Some(a), Some(s)) = (amp01, phase_sin) {
+            inspect_scope_amp.update_value(|h| h.push(a));
+            inspect_scope_phase_sin.update_value(|h| h.push(s));
+            set_inspect_scope_version.update(|v| *v = v.wrapping_add(1));
+        }
+    });
+
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = inspect_scope_version.get();
+        let Some(canvas) = inspect_scope_amp_ref.get() else {
+            return;
+        };
+        let data: Vec<f32> = inspect_scope_amp.with_value(|h| h.data().to_vec());
+        let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#4ade80", "#1a2540");
+    });
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = inspect_scope_version.get();
+        let Some(canvas) = inspect_scope_phase_ref.get() else {
+            return;
+        };
+        let data: Vec<f32> = inspect_scope_phase_sin.with_value(|h| h.data().to_vec());
+        let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#a78bfa", "#1a2540");
+    });
+
+    // BrainViz snapshot sampler (refresh-driven):
+    // - gated by active dashboard tab
+    // - never samples while running
+    // - replay overrides live sampling
     Effect::new({
         let runtime = runtime.clone();
         move |_| {
-            let expanded = brainviz_is_expanded.get();
+            if brainviz_replay_active.get() {
+                return;
+            }
+            if is_running.get() {
+                return;
+            }
+
+            let active_tab = dashboard_tab.get();
+            if active_tab != DashboardTab::BrainViz && active_tab != DashboardTab::Inspect {
+                return;
+            }
+
+            let refresh = brainviz_snapshot_refresh.get();
+            let points_empty = brainviz_points.get().is_empty();
+            if !points_empty && refresh == brainviz_last_snapshot_refresh.get_value() {
+                return;
+            }
+            brainviz_last_snapshot_refresh.set_value(refresh);
+
             let view_mode = brainviz_view_mode.get();
             let n = brainviz_node_sample.get().clamp(16, 1024) as usize;
-
-            // Throttle refresh:
-            // - expanded: reasonably responsive
-            // - collapsed (pinned): keep alive but cheaper
-            let step = steps.get();
-            let running = is_running.get();
-            let idle_time = brainviz_idle_time.get();
-            if running {
-                let every: u64 = if expanded { 2 } else { 16 };
-                if every > 1 && step % every != 0 {
-                    return;
-                }
-            } else {
-                let bucket = (idle_time * 10.0) as u32; // ~10Hz buckets
-                let every: u32 = if expanded { 20 } else { 40 }; // ~2s vs ~4s
-                #[allow(clippy::manual_is_multiple_of)]
-                if bucket % every != 0 {
-                    return;
-                }
-            }
+            let edges_per_node = brainviz_edges_per_node.get().clamp(1, 32) as usize;
 
             if view_mode == "causal" {
-                // Fetch causal graph data
-                // (heavier than substrate points; keep it on the same throttle)
                 let causal = runtime.with_value(|r| r.brain.causal_graph_viz(n, n * 2));
                 set_brainviz_causal_graph.set(causal);
-            } else {
-                // Fetch substrate unit points
-                let pts = runtime.with_value(|r| r.brain.unit_plot_points(n));
-                // Global vibration removed - nodes now have local per-node animation
-                set_brainviz_points.set(pts);
+                return;
             }
+
+            let pts = runtime.with_value(|r| r.brain.unit_plot_points(n));
+
+            if brainviz_base_positions_n.get_value() != pts.len() {
+                let npos = pts.len();
+                let n_f = npos.max(1) as f64;
+                let golden = 2.399_963_229_728_653_5_f64; // ~pi*(3-sqrt(5))
+                let mut base: Vec<(f64, f64, f64)> = Vec::with_capacity(npos);
+                for i in 0..npos {
+                    let i_f = i as f64;
+                    let y = 1.0 - 2.0 * ((i_f + 0.5) / n_f);
+                    let r = (1.0 - y * y).sqrt();
+                    let theta = golden * i_f;
+                    let x = r * theta.cos();
+                    let z = r * theta.sin();
+                    base.push((x, y, z));
+                }
+                brainviz_base_positions.set_value(base);
+                brainviz_base_positions_n.set_value(npos);
+            }
+
+            let edges: Vec<(usize, usize, f32)> = runtime.with_value(|r| {
+                let mut id_to_index: std::collections::HashMap<usize, usize> =
+                    std::collections::HashMap::with_capacity(pts.len());
+                for (i, p) in pts.iter().enumerate() {
+                    id_to_index.insert(p.id as usize, i);
+                }
+
+                let mut edges: Vec<(usize, usize, f32)> = Vec::new();
+                for (src_i, p) in pts.iter().enumerate() {
+                    let src_id = p.id as usize;
+                    let mut candidates: Vec<(usize, f32)> = r
+                        .brain
+                        .neighbors(src_id)
+                        .filter_map(|(t, w)| id_to_index.get(&t).copied().map(|ti| (ti, w)))
+                        .collect();
+                    candidates.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
+                    for (ti, w) in candidates.into_iter().take(edges_per_node) {
+                        edges.push((src_i, ti, w));
+                    }
+                }
+                edges
+            });
+
+            let node_count = pts.len();
+            let edge_count = edges.len();
+            let mut degrees = vec![0usize; node_count.max(1)];
+            for (a_i, b_i, _w) in &edges {
+                if *a_i < degrees.len() {
+                    degrees[*a_i] += 1;
+                }
+                if *b_i < degrees.len() {
+                    degrees[*b_i] += 1;
+                }
+            }
+            let max_conn = degrees.iter().copied().max().unwrap_or(0);
+            let avg_conn = if node_count > 0 {
+                (2.0 * (edge_count as f32)) / (node_count as f32)
+            } else {
+                0.0
+            };
+
+            set_brainviz_display_nodes.set(node_count);
+            set_brainviz_display_edges.set(edge_count);
+            set_brainviz_display_avg_conn.set(avg_conn);
+            set_brainviz_display_max_conn.set(max_conn);
+            set_brainviz_edges.set(edges);
+            set_brainviz_points.set(pts);
         }
     });
 
     // BrainViz: rotating sphere + sampled connectivity (or causal graph)
     let brain_viz_ref = NodeRef::<leptos::html::Canvas>::new();
-    let brainviz_causal_hit_nodes = StoredValue::new(Vec::<charts::CausalHitNode>::new());
     Effect::new({
-        let runtime = runtime.clone();
+        let _runtime = runtime.clone();
         move |_| {
+            if dashboard_tab.get() != DashboardTab::BrainViz {
+                return;
+            }
+
             let expanded = brainviz_is_expanded.get();
             let step = steps.get(); // Track for reactivity
             let running = is_running.get();
             let idle_time = brainviz_idle_time.get(); // Idle animation time
             let view_mode = brainviz_view_mode.get();
+
+            // Hard stop: BrainViz does not render while the brain/game is running.
+            // We record state changes during running and allow replay while stopped.
+            if running {
+                return;
+            }
 
             let Some(canvas) = brain_viz_ref.get() else {
                 return;
@@ -2242,15 +2869,22 @@ fn App() -> impl IntoView {
 
                 let node_count = causal.nodes.len();
                 let edge_count = causal.edges.len();
-                let mut degree: std::collections::HashMap<u32, usize> =
-                    std::collections::HashMap::new();
-                for e in &causal.edges {
-                    let from = e.from;
-                    let to = e.to;
-                    *degree.entry(from).or_insert(0) += 1;
-                    *degree.entry(to).or_insert(0) += 1;
+                let mut id_to_idx: std::collections::HashMap<u32, usize> =
+                    std::collections::HashMap::with_capacity(node_count);
+                for (i, n) in causal.nodes.iter().enumerate() {
+                    id_to_idx.insert(n.id, i);
                 }
-                let max_conn = degree.values().copied().max().unwrap_or(0);
+
+                let mut degrees = vec![0usize; node_count.max(1)];
+                for e in &causal.edges {
+                    if let Some(&i) = id_to_idx.get(&e.from) {
+                        degrees[i] += 1;
+                    }
+                    if let Some(&i) = id_to_idx.get(&e.to) {
+                        degrees[i] += 1;
+                    }
+                }
+                let max_conn = degrees.iter().copied().max().unwrap_or(0);
                 let avg_conn = if node_count > 0 {
                     (2.0 * (edge_count as f32)) / (node_count as f32)
                 } else {
@@ -2260,7 +2894,6 @@ fn App() -> impl IntoView {
                 set_brainviz_display_edges.set(edge_count);
                 set_brainviz_display_avg_conn.set(avg_conn);
                 set_brainviz_display_max_conn.set(max_conn);
-                brainviz_degree_by_id.set_value(degree);
 
                 let opts_full = charts::CausalVizRenderOptions {
                     zoom,
@@ -2271,61 +2904,15 @@ fn App() -> impl IntoView {
                     draw_outline: false,
                     anim_time,
                 };
-                if let Ok(hits) = charts::draw_causal_graph(
+                let _ = charts::draw_causal_graph(
                     &canvas,
                     &causal.nodes,
                     &causal.edges,
                     "#0a0f1a",
                     opts_full,
-                ) {
-                    brainviz_causal_hit_nodes.set_value(hits);
-                }
+                );
             } else {
                 // Render substrate view
-                let points = brainviz_points.get();
-                let edges_per_node = brainviz_edges_per_node.get().clamp(1, 32) as usize;
-
-                let mut sampled: std::collections::HashSet<usize> =
-                    std::collections::HashSet::new();
-                sampled.extend(points.iter().map(|p| p.id as usize));
-
-                let edges: Vec<(u32, u32, f32)> = runtime.with_value(|r| {
-                    let mut edges: Vec<(u32, u32, f32)> = Vec::new();
-                    for p in &points {
-                        let src = p.id as usize;
-                        let mut candidates: Vec<(usize, f32)> = r
-                            .brain
-                            .neighbors(src)
-                            .filter(|(t, _w)| sampled.contains(t))
-                            .collect();
-                        candidates.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
-                        for (t, w) in candidates.into_iter().take(edges_per_node) {
-                            edges.push((p.id, t as u32, w));
-                        }
-                    }
-                    edges
-                });
-
-                let node_count = points.len();
-                let edge_count = edges.len();
-                let mut degree: std::collections::HashMap<u32, usize> =
-                    std::collections::HashMap::new();
-                for (a, b, _w) in &edges {
-                    *degree.entry(*a).or_insert(0) += 1;
-                    *degree.entry(*b).or_insert(0) += 1;
-                }
-                let max_conn = degree.values().copied().max().unwrap_or(0);
-                let avg_conn = if node_count > 0 {
-                    (2.0 * (edge_count as f32)) / (node_count as f32)
-                } else {
-                    0.0
-                };
-                set_brainviz_display_nodes.set(node_count);
-                set_brainviz_display_edges.set(edge_count);
-                set_brainviz_display_avg_conn.set(avg_conn);
-                set_brainviz_display_max_conn.set(max_conn);
-                brainviz_degree_by_id.set_value(degree);
-
                 let is_learning = learning_enabled.get();
                 let opts_full = charts::BrainVizRenderOptions {
                     zoom,
@@ -2338,11 +2925,21 @@ fn App() -> impl IntoView {
                     rotation_y: rot_y,
                     rotation_x: rot_x,
                 };
-                if let Ok(hits) = charts::draw_brain_connectivity_sphere(
-                    &canvas, &points, &edges, rot_y, "#0a0f1a", opts_full,
-                ) {
-                    brainviz_hit_nodes.set_value(hits);
-                }
+                brainviz_points.with(|points| {
+                    brainviz_edges.with(|edges| {
+                        brainviz_base_positions.with_value(|base_positions| {
+                            let _ = charts::draw_brain_connectivity_sphere(
+                                &canvas,
+                                points,
+                                base_positions.as_slice(),
+                                edges.as_slice(),
+                                "#0a0f1a",
+                                None,
+                                opts_full,
+                            );
+                        });
+                    });
+                });
             }
         }
     });
@@ -2354,6 +2951,141 @@ fn App() -> impl IntoView {
                 set_game_accuracies.set(accs);
             }
         });
+    });
+
+    // BrainViz replay driver: when replay is active, load the selected frame
+    // into the same `brainviz_points`/`brainviz_edges` signals used by the renderer.
+    Effect::new(move |_| {
+        if !brainviz_replay_active.get() {
+            return;
+        }
+
+        let kind = brainviz_replay_kind.get();
+        let idx = brainviz_replay_idx.get();
+
+        let reconstructed = brainviz_recordings.with_value(|recs| {
+            let rec = &recs[game_kind_index(kind)];
+            if rec.base_points.is_empty() || rec.deltas.is_empty() {
+                return None;
+            }
+            let idx = idx.min(rec.deltas.len().saturating_sub(1));
+
+            // Find nearest keyframe <= idx.
+            let mut kf_i = 0usize;
+            let mut kf: Option<&BrainvizKeyframe> = None;
+            for (i, frame) in &rec.keyframes {
+                if *i <= idx {
+                    kf_i = *i;
+                    kf = Some(frame);
+                } else {
+                    break;
+                }
+            }
+            let kf = kf.or_else(|| rec.keyframes.first().map(|(_, f)| f))?;
+
+            let mut amp01 = kf.amp01.clone();
+            let mut phase = kf.phase.clone();
+            let mut salience01 = kf.salience01.clone();
+            let mut edge_w = kf.edge_weights.clone();
+
+            for df in rec
+                .deltas
+                .iter()
+                .take(idx.saturating_add(1))
+                .skip(kf_i.saturating_add(1))
+            {
+                for nd in &df.node_deltas {
+                    let i = nd.idx as usize;
+                    if (nd.mask & 1) != 0 {
+                        amp01[i] = nd.amp01;
+                    }
+                    if (nd.mask & 2) != 0 {
+                        phase[i] = nd.phase;
+                    }
+                    if (nd.mask & 4) != 0 {
+                        salience01[i] = nd.salience01;
+                    }
+                }
+                for ed in &df.edge_deltas {
+                    let i = ed.idx as usize;
+                    if i < edge_w.len() {
+                        edge_w[i] = ed.weight;
+                    }
+                }
+            }
+
+            let step = rec.deltas[idx].step;
+            let mut points = rec.base_points.clone();
+            for (i, p) in points.iter_mut().enumerate() {
+                p.amp01 = amp01[i];
+                p.phase = phase[i];
+                p.salience01 = salience01[i];
+                // `amp` isn't used by BrainViz rendering; keep it consistent.
+                p.amp = p.amp01;
+            }
+
+            let edges: Vec<(usize, usize, f32)> = rec
+                .edge_pairs
+                .iter()
+                .zip(edge_w.iter())
+                .map(|(&(a, b), &w)| (a, b, w))
+                .collect();
+
+            Some((step, points, edges))
+        });
+
+        if let Some((step, points, edges)) = reconstructed {
+            let node_count = points.len();
+            let edge_count = edges.len();
+            let mut degrees = vec![0usize; node_count.max(1)];
+            for (a_i, b_i, _w) in &edges {
+                if *a_i < degrees.len() {
+                    degrees[*a_i] += 1;
+                }
+                if *b_i < degrees.len() {
+                    degrees[*b_i] += 1;
+                }
+            }
+            let max_conn = degrees.iter().copied().max().unwrap_or(0);
+            let avg_conn = if node_count > 0 {
+                (2.0 * (edge_count as f32)) / (node_count as f32)
+            } else {
+                0.0
+            };
+
+            set_brainviz_display_nodes.set(node_count);
+            set_brainviz_display_edges.set(edge_count);
+            set_brainviz_display_avg_conn.set(avg_conn);
+            set_brainviz_display_max_conn.set(max_conn);
+
+            // For replay, we always show the substrate view.
+            set_brainviz_view_mode.set("substrate");
+            set_brainviz_points.set(points);
+            set_brainviz_edges.set(edges);
+
+            // Keep base positions in sync with the replay sample size.
+            // (Renderer falls back if mismatched, but this preserves stability.)
+            if brainviz_base_positions_n.get_value() != node_count {
+                let npos = node_count;
+                let n_f = npos.max(1) as f64;
+                let golden = 2.399_963_229_728_653_5_f64;
+                let mut base: Vec<(f64, f64, f64)> = Vec::with_capacity(npos);
+                for i in 0..npos {
+                    let i_f = i as f64;
+                    let y = 1.0 - 2.0 * ((i_f + 0.5) / n_f);
+                    let r = (1.0 - y * y).sqrt();
+                    let theta = golden * i_f;
+                    let x = r * theta.cos();
+                    let z = r * theta.sin();
+                    base.push((x, y, z));
+                }
+                brainviz_base_positions.set_value(base);
+                brainviz_base_positions_n.set_value(npos);
+            }
+
+            // Surface the replay step in status for quick sanity checking.
+            set_status.set(format!("replay step {step}"));
+        }
     });
 
     // Restore per-game stats (counters + charts) from localStorage once at startup.
@@ -2627,6 +3359,7 @@ fn App() -> impl IntoView {
                 set_sidebar_open=set_sidebar_open
                 gpu_status=gpu_status
                 status=status
+                gpu_pending=gpu_step_pending
                 is_running=is_running
                 theme=theme
                 set_theme=set_theme
@@ -4814,7 +5547,11 @@ fn App() -> impl IntoView {
 
                                     <p class="subtle">{move || if brainviz_view_mode.get() == "causal" { "Causal view: symbol-to-symbol temporal edges. Node size = frequency, edge color = causal strength." } else { "Substrate view: sampled unit nodes; edges show sparse connection weights." }}</p>
                                     <div class="callout">
-                                        <p>"Drag to rotate • Shift+drag to pan • Scroll to zoom • Hover for details"</p>
+                                        <p>"Rotating snapshot • Click Refresh to resample • Use Replay to inspect history"</p>
+                                    </div>
+
+                                    <div class="subtle" style="margin-top: 6px;">
+                                        "Changes to Nodes/Edges take effect on Refresh."
                                     </div>
 
                                     <div class="subtle" style="margin-top: 8px;">
@@ -4907,6 +5644,14 @@ fn App() -> impl IntoView {
                                             </div>
                                         </div>
                                         <button
+                                            class="btn sm primary"
+                                            on:click=move |_| {
+                                                set_brainviz_snapshot_refresh.update(|v| *v = v.wrapping_add(1));
+                                            }
+                                        >
+                                            "Refresh snapshot"
+                                        </button>
+                                        <button
                                             class="btn sm"
                                             on:click=move |_| {
                                                 set_brainviz_zoom.set(1.0);
@@ -4918,6 +5663,313 @@ fn App() -> impl IntoView {
                                         >
                                             "Reset view"
                                         </button>
+                                    </div>
+
+                                    <div class="card" style="margin-top: 10px; padding: 10px;">
+                                        <div class="row end wrap" style="gap: 10px;">
+                                            <div class="subtle" style="flex: 1; min-width: 220px;">
+                                                {move || {
+                                                    let running = is_running.get();
+                                                    let kind = game_kind.get();
+                                                    let frames = brainviz_recordings.with_value(|recs| {
+                                                        recs[game_kind_index(kind)].deltas.len()
+                                                    });
+                                                    if running {
+                                                        format!(
+                                                            "BrainViz paused while running • recording {} frames ({}).",
+                                                            frames,
+                                                            kind.label()
+                                                        )
+                                                    } else if brainviz_replay_active.get() {
+                                                        let rk = brainviz_replay_kind.get();
+                                                        let ridx = brainviz_replay_idx.get();
+                                                        let rframes = brainviz_recordings.with_value(|recs| {
+                                                            recs[game_kind_index(rk)].deltas.len()
+                                                        });
+                                                        let rstep = brainviz_recordings.with_value(|recs| {
+                                                            recs[game_kind_index(rk)]
+                                                                .deltas
+                                                                .get(ridx)
+                                                                .map(|f| f.step)
+                                                                .unwrap_or(0)
+                                                        });
+                                                        let kstep = brainviz_recordings.with_value(|recs| {
+                                                            let rec = &recs[game_kind_index(rk)];
+                                                            rec.keyframes
+                                                                .first()
+                                                                .map(|(_, k)| k.step)
+                                                                .unwrap_or(0)
+                                                        });
+                                                        format!(
+                                                            "Replay: {} frame {}/{} • step {} (k0 step {})",
+                                                            rk.display_name(),
+                                                            ridx.saturating_add(1),
+                                                            rframes,
+                                                            rstep,
+                                                            kstep
+                                                        )
+                                                    } else {
+                                                        format!(
+                                                            "Recorder: {} frames stored for {}",
+                                                            frames,
+                                                            kind.display_name()
+                                                        )
+                                                    }
+                                                }}
+                                            </div>
+
+                                            <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                <input
+                                                    type="checkbox"
+                                                    prop:checked=move || brainviz_record_enabled.get()
+                                                    on:change=move |ev| {
+                                                        set_brainviz_record_enabled.set(event_target_checked(&ev));
+                                                    }
+                                                />
+                                                <span>"Record"</span>
+                                            </label>
+
+                                            <button
+                                                class="btn sm"
+                                                on:click=move |_| {
+                                                    let kind = game_kind.get_untracked();
+                                                    brainviz_recordings.update_value(|recs| {
+                                                        recs[game_kind_index(kind)] = BrainvizGameRecording::default();
+                                                    });
+                                                    // If we're replaying this game, exit replay.
+                                                    if brainviz_replay_active.get_untracked() && brainviz_replay_kind.get_untracked() == kind {
+                                                        set_brainviz_replay_active.set(false);
+                                                    }
+                                                }
+                                            >
+                                                "Clear clip"
+                                            </button>
+
+                                            <button
+                                                class=move || if brainviz_replay_active.get() { "btn sm" } else { "btn sm primary" }
+                                                on:click=move |_| {
+                                                    // Stop the brain before replaying.
+                                                    (do_stop_sv.get_value())();
+
+                                                    let kind = game_kind.get_untracked();
+                                                    let last = brainviz_recordings.with_value(|recs| {
+                                                        recs[game_kind_index(kind)].deltas.len().saturating_sub(1)
+                                                    });
+                                                    set_brainviz_replay_kind.set(kind);
+                                                    set_brainviz_replay_idx.set(last);
+                                                    set_brainviz_replay_active.set(true);
+                                                }
+                                            >
+                                                "Replay"
+                                            </button>
+
+                                            <Show when=move || brainviz_replay_active.get()>
+                                                <button
+                                                    class="btn sm"
+                                                    on:click=move |_| {
+                                                        set_brainviz_replay_active.set(false);
+                                                    }
+                                                >
+                                                    "Exit"
+                                                </button>
+                                            </Show>
+                                        </div>
+
+                                        <div class="row end wrap" style="gap: 10px; margin-top: 10px;">
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                                <span>"Active amp≥"</span>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="0"
+                                                    max="1"
+                                                    step="0.01"
+                                                    style="width: 90px;"
+                                                    prop:value=move || format!("{:.2}", brainviz_active_amp_threshold.get())
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                            set_brainviz_active_amp_threshold.set(v.clamp(0.0, 1.0));
+                                                        }
+                                                    }
+                                                />
+                                            </div>
+
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                                <span>"Phase eps (active)"</span>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="0"
+                                                    max="1"
+                                                    step="0.01"
+                                                    style="width: 90px;"
+                                                    prop:value=move || format!("{:.2}", brainviz_eps_phase_active.get())
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                            set_brainviz_eps_phase_active.set(v.max(0.0));
+                                                        }
+                                                    }
+                                                />
+                                            </div>
+
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                                <span>"Phase eps (inactive)"</span>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="0"
+                                                    max="2"
+                                                    step="0.01"
+                                                    style="width: 90px;"
+                                                    prop:value=move || format!("{:.2}", brainviz_eps_phase_inactive.get())
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                            set_brainviz_eps_phase_inactive.set(v.max(0.0));
+                                                        }
+                                                    }
+                                                />
+                                            </div>
+
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                                <span>"Record every (trials)"</span>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="1"
+                                                    max="100"
+                                                    step="1"
+                                                    style="width: 90px;"
+                                                    prop:value=move || brainviz_record_every_trials.get().to_string()
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                            set_brainviz_record_every_trials.set(v.max(1));
+                                                        }
+                                                    }
+                                                />
+                                            </div>
+
+                                            <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                <input
+                                                    type="checkbox"
+                                                    prop:checked=move || brainviz_record_edges.get()
+                                                    on:change=move |ev| {
+                                                        set_brainviz_record_edges.set(event_target_checked(&ev));
+                                                    }
+                                                />
+                                                <span>"Edges"</span>
+                                            </label>
+
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                                <span>"Edge eps"</span>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="0"
+                                                    max="1"
+                                                    step="0.001"
+                                                    style="width: 90px;"
+                                                    prop:value=move || format!("{:.3}", brainviz_eps_weight.get())
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<f32>() {
+                                                            set_brainviz_eps_weight.set(v.max(0.0));
+                                                        }
+                                                    }
+                                                />
+                                            </div>
+
+                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 190px;">
+                                                <span>"Edges every (trials)"</span>
+                                                <input
+                                                    class="input compact"
+                                                    type="number"
+                                                    min="1"
+                                                    max="100"
+                                                    step="1"
+                                                    style="width: 90px;"
+                                                    prop:value=move || brainviz_record_edges_every_trials.get().to_string()
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                            set_brainviz_record_edges_every_trials.set(v.max(1));
+                                                        }
+                                                    }
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <Show when=move || brainviz_replay_active.get()>
+                                            <div class="row end wrap" style="gap: 10px; margin-top: 10px;">
+                                                <label class="label">
+                                                    <span>"Game"</span>
+                                                    <select
+                                                        class="input"
+                                                        on:change=move |ev| {
+                                                            let v = event_target_value(&ev);
+                                                            let kind = match v.as_str() {
+                                                                "spot" => GameKind::Spot,
+                                                                "bandit" => GameKind::Bandit,
+                                                                "spot_reversal" => GameKind::SpotReversal,
+                                                                "spotxy" => GameKind::SpotXY,
+                                                                "pong" => GameKind::Pong,
+                                                                "sequence" => GameKind::Sequence,
+                                                                "text" => GameKind::Text,
+                                                                "replay" => GameKind::Replay,
+                                                                _ => GameKind::Spot,
+                                                            };
+                                                            let last = brainviz_recordings.with_value(|recs| {
+                                                                recs[game_kind_index(kind)].deltas.len().saturating_sub(1)
+                                                            });
+                                                            set_brainviz_replay_kind.set(kind);
+                                                            set_brainviz_replay_idx.set(last);
+                                                        }
+                                                    >
+                                                        <option value="spot" selected=move || brainviz_replay_kind.get() == GameKind::Spot>"Spot"</option>
+                                                        <option value="bandit" selected=move || brainviz_replay_kind.get() == GameKind::Bandit>"Bandit"</option>
+                                                        <option value="spot_reversal" selected=move || brainviz_replay_kind.get() == GameKind::SpotReversal>"Reversal"</option>
+                                                        <option value="spotxy" selected=move || brainviz_replay_kind.get() == GameKind::SpotXY>"SpotXY"</option>
+                                                        <option value="pong" selected=move || brainviz_replay_kind.get() == GameKind::Pong>"Pong"</option>
+                                                        <option value="sequence" selected=move || brainviz_replay_kind.get() == GameKind::Sequence>"Sequence"</option>
+                                                        <option value="text" selected=move || brainviz_replay_kind.get() == GameKind::Text>"Text"</option>
+                                                        <option value="replay" selected=move || brainviz_replay_kind.get() == GameKind::Replay>"Replay"</option>
+                                                    </select>
+                                                </label>
+
+                                                <button class="btn sm" on:click=move |_| {
+                                                    set_brainviz_replay_idx.update(|i| *i = i.saturating_sub(1));
+                                                }>
+                                                    "◀"
+                                                </button>
+
+                                                <input
+                                                    class="input"
+                                                    type="range"
+                                                    min="0"
+                                                    prop:max=move || {
+                                                        let k = brainviz_replay_kind.get();
+                                                        let n = brainviz_recordings.with_value(|recs| {
+                                                                recs[game_kind_index(k)].deltas.len()
+                                                        });
+                                                        n.saturating_sub(1).to_string()
+                                                    }
+                                                    prop:value=move || brainviz_replay_idx.get().to_string()
+                                                    on:input=move |ev| {
+                                                        if let Ok(v) = event_target_value(&ev).parse::<usize>() {
+                                                            set_brainviz_replay_idx.set(v);
+                                                        }
+                                                    }
+                                                    style="flex: 1; min-width: 220px;"
+                                                />
+
+                                                <button class="btn sm" on:click=move |_| {
+                                                    let k = brainviz_replay_kind.get_untracked();
+                                                    let n = brainviz_recordings.with_value(|recs| {
+                                                        recs[game_kind_index(k)].deltas.len()
+                                                    });
+                                                    set_brainviz_replay_idx.update(|i| *i = (*i + 1).min(n.saturating_sub(1)));
+                                                }>
+                                                    "▶"
+                                                </button>
+                                            </div>
+                                        </Show>
                                     </div>
 
                                     <div style="position: relative;">
@@ -4932,134 +5984,7 @@ fn App() -> impl IntoView {
                                                     "canvas brainviz"
                                                 }
                                             }
-                                            style="touch-action: none;"
-                                            on:wheel=move |ev| {
-                                                ev.prevent_default();
-                                                let dy = ev.delta_y() as f32;
-                                                let factor = (1.0 + (-dy * 0.001)).clamp(0.85, 1.18);
-                                                set_brainviz_zoom.update(|z| {
-                                                    *z = (*z * factor).clamp(0.5, 4.0);
-                                                });
-                                            }
-                                            on:mousedown=move |ev| {
-                                                let Some(canvas) = brain_viz_ref.get() else { return; };
-                                                let rect = canvas.get_bounding_client_rect();
-                                                let css_x = (ev.client_x() as f64) - rect.left();
-                                                let css_y = (ev.client_y() as f64) - rect.top();
-                                                brainviz_dragging.set_value(true);
-                                                brainviz_last_drag_xy.set_value((css_x, css_y));
-                                            }
-                                            on:mouseup=move |_| {
-                                                brainviz_dragging.set_value(false);
-                                            }
-                                            on:mouseleave=move |_| {
-                                                brainviz_dragging.set_value(false);
-                                                set_brainviz_hover.set(None);
-                                            }
-                                            on:mousemove=move |ev| {
-                                                let Some(canvas) = brain_viz_ref.get() else { return; };
-                                                let rect = canvas.get_bounding_client_rect();
-                                                let css_x = (ev.client_x() as f64) - rect.left();
-                                                let css_y = (ev.client_y() as f64) - rect.top();
-
-                                                let rw = rect.width().max(1.0);
-                                                let rh = rect.height().max(1.0);
-                                                if css_x < 0.0 || css_y < 0.0 || css_x > rw || css_y > rh {
-                                                    set_brainviz_hover.set(None);
-                                                    return;
-                                                }
-
-                                                if brainviz_dragging.get_value() {
-                                                    let (lx, ly) = brainviz_last_drag_xy.get_value();
-                                                    let dx = css_x - lx;
-                                                    let dy = css_y - ly;
-
-                                                    // Shift+drag = pan, regular drag = rotate (both axes)
-                                                    if ev.shift_key() {
-                                                        set_brainviz_pan_x.update(|v| *v += dx as f32);
-                                                        set_brainviz_pan_y.update(|v| *v += dy as f32);
-                                                    } else {
-                                                        // Horizontal drag = Y-axis rotation
-                                                        set_brainviz_manual_rotation.update(|v| *v += (dx as f32) * 0.01);
-                                                        // Vertical drag = X-axis rotation
-                                                        set_brainviz_rotation_x.update(|v| *v += (dy as f32) * 0.01);
-                                                    }
-                                                    brainviz_last_drag_xy.set_value((css_x, css_y));
-                                                    return;
-                                                }
-
-                                                let mut best: Option<(u32, f64, f64)> = None; // (id, css_x, css_y)
-                                                brainviz_hit_nodes.with_value(|hits| {
-                                                    let mut best_d2: f64 = f64::INFINITY;
-                                                    for hn in hits {
-                                                        let dx = hn.x - css_x;
-                                                        let dy = hn.y - css_y;
-                                                        let d2 = dx * dx + dy * dy;
-                                                        let r = hn.r + 4.0;
-                                                        if d2 <= r * r && d2 < best_d2 {
-                                                            best_d2 = d2;
-                                                            best = Some((hn.id, hn.x, hn.y));
-                                                        }
-                                                    }
-                                                });
-
-                                                set_brainviz_hover.set(best);
-                                            }
                                         ></canvas>
-
-                                        <Show when=move || brainviz_hover.get().is_some()>
-                                            <div style=move || {
-                                                let Some((_id, x, y)) = brainviz_hover.get() else { return "display: none;".to_string(); };
-                                                format!(
-                                                    "position: absolute; left: {:.0}px; top: {:.0}px; transform: translate(10px, -10px); padding: 8px 10px; background: rgba(10,15,26,0.92); border: 1px solid rgba(122,162,255,0.25); border-radius: 10px; font-size: 12px; color: rgba(232,236,255,0.95); pointer-events: none; max-width: 260px;",
-                                                    x,
-                                                    y
-                                                )
-                                            }>
-                                                {move || {
-                                                    let Some((id, _x, _y)) = brainviz_hover.get() else { return "".to_string(); };
-                                                    let degree = brainviz_degree_by_id
-                                                        .with_value(|m| m.get(&id).copied().unwrap_or(0));
-                                                    if brainviz_view_mode.get() == "causal" {
-                                                        let g = brainviz_causal_graph.get();
-                                                        let n = g
-                                                            .nodes
-                                                            .iter()
-                                                            .find(|n| n.id == id);
-                                                        if let Some(n) = n {
-                                                            format!(
-                                                                "symbol={}  count={:.1}  conn={}",
-                                                                n.name, n.base_count, degree
-                                                            )
-                                                        } else {
-                                                            format!("id={}  conn={}", id, degree)
-                                                        }
-                                                    } else {
-                                                        let p = brainviz_points
-                                                            .get()
-                                                            .into_iter()
-                                                            .find(|p| p.id == id);
-                                                        if let Some(p) = p {
-                                                            let kind = if p.is_sensor_member {
-                                                                "sensor"
-                                                            } else if p.is_group_member {
-                                                                "group"
-                                                            } else if p.is_reserved {
-                                                                "reserved"
-                                                            } else {
-                                                                "unit"
-                                                            };
-                                                            format!(
-                                                                "id={}  kind={}  conn={}  amp01={:.2}  age={:.2}",
-                                                                p.id, kind, degree, p.amp01, p.rel_age
-                                                            )
-                                                        } else {
-                                                            format!("id={}  conn={}", id, degree)
-                                                        }
-                                                    }
-                                                }}
-                                            </div>
-                                        </Show>
                                     </div>
 
                                     // Legend with node type descriptions
@@ -5096,6 +6021,272 @@ fn App() -> impl IntoView {
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+                            </div>
+                        </Show>
+
+
+                        <Show when=move || dashboard_tab.get() == DashboardTab::Inspect>
+                            <div class="stack">
+                                <div class="card">
+                                    <div class="row end wrap" style="justify-content: space-between; gap: 10px;">
+                                        <div>
+                                            <h3 class="card-title">"🔎 Inspect"</h3>
+                                            <div class="subtle">
+                                                "Lightweight diagnostics from the current BrainViz snapshot."
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            class="btn sm primary"
+                                            on:click=move |_| {
+                                                set_brainviz_snapshot_refresh.update(|v| *v = v.wrapping_add(1));
+                                            }
+                                        >
+                                            "Refresh snapshot"
+                                        </button>
+                                    </div>
+
+                                    <div class="subtle" style="margin-top: 10px;">
+                                        {move || {
+                                            let n = brainviz_display_nodes.get();
+                                            let e = brainviz_display_edges.get();
+                                            let avg = brainviz_display_avg_conn.get();
+                                            let maxc = brainviz_display_max_conn.get();
+                                            format!("Snapshot: {} nodes • {} edges • avg {:.2} • max {}", n, e, avg, maxc)
+                                        }}
+                                    </div>
+
+                                    <div class="row wrap" style="margin-top: 12px; gap: 14px; align-items: flex-start;">
+                                        <div style="min-width: 260px;">
+                                            <div class="subtle">{move || format!("Trials: {} • recent rate: {:.0}%", trials.get(), recent_rate.get() * 100.0)}</div>
+                                            <div class="subtle">{move || format!("Correct: {} • Incorrect: {}", correct_count.get(), incorrect_count.get())}</div>
+                                            <div class="subtle">{move || format!("Last: action={} • reward={:+.2}", last_action.get(), last_reward.get())}</div>
+                                            <div class="subtle" style="margin-top: 6px; font-weight: 800;">
+                                                {move || learning_milestone.get()}
+                                            </div>
+                                        </div>
+
+                                        <div style="min-width: 280px;">
+                                            <div class="subtle" style="margin-bottom: 6px;">"Perf (last-100 rate)"</div>
+                                            <canvas
+                                                node_ref=inspect_perf_spark_ref
+                                                width="280"
+                                                height="60"
+                                                class="canvas"
+                                                style="border: 1px solid var(--border); border-radius: 10px;"
+                                            ></canvas>
+                                        </div>
+
+                                        <div style="min-width: 280px;">
+                                            <div class="subtle" style="margin-bottom: 6px;">"Reward"</div>
+                                            <canvas
+                                                node_ref=inspect_reward_spark_ref
+                                                width="280"
+                                                height="60"
+                                                class="canvas"
+                                                style="border: 1px solid var(--border); border-radius: 10px;"
+                                            ></canvas>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"Phase histogram"</h3>
+                                    <pre class="pre">{move || {
+                                        // 16-bin histogram over [0, 2π)
+                                        let bins = 16usize;
+                                        let tau = 2.0 * std::f32::consts::PI;
+                                        let mut counts = vec![0u32; bins];
+                                        let mut total = 0u32;
+                                        brainviz_points.with(|pts| {
+                                            for p in pts {
+                                                let mut ph = p.phase;
+                                                while ph < 0.0 { ph += tau; }
+                                                while ph >= tau { ph -= tau; }
+                                                let b = (((ph / tau) * (bins as f32)) as usize).min(bins - 1);
+                                                counts[b] += 1;
+                                                total += 1;
+                                            }
+                                        });
+                                        let maxc = counts.iter().copied().max().unwrap_or(1).max(1);
+                                        let mut out = String::new();
+                                        out.push_str(&format!("total={} bins={}\n\n", total, bins));
+                                        for (i, c) in counts.iter().enumerate() {
+                                            let width = (((*c as f32) / (maxc as f32)) * 24.0).round() as usize;
+                                            let bar = "▇".repeat(width);
+                                            out.push_str(&format!("{:>2}: {:>4} {}\n", i, c, bar));
+                                        }
+                                        out
+                                    }}</pre>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"Top-K units (by salience01)"</h3>
+                                    <pre class="pre">{move || {
+                                        let mut rows: Vec<(u32, f32, f32, f32, &'static str)> = Vec::new();
+                                        brainviz_points.with(|pts| {
+                                            for p in pts {
+                                                let kind = if p.is_sensor_member {
+                                                    "sensor"
+                                                } else if p.is_group_member {
+                                                    "group"
+                                                } else if p.is_reserved {
+                                                    "reserved"
+                                                } else {
+                                                    "unit"
+                                                };
+                                                rows.push((p.id, p.salience01, p.amp01, p.rel_age, kind));
+                                            }
+                                        });
+                                        rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+                                        let k = 12usize.min(rows.len());
+                                        let mut out = String::new();
+                                        out.push_str("id       kind      salience  amp01   rel_age\n");
+                                        out.push_str("--------------------------------------------\n");
+                                        for (id, sal, amp, age, kind) in rows.into_iter().take(k) {
+                                            out.push_str(&format!("{:>7}  {:<8}  {:>7.3}  {:>5.2}  {:>7.2}\n", id, kind, sal, amp, age));
+                                        }
+                                        out
+                                    }}</pre>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"Neighborhood lens"</h3>
+                                    <div class="row end wrap" style="gap: 10px;">
+                                        <label class="label">
+                                            <span>"Unit id"</span>
+                                            <input
+                                                class="input compact"
+                                                type="number"
+                                                min="0"
+                                                style="width: 120px;"
+                                                prop:value=move || inspect_neighbor_unit_id.get().to_string()
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                        set_inspect_neighbor_unit_id.set(v);
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <button
+                                            class="btn sm"
+                                            on:click={
+                                                let runtime = runtime.clone();
+                                                move |_| {
+                                                    let id = inspect_neighbor_unit_id.get_untracked() as usize;
+                                                    let mut neigh: Vec<(usize, f32)> = runtime
+                                                        .with_value(|r| r.brain.neighbors(id).collect());
+                                                    neigh.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()));
+                                                    let mut out = String::new();
+                                                    out.push_str(&format!("neighbors({}) top={}\n\n", id, 16));
+                                                    for (t, w) in neigh.into_iter().take(16) {
+                                                        out.push_str(&format!("{:>6}  {:+.4}\n", t, w));
+                                                    }
+                                                    set_inspect_neighbors_text.set(out);
+                                                }
+                                            }
+                                        >
+                                            "Load neighbors"
+                                        </button>
+                                    </div>
+                                    <pre class="pre" style="margin-top: 10px;">{move || inspect_neighbors_text.get()}</pre>
+                                    <div class="subtle">"Tip: copy a unit id from Top-K above."</div>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"Single-unit oscilloscope"</h3>
+                                    <div class="row end wrap" style="gap: 10px;">
+                                        <label class="label">
+                                            <span>"Unit id"</span>
+                                            <input
+                                                class="input compact"
+                                                type="number"
+                                                min="0"
+                                                style="width: 120px;"
+                                                prop:value=move || inspect_scope_unit_id.get().to_string()
+                                                on:input=move |ev| {
+                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                        set_inspect_scope_unit_id.set(v);
+                                                    }
+                                                }
+                                            />
+                                        </label>
+                                        <div class="subtle">"Samples on Refresh / Replay step"</div>
+                                        <button
+                                            class="btn sm"
+                                            on:click=move |_| {
+                                                inspect_scope_amp.update_value(|h| h.clear());
+                                                inspect_scope_phase_sin.update_value(|h| h.clear());
+                                                set_inspect_scope_version.update(|v| *v = v.wrapping_add(1));
+                                            }
+                                        >
+                                            "Clear"
+                                        </button>
+                                    </div>
+
+                                    <div class="row wrap" style="margin-top: 10px; gap: 14px;">
+                                        <div style="min-width: 280px;">
+                                            <div class="subtle" style="margin-bottom: 6px;">"amp01"</div>
+                                            <canvas
+                                                node_ref=inspect_scope_amp_ref
+                                                width="280"
+                                                height="60"
+                                                class="canvas"
+                                                style="border: 1px solid var(--border); border-radius: 10px;"
+                                            ></canvas>
+                                        </div>
+                                        <div style="min-width: 280px;">
+                                            <div class="subtle" style="margin-bottom: 6px;">"sin(phase)"</div>
+                                            <canvas
+                                                node_ref=inspect_scope_phase_ref
+                                                width="280"
+                                                height="60"
+                                                class="canvas"
+                                                style="border: 1px solid var(--border); border-radius: 10px;"
+                                            ></canvas>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"State change log (per trial)"</h3>
+                                    <pre class="pre">{move || {
+                                        let _ = inspect_trial_events_version.get();
+                                        let events: Vec<InspectTrialEvent> =
+                                            inspect_trial_events.with_value(|v| v.clone());
+                                        if events.is_empty() {
+                                            return "(no trials yet)".to_string();
+                                        }
+                                        let tail = events.into_iter().rev().take(60).collect::<Vec<_>>();
+                                        let mut out = String::new();
+                                        for e in tail.into_iter().rev() {
+                                            out.push_str(&format!(
+                                                "step {:>6}  {}  trial {:>5}  rate {:>5.1}%  reward {:+.2}  action {}\n",
+                                                e.step,
+                                                e.game.label(),
+                                                e.trial,
+                                                e.recent_rate * 100.0,
+                                                e.reward,
+                                                e.action
+                                            ));
+                                        }
+                                        out
+                                    }}</pre>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"Recent actions"</h3>
+                                    <pre class="pre">{move || {
+                                        let events: Vec<String> = choice_events.with_value(|v| v.clone());
+                                        let tail = events.into_iter().rev().take(30).collect::<Vec<_>>();
+                                        let mut out = String::new();
+                                        for (i, a) in tail.into_iter().rev().enumerate() {
+                                            out.push_str(&format!("{:>2}: {}\n", i, a));
+                                        }
+                                        if out.is_empty() { "(no actions yet)".to_string() } else { out }
+                                    }}</pre>
+                                    <div class="subtle">"(Next: local neighborhood viz + richer per-trial deltas.)"</div>
                                 </div>
                             </div>
                         </Show>

@@ -153,6 +153,17 @@ button {
   animation: pulse 1s infinite;
 }
 
+.gpu-pending {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #f59e0b;
+  border: 1px solid #f59e0b55;
+  background: #f59e0b12;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 @keyframes pulse {
   0% { opacity: 0.35; transform: scale(0.9); }
   50% { opacity: 1.0; transform: scale(1.25); }
