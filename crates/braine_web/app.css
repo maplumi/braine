@@ -2122,6 +2122,26 @@ a.good { color: var(--accent-2); }
   gap: 12px;
 }
 
+.brainviz-recorder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+  margin-top: 10px;
+}
+
+.brainviz-recorder-grid .input.compact {
+  width: 100%;
+  max-width: 120px;
+}
+
+.brainviz-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 18px; /* visually aligns checkbox with stacked label inputs */
+}
+
 .apply-toast {
   color: rgb(74, 222, 128);
   font-weight: 800;

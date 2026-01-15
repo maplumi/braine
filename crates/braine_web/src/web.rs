@@ -5780,8 +5780,8 @@ fn App() -> impl IntoView {
                                             </Show>
                                         </div>
 
-                                        <div class="row end wrap" style="gap: 10px; margin-top: 10px;">
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                        <div class="brainviz-recorder-grid">
+                                            <label class="label stack">
                                                 <span>"Active amp≥"</span>
                                                 <input
                                                     class="input compact"
@@ -5789,7 +5789,6 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="1"
                                                     step="0.01"
-                                                    style="width: 90px;"
                                                     prop:value=move || format!("{:.2}", brainviz_active_amp_threshold.get())
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
@@ -5797,9 +5796,9 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                 />
-                                            </div>
+                                            </label>
 
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                            <label class="label stack">
                                                 <span>"Phase eps (active)"</span>
                                                 <input
                                                     class="input compact"
@@ -5807,7 +5806,6 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="1"
                                                     step="0.01"
-                                                    style="width: 90px;"
                                                     prop:value=move || format!("{:.2}", brainviz_eps_phase_active.get())
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
@@ -5815,9 +5813,9 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                 />
-                                            </div>
+                                            </label>
 
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                            <label class="label stack">
                                                 <span>"Phase eps (inactive)"</span>
                                                 <input
                                                     class="input compact"
@@ -5825,7 +5823,6 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="2"
                                                     step="0.01"
-                                                    style="width: 90px;"
                                                     prop:value=move || format!("{:.2}", brainviz_eps_phase_inactive.get())
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
@@ -5833,9 +5830,9 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                 />
-                                            </div>
+                                            </label>
 
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                            <label class="label stack">
                                                 <span>"Record every (trials)"</span>
                                                 <input
                                                     class="input compact"
@@ -5843,7 +5840,6 @@ fn App() -> impl IntoView {
                                                     min="1"
                                                     max="100"
                                                     step="1"
-                                                    style="width: 90px;"
                                                     prop:value=move || brainviz_record_every_trials.get().to_string()
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<u32>() {
@@ -5851,9 +5847,9 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                 />
-                                            </div>
+                                            </label>
 
-                                            <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                            <label class="label brainviz-checkbox">
                                                 <input
                                                     type="checkbox"
                                                     prop:checked=move || brainviz_record_edges.get()
@@ -5864,7 +5860,7 @@ fn App() -> impl IntoView {
                                                 <span>"Edges"</span>
                                             </label>
 
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 170px;">
+                                            <label class="label stack">
                                                 <span>"Edge eps"</span>
                                                 <input
                                                     class="input compact"
@@ -5872,7 +5868,6 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="1"
                                                     step="0.001"
-                                                    style="width: 90px;"
                                                     prop:value=move || format!("{:.3}", brainviz_eps_weight.get())
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
@@ -5880,9 +5875,9 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                 />
-                                            </div>
+                                            </label>
 
-                                            <div class="label" style="display: flex; flex-direction: column; gap: 2px; min-width: 190px;">
+                                            <label class="label stack">
                                                 <span>"Edges every (trials)"</span>
                                                 <input
                                                     class="input compact"
@@ -5890,7 +5885,6 @@ fn App() -> impl IntoView {
                                                     min="1"
                                                     max="100"
                                                     step="1"
-                                                    style="width: 90px;"
                                                     prop:value=move || brainviz_record_edges_every_trials.get().to_string()
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<u32>() {
@@ -5898,7 +5892,7 @@ fn App() -> impl IntoView {
                                                         }
                                                     }
                                                 />
-                                            </div>
+                                            </label>
                                         </div>
 
                                         <Show when=move || brainviz_replay_active.get()>
