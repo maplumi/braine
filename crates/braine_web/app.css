@@ -1313,6 +1313,86 @@ a.good { color: var(--accent-2); }
   line-height: 1.6;
 }
 
+/* Markdown docs (e.g. The Math Behind) */
+.docs-markdown {
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.75;
+}
+
+.docs-markdown h1,
+.docs-markdown h2,
+.docs-markdown h3 {
+  margin: 18px 0 10px 0;
+  color: var(--accent);
+}
+
+.docs-markdown h1 {
+  font-size: 1.25rem;
+}
+
+.docs-markdown h2 {
+  font-size: 1.1rem;
+}
+
+.docs-markdown h3 {
+  font-size: 1rem;
+}
+
+.docs-markdown p {
+  margin: 10px 0;
+}
+
+.docs-markdown ul,
+.docs-markdown ol {
+  margin: 10px 0;
+  padding-left: 22px;
+}
+
+.docs-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 0 6px;
+  border-radius: 6px;
+}
+
+.docs-markdown pre {
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.docs-markdown pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.docs-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+
+.docs-markdown th,
+.docs-markdown td {
+  border: 1px solid var(--border);
+  padding: 8px;
+  text-align: left;
+}
+
+.docs-markdown blockquote {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--panel) 75%, var(--bg));
+  border-radius: 8px;
+}
+
 /* Mobile responsive styles */
 @media (min-width: 769px) and (max-width: 1199px) {
   .content-split {

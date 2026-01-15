@@ -124,6 +124,54 @@
       };
     </script>
 
+    <!-- KaTeX (LaTeX rendering) -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
+    />
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    ></script>
+    <script type="module">
+      const katexReady = Promise.all([
+        new Promise((resolve) => {
+          const check = () => {
+            if (window.katex && window.renderMathInElement) resolve();
+            else setTimeout(check, 10);
+          };
+          check();
+        }),
+      ]).then(() => ({ katex: window.katex, renderMathInElement: window.renderMathInElement }));
+
+      window.braineKatexReady = katexReady;
+
+      // Called from WASM; safe to call before katexReady resolves.
+      window.braineLatexRenderAll = () => {
+        katexReady.then(({ renderMathInElement }) => {
+          // Render math in any markdown docs (and anywhere else) using standard delimiters.
+          // Note: This scans text nodes, so keep it scoped to `.docs-markdown` containers.
+          const roots = Array.from(document.querySelectorAll(".docs-markdown"));
+          for (const root of roots) {
+            try {
+              renderMathInElement(root, {
+                delimiters: [
+                  { left: "$$", right: "$$", display: true },
+                  { left: "\\[", right: "\\]", display: true },
+                  { left: "$", right: "$", display: false },
+                  { left: "\\(", right: "\\)", display: false },
+                ],
+                throwOnError: false,
+              });
+            } catch (err) {
+              console.warn("KaTeX render failed", err);
+            }
+          }
+        });
+      };
+    </script>
+
     <!-- Trunk entrypoint: builds the crate in this folder to WASM -->
     <link data-trunk rel="rust" data-wasm-opt="z" />
 

@@ -15,6 +15,8 @@ mod canvas;
 mod files;
 mod indexeddb;
 mod math;
+mod latex;
+mod markdown;
 mod mermaid;
 mod parameter_field;
 mod runtime;
@@ -26,6 +28,8 @@ mod tooltip;
 mod types;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
+use wasm_bindgen_futures::JsFuture;
 
 use crate::ui_model::{AnalyticsPanel, DashboardTab, GameKind};
 
@@ -73,7 +77,7 @@ fn report_error(msg: impl Into<String>) {
     });
 }
 
-use mermaid::{apply_theme as apply_mermaid_theme, MermaidDiagram};
+use mermaid::{apply_theme as apply_mermaid_theme, render_all as render_all_mermaid, MermaidDiagram};
 use parameter_field::ParameterField;
 use settings_schema::ParamSection;
 use tooltip::{TooltipPortal, TooltipStore};
@@ -94,6 +98,9 @@ const STYLE_CARD: &str = "padding: 14px; background: var(--panel); border: 1px s
 const VERSION_BRAINE: &str = env!("CARGO_PKG_VERSION");
 const VERSION_BRAINE_WEB: &str = "0.1.0";
 const VERSION_BBI_FORMAT: u32 = 2;
+
+// Long-form math spec (repo doc) embedded into the web UI.
+const DOC_THE_MATH_BEHIND: &str = include_str!("../../../doc/maths/the-math-behind.md");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Theme {
@@ -148,6 +155,7 @@ enum AboutSubTab {
     Dynamics,
     Learning,
     Memory,
+    MathBehind,
     Architecture,
     Applications,
     LlmIntegration,
@@ -161,6 +169,7 @@ impl AboutSubTab {
             AboutSubTab::Dynamics => "Dynamics",
             AboutSubTab::Learning => "Learning",
             AboutSubTab::Memory => "Memory",
+            AboutSubTab::MathBehind => "The Math Behind",
             AboutSubTab::Architecture => "Architecture",
             AboutSubTab::Applications => "Applications",
             AboutSubTab::LlmIntegration => "LLM Integration",
@@ -174,6 +183,7 @@ impl AboutSubTab {
             AboutSubTab::Dynamics,
             AboutSubTab::Learning,
             AboutSubTab::Memory,
+            AboutSubTab::MathBehind,
             AboutSubTab::Architecture,
             AboutSubTab::Applications,
             AboutSubTab::LlmIntegration,
@@ -748,6 +758,24 @@ fn App() -> impl IntoView {
     let (show_about_page, set_show_about_page) = signal(true);
     // About page sub-tab
     let (about_sub_tab, set_about_sub_tab) = signal(AboutSubTab::Overview);
+
+    // Render once; the source is a compile-time embedded repo doc.
+    // Use StoredValue so the view closures remain `Fn` (not `FnOnce`).
+    let math_behind_html = StoredValue::new(markdown::render_markdown_with_mermaid(
+        DOC_THE_MATH_BEHIND,
+    ));
+
+    // When switching to the Math tab, ask Mermaid to render any fenced diagrams.
+    Effect::new(move |_| {
+        if about_sub_tab.get() == AboutSubTab::MathBehind {
+            spawn_local(async move {
+                // Microtask: ensure the DOM has inserted the `.mermaid` nodes.
+                let _ = JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL)).await;
+                render_all_mermaid();
+                latex::render_all();
+            });
+        }
+    });
 
     // BrainViz uses its own sampling so it can be tuned independently.
     let (brainviz_points, set_brainviz_points) = signal::<Vec<UnitPlotPoint>>(Vec::new());
@@ -2903,6 +2931,23 @@ fn App() -> impl IntoView {
                                         <h3 style="margin: 0 0 12px 0; font-size: 1rem; color: var(--accent);">"Memory Structure"</h3>
                                         <div class="docs-diagram-wrap">
                                             <MermaidDiagram code=ABOUT_MEMORY_STRUCTURE_DIAGRAM max_width_px=700 />
+                                        </div>
+                                    </div>
+                                </Show>
+
+                                // The Math Behind tab
+                                <Show when=move || about_sub_tab.get() == AboutSubTab::MathBehind>
+                                    <div class="stack">
+                                        <div style=STYLE_CARD>
+                                            <h3 style="margin: 0 0 8px 0; font-size: 1rem; color: var(--accent);">"The Math Behind"</h3>
+                                            <p style="margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
+                                                "This tab renders the repo doc at doc/maths/the-math-behind.md. "
+                                                "Markdown is rendered to HTML; fenced mermaid blocks (if any) render as diagrams."
+                                            </p>
+                                        </div>
+
+                                        <div class="card">
+                                            <div class="docs-markdown" inner_html=move || math_behind_html.get_value()></div>
                                         </div>
                                     </div>
                                 </Show>
