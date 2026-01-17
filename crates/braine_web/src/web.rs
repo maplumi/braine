@@ -5392,6 +5392,19 @@ fn App() -> impl IntoView {
                                                 {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
                                             </div>
                                         </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::Pong.inputs_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                {move || format!(
+                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    trial_period_ms.get(),
+                                                    exploration_eps.get(),
+                                                    meaning_alpha.get()
+                                                )}
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
