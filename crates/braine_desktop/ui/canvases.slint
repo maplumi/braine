@@ -211,6 +211,7 @@ export component PongCanvas inherits Rectangle {
         height: self.paddle_h;
         x: field.x + 8px;
         y: field.y + (0.5 - 0.5 * game.pong-paddle-y) * (field.height - self.height);
+        animate y { duration: 70ms; easing: linear; }
         background: Theme.accent-blue;
         border-radius: 3px;
         opacity: 0.95;
@@ -224,6 +225,8 @@ export component PongCanvas inherits Rectangle {
         background: Theme.accent-yellow;
         x: field.x + (0.5 + 0.5 * game.pos-x) * (field.width - self.width);
         y: field.y + (0.5 - 0.5 * game.pos-y) * (field.height - self.height);
+        animate x { duration: 70ms; easing: linear; }
+        animate y { duration: 70ms; easing: linear; }
         opacity: game.pong-ball-visible ? 0.95 : 0.0;
     }
 
@@ -235,6 +238,8 @@ export component PongCanvas inherits Rectangle {
         background: Theme.accent-red;
         x: field.x + (0.5 + 0.5 * game.pong-ball2-x) * (field.width - self.width);
         y: field.y + (0.5 - 0.5 * game.pong-ball2-y) * (field.height - self.height);
+        animate x { duration: 70ms; easing: linear; }
+        animate y { duration: 70ms; easing: linear; }
         opacity: game.pong-ball2-visible ? 0.60 : 0.0;
     }
 }

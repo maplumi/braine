@@ -2503,20 +2503,89 @@ fn App() -> impl IntoView {
     });
 
     let pong_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    // Pong canvas is rendered at the browser refresh rate (requestAnimationFrame) and
+    // interpolates towards the latest simulation snapshot. This avoids visible "stepping"
+    // when the brain tick / UI refresh is lower than the display FPS.
+    let pong_anim_started = StoredValue::new(false);
     Effect::new(move |_| {
-        let state = pong_state.get();
         let Some(canvas) = pong_canvas_ref.get() else {
             return;
         };
+        if pong_anim_started.get_value() {
+            return;
+        }
+        pong_anim_started.set_value(true);
 
-        match state {
-            Some(s) => {
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let window_raf = window.clone();
+
+        let smoothed: std::rc::Rc<std::cell::RefCell<Option<PongUiState>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let last_ts_ms: std::rc::Rc<std::cell::RefCell<Option<f64>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+
+        let f: std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(f64)>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let g = f.clone();
+
+        *g.borrow_mut() = Some(Closure::wrap(Box::new(move |ts_ms: f64| {
+            // Compute dt
+            let dt_s: f32 = {
+                let mut last = last_ts_ms.borrow_mut();
+                let dt_s = if let Some(prev) = *last {
+                    ((ts_ms - prev) / 1000.0).clamp(0.0, 0.05)
+                } else {
+                    0.016
+                };
+                *last = Some(ts_ms);
+                dt_s as f32
+            };
+
+            // Smooth towards latest snapshot
+            let target = pong_state.get_untracked();
+            if let Some(t) = target {
+                let tau: f32 = 0.07; // seconds; lower = snappier, higher = smoother
+                let alpha: f32 = 1.0 - (-dt_s / tau).exp();
+
+                let mut cur = smoothed.borrow_mut();
+                let mut s = cur.unwrap_or(t);
+
+                s.ball_x += (t.ball_x - s.ball_x) * alpha;
+                s.ball_y += (t.ball_y - s.ball_y) * alpha;
+                s.paddle_y += (t.paddle_y - s.paddle_y) * alpha;
+                s.ball2_x += (t.ball2_x - s.ball2_x) * alpha;
+                s.ball2_y += (t.ball2_y - s.ball2_y) * alpha;
+
+                // Non-smoothed fields should snap to keep UI truthful.
+                s.paddle_half_height = t.paddle_half_height;
+                s.ball_visible = t.ball_visible;
+                s.ball2_visible = t.ball2_visible;
+                s.hits = t.hits;
+                s.misses = t.misses;
+
+                *cur = Some(s);
                 let _ = draw_pong(&canvas, &s);
-            }
-            None => {
+            } else {
+                *smoothed.borrow_mut() = None;
                 let _ = clear_canvas(&canvas);
             }
+
+            // Queue next frame
+            if let Some(cb) = f.borrow().as_ref() {
+                let _ = window_raf.request_animation_frame(cb.as_ref().unchecked_ref());
+            }
+        }) as Box<dyn FnMut(f64)>));
+
+        if let Some(cb) = g.borrow().as_ref() {
+            let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
         }
+
+        // Keep the closure alive for the lifetime of the app.
+        // (Leptos will not drop it because we intentionally leak it here.)
+        std::mem::forget(g);
     });
 
     // Neuromod (reward) chart canvas
