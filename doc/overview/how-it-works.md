@@ -344,6 +344,16 @@ pub fn maybe_neurogenesis(
 ) -> usize
 ```
 
+**Where this runs in braine today**:
+
+- **Daemon (`brained`)**: calls `maybe_neurogenesis(...)` in its runtime loop (so unit count can grow automatically under sustained saturation).
+- **Web UI (`braine_web`)**: currently exposes **manual** growth ("Grow units") but does not auto-call `maybe_neurogenesis(...)` each tick.
+
+**How to observe it**:
+
+- `Brain::diagnostics()` reports `unit_count`, `connection_count`, `births_last_step`, and `pruned_last_step`.
+- Clients surface this in different ways (e.g., web Inspect panel, daemon protocol diagnostics, CLI).
+
 **Logic**:
 ```rust
 if unit_count >= max_units {
