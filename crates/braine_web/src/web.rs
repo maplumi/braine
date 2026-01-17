@@ -6756,6 +6756,16 @@ fn App() -> impl IntoView {
                                         }}
                                     </div>
 
+                                    <div class="subtle" style="margin-top: 6px; font-family: var(--mono);">
+                                        {move || {
+                                            let d = diag.get();
+                                            format!(
+                                                "Brain: {} units • {} conns • births(last)={} • pruned(last)={}",
+                                                d.unit_count, d.connection_count, d.births_last_step, d.pruned_last_step
+                                            )
+                                        }}
+                                    </div>
+
                                     <div class="row wrap" style="margin-top: 12px; gap: 14px; align-items: flex-start;">
                                         <div style="min-width: 260px;">
                                             <div class="subtle">{move || format!("Trials: {} • recent rate: {:.0}%", trials.get(), recent_rate.get() * 100.0)}</div>
