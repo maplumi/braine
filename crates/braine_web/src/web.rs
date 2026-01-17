@@ -974,6 +974,7 @@ fn App() -> impl IntoView {
     let (brainviz_causal_filter_prefix, set_brainviz_causal_filter_prefix) =
         signal::<String>(String::new());
     let (brainviz_causal_focus_selected, set_brainviz_causal_focus_selected) = signal(false);
+    let (brainviz_causal_hide_isolates, set_brainviz_causal_hide_isolates) = signal(true);
     let (brainviz_display_nodes, set_brainviz_display_nodes) = signal::<usize>(0);
     let (brainviz_display_edges, set_brainviz_display_edges) = signal::<usize>(0);
 
@@ -3021,6 +3022,7 @@ fn App() -> impl IntoView {
                 let causal = brainviz_causal_graph.get();
                 let prefix = brainviz_causal_filter_prefix.get();
                 let focus_selected = brainviz_causal_focus_selected.get();
+                let hide_isolates = brainviz_causal_hide_isolates.get();
                 let selected_sym = brainviz_selected_symbol_id.get();
 
                 // Filter in-memory only (no extra calls into the Brain).
@@ -3066,6 +3068,29 @@ fn App() -> impl IntoView {
                         // Focus requires a selection.
                         edges.clear();
                     }
+                }
+
+                // Optional cleanup: remove isolated nodes (degree 0) from the filtered view.
+                // Keep the selected node visible even if it becomes isolated.
+                if hide_isolates {
+                    let mut degrees_by_id: std::collections::HashMap<u32, usize> =
+                        std::collections::HashMap::with_capacity(edges.len() * 2);
+                    for e in &edges {
+                        *degrees_by_id.entry(e.from).or_insert(0) += 1;
+                        *degrees_by_id.entry(e.to).or_insert(0) += 1;
+                    }
+
+                    nodes.retain(|n| {
+                        degrees_by_id.get(&n.id).copied().unwrap_or(0) > 0
+                            || selected_sym == Some(n.id)
+                    });
+
+                    let mut allowed: std::collections::HashSet<u32> =
+                        std::collections::HashSet::with_capacity(nodes.len() * 2);
+                    for n in &nodes {
+                        allowed.insert(n.id);
+                    }
+                    edges.retain(|e| allowed.contains(&e.from) && allowed.contains(&e.to));
                 }
 
                 let sym_tags = brainviz_symbol_tags.get();
@@ -6306,6 +6331,15 @@ fn App() -> impl IntoView {
                                                     <div class="subtle" style="margin-top: 4px;">
                                                         "Prefix filter matches symbol name starts-with (e.g. pair::spot::). Focus limits to edges touching the selected symbol."
                                                     </div>
+                                                    <div class="subtle" style="margin-top: 6px; font-family: var(--mono);">
+                                                        {move || {
+                                                            format!(
+                                                                "filtered: {} nodes • {} edges",
+                                                                brainviz_display_nodes.get(),
+                                                                brainviz_display_edges.get()
+                                                            )
+                                                        }}
+                                                    </div>
                                                 </div>
 
                                                 <label class="label" style="display: flex; align-items: center; gap: 8px;">
@@ -6333,11 +6367,23 @@ fn App() -> impl IntoView {
                                                     <span>"Focus selected"</span>
                                                 </label>
 
+                                                <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || brainviz_causal_hide_isolates.get()
+                                                        on:change=move |ev| {
+                                                            set_brainviz_causal_hide_isolates.set(event_target_checked(&ev));
+                                                        }
+                                                    />
+                                                    <span>"Hide isolates"</span>
+                                                </label>
+
                                                 <button
                                                     class="btn sm"
                                                     on:click=move |_| {
                                                         set_brainviz_causal_filter_prefix.set(String::new());
                                                         set_brainviz_causal_focus_selected.set(false);
+                                                        set_brainviz_causal_hide_isolates.set(true);
                                                     }
                                                 >
                                                     "Clear filters"
