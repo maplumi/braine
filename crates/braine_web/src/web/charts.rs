@@ -1,5 +1,6 @@
 //! Canvas-based charting and visualization for braine_web.
 
+use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
@@ -221,6 +222,7 @@ pub fn draw_brain_connectivity_sphere(
     edges: &[(usize, usize, f32)],
     bg_color: &str,
     pulse_freqs: Option<&[f32]>,
+    node_color_overrides: Option<&HashMap<u32, (u8, u8, u8)>>,
     opts: BrainVizRenderOptions,
 ) -> Result<Vec<BrainVizHitNode>, String> {
     let ctx = canvas
@@ -511,10 +513,11 @@ pub fn draw_brain_connectivity_sphere(
         // Alpha: keep it readable but not flashy.
         let alpha = (0.22 + 0.38 * salience + 0.30 * amp).clamp(0.10, 0.95);
 
-        // Color nodes based on type AND learning/inference mode
-        // Learning mode: warmer tones (orange/amber accents)
-        // Inference mode: cooler tones (cyan/blue accents)
-        let (r, g, b) = brainviz_node_rgb(node, opts.learning_mode);
+        // Color nodes based on type AND learning/inference mode unless overridden.
+        // Overrides are used to highlight manually tagged nodes.
+        let (r, g, b) = node_color_overrides
+            .and_then(|m| m.get(&node.id).copied())
+            .unwrap_or_else(|| brainviz_node_rgb(node, opts.learning_mode));
         let color = format!("rgba({r}, {g}, {b}, {alpha:.3})");
 
         ctx.set_fill_style_str(&color);
@@ -569,6 +572,7 @@ pub fn draw_causal_graph(
     nodes: &[braine::substrate::CausalNodeViz],
     edges: &[braine::substrate::CausalEdgeViz],
     bg_color: &str,
+    node_color_overrides: Option<&HashMap<u32, (u8, u8, u8)>>,
     opts: CausalVizRenderOptions,
 ) -> Result<Vec<CausalHitNode>, String> {
     let ctx = canvas
@@ -782,8 +786,11 @@ pub fn draw_causal_graph(
         let depth = (z3d + 1.0) * 0.5;
         let alpha = (0.4 + 0.4 * norm_count) * (0.5 + 0.5 * depth) * (0.9 + 0.1 * pulse);
 
-        // Cyan color for causal symbols (distinguishes from substrate blue)
-        let color = format!("rgba(34, 211, 238, {:.3})", alpha);
+        // Cyan by default; optionally overridden for tagged symbols.
+        let (r, g, b) = node_color_overrides
+            .and_then(|m| m.get(&node.id).copied())
+            .unwrap_or((34, 211, 238));
+        let color = format!("rgba({r}, {g}, {b}, {:.3})", alpha);
 
         ctx.set_fill_style_str(&color);
         ctx.begin_path();

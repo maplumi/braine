@@ -31,6 +31,18 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
+struct BrainvizNodeTag {
+    color: String, // "#RRGGBB"
+    label: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
+struct BrainvizSymbolTag {
+    color: String, // "#RRGGBB"
+    label: String,
+}
+
 #[derive(Clone, Debug)]
 struct InspectTrialEvent {
     step: u64,
@@ -182,6 +194,48 @@ const LOCALSTORAGE_THEME_KEY: &str = "braine_theme";
 const LOCALSTORAGE_GAME_STATS_PREFIX: &str = "braine_game_stats_v1.";
 const LOCALSTORAGE_SETTINGS_KEY: &str = "braine_settings_v1";
 const LOCALSTORAGE_EXEC_TIER_KEY: &str = "braine_exec_tier_v1";
+const LOCALSTORAGE_BRAINVIZ_NODE_TAGS_KEY: &str = "braine_brainviz_node_tags_v1";
+const LOCALSTORAGE_BRAINVIZ_SYMBOL_TAGS_KEY: &str = "braine_brainviz_symbol_tags_v1";
+
+fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn load_brainviz_node_tags() -> std::collections::HashMap<u32, BrainvizNodeTag> {
+    let Some(raw) = local_storage_get_string(LOCALSTORAGE_BRAINVIZ_NODE_TAGS_KEY) else {
+        return std::collections::HashMap::new();
+    };
+    serde_json::from_str::<std::collections::HashMap<u32, BrainvizNodeTag>>(&raw)
+        .unwrap_or_else(|_| std::collections::HashMap::new())
+}
+
+fn save_brainviz_node_tags(tags: &std::collections::HashMap<u32, BrainvizNodeTag>) {
+    if let Ok(raw) = serde_json::to_string(tags) {
+        local_storage_set_string(LOCALSTORAGE_BRAINVIZ_NODE_TAGS_KEY, &raw);
+    }
+}
+
+fn load_brainviz_symbol_tags() -> std::collections::HashMap<u32, BrainvizSymbolTag> {
+    let Some(raw) = local_storage_get_string(LOCALSTORAGE_BRAINVIZ_SYMBOL_TAGS_KEY) else {
+        return std::collections::HashMap::new();
+    };
+    serde_json::from_str::<std::collections::HashMap<u32, BrainvizSymbolTag>>(&raw)
+        .unwrap_or_else(|_| std::collections::HashMap::new())
+}
+
+fn save_brainviz_symbol_tags(tags: &std::collections::HashMap<u32, BrainvizSymbolTag>) {
+    if let Ok(raw) = serde_json::to_string(tags) {
+        local_storage_set_string(LOCALSTORAGE_BRAINVIZ_SYMBOL_TAGS_KEY, &raw);
+    }
+}
 
 const STYLE_CARD: &str = "padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;";
 
@@ -917,6 +971,9 @@ fn App() -> impl IntoView {
     let (brainviz_view_mode, set_brainviz_view_mode) = signal::<&'static str>("substrate"); // "substrate" or "causal"
     let (brainviz_causal_graph, set_brainviz_causal_graph) =
         signal::<CausalGraphViz>(CausalGraphViz::default());
+    let (brainviz_causal_filter_prefix, set_brainviz_causal_filter_prefix) =
+        signal::<String>(String::new());
+    let (brainviz_causal_focus_selected, set_brainviz_causal_focus_selected) = signal(false);
     let (brainviz_display_nodes, set_brainviz_display_nodes) = signal::<usize>(0);
     let (brainviz_display_edges, set_brainviz_display_edges) = signal::<usize>(0);
 
@@ -953,6 +1010,45 @@ fn App() -> impl IntoView {
 
     let (brainviz_display_avg_conn, set_brainviz_display_avg_conn) = signal::<f32>(0.0);
     let (brainviz_display_max_conn, set_brainviz_display_max_conn) = signal::<usize>(0);
+
+    // BrainViz node tagging (manual highlighting):
+    // - click a node to select it
+    // - assign a color/label (persisted to localStorage)
+    let brainviz_hit_nodes = StoredValue::new(Vec::<charts::BrainVizHitNode>::new());
+    let brainviz_causal_hit_nodes = StoredValue::new(Vec::<charts::CausalHitNode>::new());
+    let (brainviz_selected_node_id, set_brainviz_selected_node_id) = signal::<Option<u32>>(None);
+    let (brainviz_selected_tag_color, set_brainviz_selected_tag_color) =
+        signal::<String>("#ff4d4d".to_string());
+    let (brainviz_selected_tag_label, set_brainviz_selected_tag_label) =
+        signal::<String>("".to_string());
+    let (brainviz_node_tags, set_brainviz_node_tags) =
+        signal::<std::collections::HashMap<u32, BrainvizNodeTag>>(std::collections::HashMap::new());
+
+    // Causal symbol tagging (manual highlighting in causal graph view):
+    let (brainviz_selected_symbol_id, set_brainviz_selected_symbol_id) =
+        signal::<Option<u32>>(None);
+    let (brainviz_selected_symbol_name, set_brainviz_selected_symbol_name) =
+        signal::<String>(String::new());
+    let (brainviz_selected_symbol_color, set_brainviz_selected_symbol_color) =
+        signal::<String>("#22d3ee".to_string());
+    let (brainviz_selected_symbol_label, set_brainviz_selected_symbol_label) =
+        signal::<String>(String::new());
+    let (brainviz_symbol_tags, set_brainviz_symbol_tags) = signal::<
+        std::collections::HashMap<u32, BrainvizSymbolTag>,
+    >(std::collections::HashMap::new());
+
+    // Load persisted tags once.
+    {
+        let did_load = StoredValue::new(false);
+        Effect::new(move |_| {
+            if did_load.get_value() {
+                return;
+            }
+            did_load.set_value(true);
+            set_brainviz_node_tags.set(load_brainviz_node_tags());
+            set_brainviz_symbol_tags.set(load_brainviz_symbol_tags());
+        });
+    }
 
     // Idle state tracking for actual dreaming/sync operations
     let (idle_sync_done, set_idle_sync_done) = signal(false); // Has sync been performed this idle period?
@@ -2923,17 +3019,74 @@ fn App() -> impl IntoView {
             if view_mode == "causal" {
                 // Render causal graph with same 3D sphere layout as substrate view
                 let causal = brainviz_causal_graph.get();
+                let prefix = brainviz_causal_filter_prefix.get();
+                let focus_selected = brainviz_causal_focus_selected.get();
+                let selected_sym = brainviz_selected_symbol_id.get();
 
-                let node_count = causal.nodes.len();
-                let edge_count = causal.edges.len();
+                // Filter in-memory only (no extra calls into the Brain).
+                let mut nodes: Vec<braine::substrate::CausalNodeViz> = if prefix.trim().is_empty() {
+                    causal.nodes.clone()
+                } else {
+                    let p = prefix.trim();
+                    causal
+                        .nodes
+                        .iter()
+                        .filter(|n| n.name.starts_with(p))
+                        .cloned()
+                        .collect()
+                };
+
+                // Keep edges consistent with filtered nodes.
+                let mut allowed: std::collections::HashSet<u32> =
+                    std::collections::HashSet::with_capacity(nodes.len() * 2);
+                for n in &nodes {
+                    allowed.insert(n.id);
+                }
+                let mut edges: Vec<braine::substrate::CausalEdgeViz> = causal
+                    .edges
+                    .iter()
+                    .copied()
+                    .filter(|e| allowed.contains(&e.from) && allowed.contains(&e.to))
+                    .collect();
+
+                // Optional focus mode: show only edges incident to selected symbol.
+                if focus_selected {
+                    if let Some(sel) = selected_sym {
+                        edges.retain(|e| e.from == sel || e.to == sel);
+
+                        let mut keep: std::collections::HashSet<u32> =
+                            std::collections::HashSet::with_capacity(edges.len() * 2 + 1);
+                        keep.insert(sel);
+                        for e in &edges {
+                            keep.insert(e.from);
+                            keep.insert(e.to);
+                        }
+                        nodes.retain(|n| keep.contains(&n.id));
+                    } else {
+                        // Focus requires a selection.
+                        edges.clear();
+                    }
+                }
+
+                let sym_tags = brainviz_symbol_tags.get();
+                let mut sym_overrides: std::collections::HashMap<u32, (u8, u8, u8)> =
+                    std::collections::HashMap::with_capacity(sym_tags.len());
+                for (id, tag) in sym_tags.iter() {
+                    if let Some(rgb) = parse_hex_rgb(&tag.color) {
+                        sym_overrides.insert(*id, rgb);
+                    }
+                }
+
+                let node_count = nodes.len();
+                let edge_count = edges.len();
                 let mut id_to_idx: std::collections::HashMap<u32, usize> =
                     std::collections::HashMap::with_capacity(node_count);
-                for (i, n) in causal.nodes.iter().enumerate() {
+                for (i, n) in nodes.iter().enumerate() {
                     id_to_idx.insert(n.id, i);
                 }
 
                 let mut degrees = vec![0usize; node_count.max(1)];
-                for e in &causal.edges {
+                for e in &edges {
                     if let Some(&i) = id_to_idx.get(&e.from) {
                         degrees[i] += 1;
                     }
@@ -2961,16 +3114,28 @@ fn App() -> impl IntoView {
                     draw_outline: false,
                     anim_time,
                 };
-                let _ = charts::draw_causal_graph(
+                let hit = charts::draw_causal_graph(
                     &canvas,
-                    &causal.nodes,
-                    &causal.edges,
+                    &nodes,
+                    &edges,
                     "#0a0f1a",
+                    Some(&sym_overrides),
                     opts_full,
                 );
+                if let Ok(hit) = hit {
+                    brainviz_causal_hit_nodes.set_value(hit);
+                }
             } else {
                 // Render substrate view
                 let is_learning = learning_enabled.get();
+                let tags = brainviz_node_tags.get();
+                let mut overrides: std::collections::HashMap<u32, (u8, u8, u8)> =
+                    std::collections::HashMap::with_capacity(tags.len());
+                for (id, tag) in tags.iter() {
+                    if let Some(rgb) = parse_hex_rgb(&tag.color) {
+                        overrides.insert(*id, rgb);
+                    }
+                }
                 let opts_full = charts::BrainVizRenderOptions {
                     zoom,
                     pan_x,
@@ -2985,15 +3150,19 @@ fn App() -> impl IntoView {
                 brainviz_points.with(|points| {
                     brainviz_edges.with(|edges| {
                         brainviz_base_positions.with_value(|base_positions| {
-                            let _ = charts::draw_brain_connectivity_sphere(
+                            let hit = charts::draw_brain_connectivity_sphere(
                                 &canvas,
                                 points,
                                 base_positions.as_slice(),
                                 edges.as_slice(),
                                 "#0a0f1a",
                                 None,
+                                Some(&overrides),
                                 opts_full,
                             );
+                            if let Ok(hit) = hit {
+                                brainviz_hit_nodes.set_value(hit);
+                            }
                         });
                     });
                 });
@@ -5809,9 +5978,25 @@ fn App() -> impl IntoView {
                                                     (do_stop_sv.get_value())();
 
                                                     let kind = game_kind.get_untracked();
-                                                    let last = brainviz_recordings.with_value(|recs| {
-                                                        recs[game_kind_index(kind)].deltas.len().saturating_sub(1)
+                                                    let frames = brainviz_recordings.with_value(|recs| {
+                                                        recs[game_kind_index(kind)].deltas.len()
                                                     });
+
+                                                    // UX: if nothing has been recorded yet, make that explicit.
+                                                    // Replay only works after the game has completed at least one trial
+                                                    // while recording is enabled.
+                                                    if frames == 0 {
+                                                        set_status.set(
+                                                            "BrainViz replay: no frames recorded yet. Run a game with Record enabled (records on trial completion), then Stop and Replay."
+                                                                .to_string(),
+                                                        );
+                                                        // Fall back to a live snapshot so the user sees *something*.
+                                                        set_brainviz_snapshot_refresh.update(|v| *v = v.wrapping_add(1));
+                                                        set_brainviz_replay_active.set(false);
+                                                        return;
+                                                    }
+
+                                                    let last = frames.saturating_sub(1);
                                                     set_brainviz_replay_kind.set(kind);
                                                     set_brainviz_replay_idx.set(last);
                                                     set_brainviz_replay_active.set(true);
@@ -6023,6 +6208,242 @@ fn App() -> impl IntoView {
                                         </Show>
                                     </div>
 
+                                    <Show when=move || brainviz_view_mode.get() == "causal">
+                                        <div class="card" style="margin-top: 10px; padding: 10px;">
+                                            <div class="row end wrap" style="gap: 10px;">
+                                                <div style="flex: 1; min-width: 220px;">
+                                                    <div style="font-weight: 800; font-size: 0.9rem;">"Causal symbol tags"</div>
+                                                    <div class="subtle" style="margin-top: 4px;">
+                                                        "Click a node in the causal graph to select a symbol, then assign a color/label."
+                                                    </div>
+                                                    <div class="subtle" style="margin-top: 6px; font-family: var(--mono);">
+                                                        {move || {
+                                                            if let Some(id) = brainviz_selected_symbol_id.get() {
+                                                                let name = brainviz_selected_symbol_name.get();
+                                                                format!("selected: sym {} ({})", id, name)
+                                                            } else {
+                                                                "selected: (none)".to_string()
+                                                            }
+                                                        }}
+                                                    </div>
+                                                </div>
+
+                                                <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                    <span>"Color"</span>
+                                                    <input
+                                                        type="color"
+                                                        prop:value=move || brainviz_selected_symbol_color.get()
+                                                        on:input=move |ev| {
+                                                            set_brainviz_selected_symbol_color.set(event_target_value(&ev));
+                                                        }
+                                                    />
+                                                </label>
+
+                                                <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                    <span>"Label"</span>
+                                                    <input
+                                                        class="input compact"
+                                                        type="text"
+                                                        placeholder="e.g. reward link"
+                                                        style="width: 220px;"
+                                                        prop:value=move || brainviz_selected_symbol_label.get()
+                                                        on:input=move |ev| {
+                                                            set_brainviz_selected_symbol_label.set(event_target_value(&ev));
+                                                        }
+                                                    />
+                                                </label>
+
+                                                <button
+                                                    class="btn sm primary"
+                                                    on:click=move |_| {
+                                                        let Some(id) = brainviz_selected_symbol_id.get_untracked() else {
+                                                            set_status.set("Causal tag: select a symbol first".to_string());
+                                                            return;
+                                                        };
+                                                        let color = brainviz_selected_symbol_color.get_untracked();
+                                                        let label = brainviz_selected_symbol_label.get_untracked();
+
+                                                        set_brainviz_symbol_tags.update(|m| {
+                                                            m.insert(
+                                                                id,
+                                                                BrainvizSymbolTag {
+                                                                    color: color.clone(),
+                                                                    label: label.clone(),
+                                                                },
+                                                            );
+                                                            save_brainviz_symbol_tags(m);
+                                                        });
+                                                        set_status.set(format!("Causal tag set: sym {id} {color} {label}"));
+                                                    }
+                                                >
+                                                    "Set"
+                                                </button>
+
+                                                <button
+                                                    class="btn sm"
+                                                    on:click=move |_| {
+                                                        let Some(id) = brainviz_selected_symbol_id.get_untracked() else {
+                                                            return;
+                                                        };
+                                                        set_brainviz_symbol_tags.update(|m| {
+                                                            m.remove(&id);
+                                                            save_brainviz_symbol_tags(m);
+                                                        });
+                                                        set_status.set(format!("Causal tag cleared: sym {id}"));
+                                                    }
+                                                >
+                                                    "Clear"
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </Show>
+
+                                    <Show when=move || brainviz_view_mode.get() == "causal">
+                                        <div class="card" style="margin-top: 10px; padding: 10px;">
+                                            <div class="row end wrap" style="gap: 10px;">
+                                                <div style="flex: 1; min-width: 220px;">
+                                                    <div style="font-weight: 800; font-size: 0.9rem;">"Causal filters"</div>
+                                                    <div class="subtle" style="margin-top: 4px;">
+                                                        "Prefix filter matches symbol name starts-with (e.g. pair::spot::). Focus limits to edges touching the selected symbol."
+                                                    </div>
+                                                </div>
+
+                                                <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                    <span>"Prefix"</span>
+                                                    <input
+                                                        class="input compact"
+                                                        type="text"
+                                                        placeholder="pair::spot::"
+                                                        style="width: 220px;"
+                                                        prop:value=move || brainviz_causal_filter_prefix.get()
+                                                        on:input=move |ev| {
+                                                            set_brainviz_causal_filter_prefix.set(event_target_value(&ev));
+                                                        }
+                                                    />
+                                                </label>
+
+                                                <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || brainviz_causal_focus_selected.get()
+                                                        on:change=move |ev| {
+                                                            set_brainviz_causal_focus_selected.set(event_target_checked(&ev));
+                                                        }
+                                                    />
+                                                    <span>"Focus selected"</span>
+                                                </label>
+
+                                                <button
+                                                    class="btn sm"
+                                                    on:click=move |_| {
+                                                        set_brainviz_causal_filter_prefix.set(String::new());
+                                                        set_brainviz_causal_focus_selected.set(false);
+                                                    }
+                                                >
+                                                    "Clear filters"
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </Show>
+
+                                    <div class="card" style="margin-top: 10px; padding: 10px;">
+                                        <div class="row end wrap" style="gap: 10px;">
+                                            <div style="flex: 1; min-width: 220px;">
+                                                <div style="font-weight: 800; font-size: 0.9rem;">"Node tags"</div>
+                                                <div class="subtle" style="margin-top: 4px;">
+                                                    "Click a node in the BrainViz canvas to select it, then assign a color/label."
+                                                </div>
+                                                <div class="subtle" style="margin-top: 6px; font-family: var(--mono);">
+                                                    {move || {
+                                                        if let Some(id) = brainviz_selected_node_id.get() {
+                                                            format!("selected: unit {}", id)
+                                                        } else {
+                                                            "selected: (none)".to_string()
+                                                        }
+                                                    }}
+                                                </div>
+                                            </div>
+
+                                            <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                <span>"Color"</span>
+                                                <input
+                                                    type="color"
+                                                    prop:value=move || brainviz_selected_tag_color.get()
+                                                    on:input=move |ev| {
+                                                        set_brainviz_selected_tag_color.set(event_target_value(&ev));
+                                                    }
+                                                />
+                                            </label>
+
+                                            <label class="label" style="display: flex; align-items: center; gap: 8px;">
+                                                <span>"Label"</span>
+                                                <input
+                                                    class="input compact"
+                                                    type="text"
+                                                    placeholder="e.g. spot::left or goal-node"
+                                                    style="width: 220px;"
+                                                    prop:value=move || brainviz_selected_tag_label.get()
+                                                    on:input=move |ev| {
+                                                        set_brainviz_selected_tag_label.set(event_target_value(&ev));
+                                                    }
+                                                />
+                                            </label>
+
+                                            <button
+                                                class="btn sm primary"
+                                                on:click=move |_| {
+                                                    let Some(id) = brainviz_selected_node_id.get_untracked() else {
+                                                        set_status.set("BrainViz tag: select a node first".to_string());
+                                                        return;
+                                                    };
+                                                    let color = brainviz_selected_tag_color.get_untracked();
+                                                    let label = brainviz_selected_tag_label.get_untracked();
+
+                                                    set_brainviz_node_tags.update(|m| {
+                                                        m.insert(
+                                                            id,
+                                                            BrainvizNodeTag {
+                                                                color: color.clone(),
+                                                                label: label.clone(),
+                                                            },
+                                                        );
+                                                        save_brainviz_node_tags(m);
+                                                    });
+                                                    set_status.set(format!("BrainViz tag set: unit {id} {color} {label}"));
+                                                }
+                                            >
+                                                "Set"
+                                            </button>
+
+                                            <button
+                                                class="btn sm"
+                                                on:click=move |_| {
+                                                    let Some(id) = brainviz_selected_node_id.get_untracked() else {
+                                                        return;
+                                                    };
+                                                    set_brainviz_node_tags.update(|m| {
+                                                        m.remove(&id);
+                                                        save_brainviz_node_tags(m);
+                                                    });
+                                                    set_status.set(format!("BrainViz tag cleared: unit {id}"));
+                                                }
+                                            >
+                                                "Clear"
+                                            </button>
+
+                                            <button
+                                                class="btn sm"
+                                                on:click=move |_| {
+                                                    set_brainviz_node_tags.set(std::collections::HashMap::new());
+                                                    save_brainviz_node_tags(&std::collections::HashMap::new());
+                                                    set_status.set("BrainViz tags cleared".to_string());
+                                                }
+                                            >
+                                                "Clear all"
+                                            </button>
+                                        </div>
+                                    </div>
+
                                     <div style="position: relative;">
                                         <canvas
                                             node_ref=brain_viz_ref
@@ -6092,16 +6513,105 @@ fn App() -> impl IntoView {
                                                 }
                                             }
                                             on:pointerup=move |ev: web_sys::PointerEvent| {
-                                                let Some((pid, ..)) = brainviz_drag.get_untracked() else {
+                                                let Some((pid, sx, sy, ..)) = brainviz_drag.get_untracked() else {
                                                     return;
                                                 };
                                                 if ev.pointer_id() != pid {
                                                     return;
                                                 }
+
+                                                // Treat a small-movement pointer-up as a click for node selection.
+                                                let dx = (ev.client_x() as f64 - sx).abs();
+                                                let dy = (ev.client_y() as f64 - sy).abs();
+                                                let is_click = dx * dx + dy * dy <= 16.0; // 4px radius
+
                                                 set_brainviz_drag.set(None);
                                                 if let Some(t) = ev.current_target() {
                                                     if let Ok(el) = t.dyn_into::<web_sys::Element>() {
                                                         let _ = el.release_pointer_capture(pid);
+                                                    }
+                                                }
+
+                                                if !is_click {
+                                                    return;
+                                                }
+
+                                                // Hit-test against the most recently rendered node positions.
+                                                let Some(t) = ev.current_target() else {
+                                                    return;
+                                                };
+                                                let Ok(el) = t.dyn_into::<web_sys::Element>() else {
+                                                    return;
+                                                };
+                                                let rect = el.get_bounding_client_rect();
+                                                let cx = ev.client_x() as f64 - rect.left();
+                                                let cy = ev.client_y() as f64 - rect.top();
+
+                                                if brainviz_view_mode.get_untracked() == "causal" {
+                                                    let mut picked: Option<charts::CausalHitNode> = None;
+                                                    let mut best_d2 = f64::INFINITY;
+                                                    brainviz_causal_hit_nodes.with_value(|hits| {
+                                                        for h in hits {
+                                                            let dx = h.x - cx;
+                                                            let dy = h.y - cy;
+                                                            let d2 = dx * dx + dy * dy;
+                                                            let r2 = (h.r + 3.0) * (h.r + 3.0);
+                                                            if d2 <= r2 && d2 < best_d2 {
+                                                                best_d2 = d2;
+                                                                picked = Some(h.clone());
+                                                            }
+                                                        }
+                                                    });
+
+                                                    if let Some(h) = picked {
+                                                        set_brainviz_selected_symbol_id.set(Some(h.id));
+                                                        set_brainviz_selected_symbol_name.set(h.name.clone());
+
+                                                        let tags = brainviz_symbol_tags.get_untracked();
+                                                        if let Some(tag) = tags.get(&h.id) {
+                                                            set_brainviz_selected_symbol_color
+                                                                .set(tag.color.clone());
+                                                            set_brainviz_selected_symbol_label
+                                                                .set(tag.label.clone());
+                                                        } else {
+                                                            set_brainviz_selected_symbol_label
+                                                                .set(String::new());
+                                                        }
+
+                                                        set_status.set(format!("selected sym {} ({})", h.id, h.name));
+                                                    }
+                                                } else {
+                                                    let mut picked: Option<charts::BrainVizHitNode> = None;
+                                                    let mut best_d2 = f64::INFINITY;
+                                                    brainviz_hit_nodes.with_value(|hits| {
+                                                        for h in hits {
+                                                            let dx = h.x - cx;
+                                                            let dy = h.y - cy;
+                                                            let d2 = dx * dx + dy * dy;
+                                                            let r2 = (h.r + 3.0) * (h.r + 3.0);
+                                                            if d2 <= r2 && d2 < best_d2 {
+                                                                best_d2 = d2;
+                                                                picked = Some(*h);
+                                                            }
+                                                        }
+                                                    });
+
+                                                    if let Some(h) = picked {
+                                                        set_brainviz_selected_node_id.set(Some(h.id));
+
+                                                        // If this node already has a tag, preload its fields.
+                                                        let tags = brainviz_node_tags.get_untracked();
+                                                        if let Some(tag) = tags.get(&h.id) {
+                                                            set_brainviz_selected_tag_color
+                                                                .set(tag.color.clone());
+                                                            set_brainviz_selected_tag_label
+                                                                .set(tag.label.clone());
+                                                        } else {
+                                                            set_brainviz_selected_tag_label
+                                                                .set(String::new());
+                                                        }
+
+                                                        set_status.set(format!("selected unit {}", h.id));
                                                     }
                                                 }
                                             }
