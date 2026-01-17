@@ -6203,7 +6203,30 @@ fn App() -> impl IntoView {
                                     <div class="row wrap" style="margin-top: 12px; gap: 14px; align-items: flex-start;">
                                         <div style="min-width: 260px;">
                                             <div class="subtle">{move || format!("Trials: {} • recent rate: {:.0}%", trials.get(), recent_rate.get() * 100.0)}</div>
-                                            <div class="subtle">{move || format!("Correct: {} • Incorrect: {}", correct_count.get(), incorrect_count.get())}</div>
+                                            <div class="subtle">{move || {
+                                                if game_kind.get() == GameKind::Pong {
+                                                    format!(
+                                                        "Action match: {} • mismatch: {}",
+                                                        correct_count.get(),
+                                                        incorrect_count.get()
+                                                    )
+                                                } else {
+                                                    format!(
+                                                        "Correct: {} • Incorrect: {}",
+                                                        correct_count.get(),
+                                                        incorrect_count.get()
+                                                    )
+                                                }
+                                            }}</div>
+
+                                            <Show when=move || game_kind.get() == GameKind::Pong>
+                                                <div class="subtle">{move || {
+                                                    pong_state
+                                                        .get()
+                                                        .map(|s| format!("Pong score: Hits {} • Misses {}", s.hits, s.misses))
+                                                        .unwrap_or_else(|| "Pong score: Hits 0 • Misses 0".to_string())
+                                                }}</div>
+                                            </Show>
                                             <div class="subtle">{move || format!("Last: action={} • reward={:+.2}", last_action.get(), last_reward.get())}</div>
                                             <div class="subtle" style="margin-top: 6px; font-weight: 800;">
                                                 {move || learning_milestone.get()}
