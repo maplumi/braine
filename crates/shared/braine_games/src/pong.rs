@@ -184,6 +184,39 @@ impl PongSim {
         self.state.paddle_y = self.state.paddle_y.clamp(-1.0, 1.0);
     }
 
+    /// Predict the primary ball's y-position when it reaches the paddle plane (`x = 0`).
+    ///
+    /// Returns `None` when the ball is hidden (respawning) or moving away from the paddle.
+    ///
+    /// This is intentionally an inexpensive approximation: it assumes constant velocity and
+    /// models only top/bottom wall reflections (the ball is already travelling toward `x=0`).
+    pub fn predict_primary_y_at_paddle(&self) -> Option<f32> {
+        if !self.ball_visible() {
+            return None;
+        }
+        let vx = self.state.ball_vx;
+        if vx >= -1.0e-6 {
+            return None;
+        }
+
+        // Time to reach x=0. (Speed scaling cancels out because we only care about direction.)
+        let t = (self.state.ball_x / (-vx)).max(0.0);
+        let mut y = self.state.ball_y + self.state.ball_vy * t;
+
+        // Reflect y into [-1, 1] with a small bounded loop.
+        for _ in 0..16 {
+            if y > 1.0 {
+                y = 2.0 - y;
+            } else if y < -1.0 {
+                y = -2.0 - y;
+            } else {
+                break;
+            }
+        }
+
+        Some(y.clamp(-1.0, 1.0))
+    }
+
     fn update_primary(&mut self, dt: f32) -> PongEvent {
         if self.respawn_remaining_s > 0.0 {
             if dt < self.respawn_remaining_s {

@@ -667,6 +667,10 @@ enum DaemonGameState {
         #[serde(default)]
         pong_ball_visible: bool,
         #[serde(default)]
+        pong_hits: u32,
+        #[serde(default)]
+        pong_misses: u32,
+        #[serde(default)]
         pong_ball2_x: f32,
         #[serde(default)]
         pong_ball2_y: f32,
@@ -840,6 +844,17 @@ impl DaemonGameState {
                 *pong_ball_speed,
             ),
             _ => (0.0, 0.25, 1.3, 1.0),
+        }
+    }
+
+    fn pong_scores(&self) -> (u32, u32) {
+        match self {
+            Self::Pong {
+                pong_hits,
+                pong_misses,
+                ..
+            } => (*pong_hits, *pong_misses),
+            _ => (0, 0),
         }
     }
 
@@ -1874,6 +1889,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 let (pong_ball2_x, pong_ball2_y) = snap.game.pong_ball2_pos_xy();
                 let (pong_paddle_y, pong_paddle_half_height, pong_paddle_speed, pong_ball_speed) =
                     snap.game.pong_params();
+                let (pong_hits, pong_misses) = snap.game.pong_scores();
 
                 ui.set_game(GameState {
                     kind: snap.game.kind().into(),
@@ -1886,6 +1902,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     pong_ball2_y,
                     pong_ball2_visible: snap.game.pong_ball2_visible(),
                     pong_ball2_enabled: snap.game.pong_ball2_enabled(),
+                    pong_hits: pong_hits as i32,
+                    pong_misses: pong_misses as i32,
                     pong_paddle_y,
                     pong_paddle_half_height,
                     pong_paddle_speed,

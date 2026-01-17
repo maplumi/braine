@@ -4,7 +4,7 @@
 //! This module keeps daemon-only glue (e.g. `Brain` stimulus application for Pong).
 
 use braine::substrate::{Brain, Stimulus};
-use braine_games::pong::{PongAction, PongSim};
+use braine_games::pong::{PongAction, PongEvent, PongSim};
 use std::time::{Duration, Instant};
 
 pub use braine_games::bandit::BanditGame;
@@ -37,10 +37,25 @@ pub struct PongGame {
     ball2_x_names: Vec<String>,
     ball2_y_names: Vec<String>,
     paddle_y_names: Vec<String>,
+    target_y_names: Vec<String>,
     stimulus_key: String,
     trial_started_at: Instant,
 
+    hits: u32,
+    misses: u32,
+    last_event: PongEvent,
+    event_flash_ticks: u8,
+    pending_credit: Option<PongCredit>,
+
     last_step_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct PongCredit {
+    reward: f32,
+    action: String,
+    stimulus_key: String,
+    event: PongEvent,
 }
 
 impl PongGame {
@@ -53,12 +68,14 @@ impl PongGame {
         let mut ball2_x_names = Vec::with_capacity(BINS as usize);
         let mut ball2_y_names = Vec::with_capacity(BINS as usize);
         let mut paddle_y_names = Vec::with_capacity(BINS as usize);
+        let mut target_y_names = Vec::with_capacity(BINS as usize);
         for i in 0..BINS {
             ball_x_names.push(format!("pong_ball_x_{i:02}"));
             ball_y_names.push(format!("pong_ball_y_{i:02}"));
             ball2_x_names.push(format!("pong_ball2_x_{i:02}"));
             ball2_y_names.push(format!("pong_ball2_y_{i:02}"));
             paddle_y_names.push(format!("pong_paddle_y_{i:02}"));
+            target_y_names.push(format!("pong_target_y_{i:02}"));
         }
 
         let mut g = Self {
@@ -73,14 +90,35 @@ impl PongGame {
             ball2_x_names,
             ball2_y_names,
             paddle_y_names,
+            target_y_names,
             stimulus_key: String::new(),
             trial_started_at: now,
+
+            hits: 0,
+            misses: 0,
+            last_event: PongEvent::None,
+            event_flash_ticks: 0,
+            pending_credit: None,
 
             last_step_at: now,
         };
         g.sim.reset_point();
         g.refresh_stimulus_key();
         g
+    }
+
+    pub fn hits(&self) -> u32 {
+        self.hits
+    }
+
+    pub fn misses(&self) -> u32 {
+        self.misses
+    }
+
+    pub fn take_pending_credit(&mut self) -> Option<(f32, String, String, PongEvent)> {
+        self.pending_credit
+            .take()
+            .map(|c| (c.reward, c.action, c.stimulus_key, c.event))
     }
 
     pub fn ball_visible(&self) -> bool {
@@ -141,10 +179,13 @@ impl PongGame {
     }
 
     pub fn correct_action(&self) -> &'static str {
-        // Simple shaping target: move toward the ball's y position.
-        // This is not the only viable policy, but it gives the agent a dense
-        // supervisory signal while still requiring closed-loop control.
-        let dy = self.sim.state.ball_y - self.sim.state.paddle_y;
+        // Shaping target: move toward predicted intercept when the ball is approaching.
+        // (If the ball is moving away/hidden, avoid thrashing.)
+        let target_y = self
+            .sim
+            .predict_primary_y_at_paddle()
+            .unwrap_or(self.sim.state.paddle_y);
+        let dy = target_y - self.sim.state.paddle_y;
         if dy > 0.12 {
             "up"
         } else if dy < -0.12 {
@@ -168,7 +209,34 @@ impl PongGame {
         self.last_step_at = now;
 
         // Continuous physics step (independent of action cadence).
-        self.sim.update(dt);
+        let ev = self.sim.update(dt);
+        if ev != PongEvent::None {
+            self.last_event = ev;
+            self.event_flash_ticks = 3;
+
+            match ev {
+                PongEvent::Hit => self.hits = self.hits.saturating_add(1),
+                PongEvent::Miss => self.misses = self.misses.saturating_add(1),
+                PongEvent::None => {}
+            }
+
+            // If we have a held action (paddle position held until next trial),
+            // credit that action immediately when the physics event occurs.
+            if let Some(a) = self.last_action.clone() {
+                let reward = self.sim.take_pending_event_reward().clamp(-1.0, 1.0);
+                if reward.abs() > 0.0 {
+                    self.pending_credit = Some(PongCredit {
+                        reward,
+                        action: a,
+                        stimulus_key: self.stimulus_key.clone(),
+                        event: ev,
+                    });
+                }
+            } else {
+                // Still clear the pending reward so it doesn't leak into the next scored action.
+                let _ = self.sim.take_pending_event_reward();
+            }
+        }
         self.refresh_stimulus_key();
 
         let elapsed = now.duration_since(self.trial_started_at);
@@ -181,6 +249,10 @@ impl PongGame {
 
         let elapsed = now.duration_since(self.trial_started_at);
         self.trial_frame = elapsed.as_millis().min(u32::MAX as u128) as u32;
+
+        if self.event_flash_ticks > 0 {
+            self.event_flash_ticks -= 1;
+        }
     }
 
     pub fn apply_stimuli(&self, brain: &mut Brain) {
@@ -197,6 +269,26 @@ impl PongGame {
             self.paddle_y_names[py as usize].as_str(),
             1.0,
         ));
+
+        // Trajectory feature: predicted intercept y at paddle (when approaching).
+        if let Some(y) = self.sim.predict_primary_y_at_paddle() {
+            let ty = PongSim::bin_signed(y, bins);
+            brain.apply_stimulus(Stimulus::new(
+                self.target_y_names[ty as usize].as_str(),
+                1.0,
+            ));
+        } else {
+            brain.apply_stimulus(Stimulus::new("pong_target_na", 1.0));
+        }
+
+        // One-shot event flash (helps the brain "notice" hits/misses).
+        if self.event_flash_ticks > 0 {
+            match self.last_event {
+                PongEvent::Hit => brain.apply_stimulus(Stimulus::new("pong_evt_hit", 1.0)),
+                PongEvent::Miss => brain.apply_stimulus(Stimulus::new("pong_evt_miss", 1.0)),
+                PongEvent::None => {}
+            }
+        }
 
         if self.sim.ball_visible() {
             brain.apply_stimulus(Stimulus::new("pong_ball_visible", 1.0));
@@ -262,8 +354,8 @@ impl PongGame {
         // Tiny nudge reward just for "moving the right way" (kept small so physics + shaping dominate).
         reward += if is_correct { 0.002 } else { -0.002 };
 
-        // Add any physics event reward (hit/miss) since the last action.
-        reward += self.sim.take_pending_event_reward();
+        // Physics hit/miss rewards are applied immediately in `update_timing()` via
+        // `pending_credit` (to avoid crediting the *next* action).
 
         // Dense shaping: encourage aligning paddle with the (rewarded) ball when it's approaching.
         // This stays within small bounds so hit/miss remains the primary learning signal.

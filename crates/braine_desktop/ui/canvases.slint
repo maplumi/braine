@@ -168,8 +168,7 @@ export component PongCanvas inherits Rectangle {
     in property <GameState> game;
 
     background: Theme.bg-dark;
-    border-color: Theme.border;
-    border-width: 2px;
+    border-width: 0px;
 
     // Playfield bounds
     field := Rectangle {
@@ -179,6 +178,29 @@ export component PongCanvas inherits Rectangle {
         height: parent.height - 24px;
         background: transparent;
         border-width: 0px;
+    }
+
+    // Arena borders (top/bottom/right only; left side open so misses look like an abyss)
+    Rectangle { x: field.x; y: field.y; width: field.width; height: 2px; background: Theme.border; opacity: 0.9; }
+    Rectangle { x: field.x; y: field.y + field.height - 2px; width: field.width; height: 2px; background: Theme.border; opacity: 0.9; }
+    Rectangle { x: field.x + field.width - 2px; y: field.y; width: 2px; height: field.height; background: Theme.border; opacity: 0.9; }
+
+    // Score overlay
+    Rectangle {
+        x: field.x + 10px;
+        y: field.y + 8px;
+        width: 150px;
+        height: 24px;
+        background: #00000066;
+        border-radius: 6px;
+
+        Text {
+            x: 10px;
+            y: 3px;
+            text: "Hits " + game.pong-hits + "  Misses " + game.pong-misses;
+            color: Theme.text-primary;
+            font-size: 12px;
+        }
     }
 
     // Paddle (left)

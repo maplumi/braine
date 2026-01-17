@@ -543,6 +543,15 @@ export component MainWindow inherits Window {
                                         spacing: 8px;
 
                                         HorizontalBox {
+                                            spacing: 10px;
+                                            Text { text: "Hits:"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "" + root.game.pong-hits; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                                            Rectangle { width: 10px; height: 1px; background: transparent; }
+                                            Text { text: "Misses:"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "" + root.game.pong-misses; color: Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalBox {
                                             spacing: 8px;
                                             Text { text: "Paddle speed:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
                                             Slider {

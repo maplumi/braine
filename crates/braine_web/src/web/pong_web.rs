@@ -1,5 +1,5 @@
 use braine::substrate::{Brain, Stimulus};
-use braine_games::pong::{PongAction, PongSim};
+use braine_games::pong::{PongAction, PongEvent, PongSim};
 use braine_games::stats::GameStats;
 use core::time::Duration;
 use web_time::Instant;
@@ -24,6 +24,9 @@ pub struct PongWebGame {
     trial_started_at: Instant,
     last_step_at: Instant,
     trial_period_ms: u32,
+
+    hits: u32,
+    misses: u32,
 }
 
 impl PongWebGame {
@@ -52,6 +55,9 @@ impl PongWebGame {
             trial_started_at: now,
             last_step_at: now,
             trial_period_ms: 500,
+
+            hits: 0,
+            misses: 0,
         };
 
         g.sim.reset_point();
@@ -84,6 +90,14 @@ impl PongWebGame {
 
     pub fn ball_visible(&self) -> bool {
         self.sim.ball_visible()
+    }
+
+    pub fn hits(&self) -> u32 {
+        self.hits
+    }
+
+    pub fn misses(&self) -> u32 {
+        self.misses
     }
 
     pub fn set_param(&mut self, key: &str, value: f32) -> Result<(), String> {
@@ -135,7 +149,12 @@ impl PongWebGame {
             .clamp(0.0, 0.05);
         self.last_step_at = now;
 
-        self.sim.update(dt);
+        let ev = self.sim.update(dt);
+        match ev {
+            PongEvent::Hit => self.hits = self.hits.saturating_add(1),
+            PongEvent::Miss => self.misses = self.misses.saturating_add(1),
+            PongEvent::None => {}
+        }
         self.refresh_stimulus_key();
 
         let elapsed = now.duration_since(self.trial_started_at);

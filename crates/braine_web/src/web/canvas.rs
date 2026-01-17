@@ -220,11 +220,29 @@ pub(super) fn draw_pong(
     let field_bottom = (h - field_inset).max(field_top + 1.0);
     ctx.set_stroke_style_str("rgba(122, 162, 255, 0.28)");
     ctx.set_line_width(2.0);
-    ctx.stroke_rect(
-        field_left,
-        field_top,
-        field_right - field_left,
-        field_bottom - field_top,
+    // Borders: top/bottom/right only (left side open so misses read as an abyss)
+    ctx.begin_path();
+    ctx.move_to(field_left, field_top);
+    ctx.line_to(field_right, field_top);
+    ctx.stroke();
+    ctx.begin_path();
+    ctx.move_to(field_left, field_bottom);
+    ctx.line_to(field_right, field_bottom);
+    ctx.stroke();
+    ctx.begin_path();
+    ctx.move_to(field_right, field_top);
+    ctx.line_to(field_right, field_bottom);
+    ctx.stroke();
+
+    // Score overlay
+    ctx.set_fill_style_str("rgba(0, 0, 0, 0.55)");
+    ctx.fill_rect(field_left + 10.0, field_top + 8.0, 170.0, 24.0);
+    ctx.set_fill_style_str("rgba(255, 255, 255, 0.92)");
+    ctx.set_font("12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto");
+    let _ = ctx.fill_text(
+        &format!("Hits {}  Misses {}", s.hits, s.misses),
+        field_left + 20.0,
+        field_top + 25.0,
     );
 
     // Map simulation coordinates to pixels.

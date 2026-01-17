@@ -748,6 +748,8 @@ impl WebGame {
                     ball2_x: g.sim.state.ball2_x,
                     ball2_y: g.sim.state.ball2_y,
                     ball2_visible: g.sim.ball2_visible(),
+                    hits: g.hits(),
+                    misses: g.misses(),
                 }),
                 pong_stimulus_key: g.stimulus_key().to_string(),
                 pong_paddle_speed: g.sim.params.paddle_speed,

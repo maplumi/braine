@@ -818,6 +818,10 @@ enum GameState {
         #[serde(default)]
         pong_ball_visible: bool,
         #[serde(default)]
+        pong_hits: u32,
+        #[serde(default)]
+        pong_misses: u32,
+        #[serde(default)]
         pong_ball2_x: f32,
         #[serde(default)]
         pong_ball2_y: f32,
@@ -1223,7 +1227,14 @@ impl DaemonState {
                 .ensure_sensor_min_width(&format!("pong_ball2_y_{i:02}"), 3);
             self.brain
                 .ensure_sensor_min_width(&format!("pong_paddle_y_{i:02}"), 3);
+
+            self.brain
+                .ensure_sensor_min_width(&format!("pong_target_y_{i:02}"), 3);
         }
+
+        self.brain.ensure_sensor_min_width("pong_target_na", 2);
+        self.brain.ensure_sensor_min_width("pong_evt_hit", 2);
+        self.brain.ensure_sensor_min_width("pong_evt_miss", 2);
         self.brain.ensure_sensor_min_width("pong_ball_visible", 2);
         self.brain.ensure_sensor_min_width("pong_ball_hidden", 2);
         self.brain.ensure_sensor_min_width("pong_ball2_visible", 2);
@@ -1365,6 +1376,28 @@ impl DaemonState {
             } else {
                 &mut self.brain
             };
+
+            // If Pong produced a hit/miss since the last tick, immediately credit the held action.
+            // This reduces the "ball hit but paddle didn't learn" effect from delayed reward.
+            if allow_learning {
+                if let ActiveGame::Pong(g) = &mut self.game {
+                    if let Some((reward, action, stimulus_key, _ev)) = g.take_pending_credit() {
+                        let r = reward.clamp(-1.0, 1.0);
+                        if r.abs() > 0.0 {
+                            brain.note_action(action.as_str());
+                            brain.note_compound_symbol(&[
+                                "pair",
+                                stimulus_key.as_str(),
+                                action.as_str(),
+                            ]);
+                            brain.set_neuromodulator(r);
+                            brain.reinforce_action(action.as_str(), r);
+                            self.pending_neuromod = r;
+                            self.last_reward = r;
+                        }
+                    }
+                }
+            }
 
             // Apply last tick's reward as neuromodulation for one step.
             brain.set_neuromodulator(self.pending_neuromod);
@@ -1653,6 +1686,8 @@ impl DaemonState {
                 pong_ball_x: g.sim.state.ball_x,
                 pong_ball_y: g.sim.state.ball_y,
                 pong_ball_visible: g.ball_visible(),
+                pong_hits: g.hits(),
+                pong_misses: g.misses(),
                 pong_ball2_x: g.sim.state.ball2_x,
                 pong_ball2_y: g.sim.state.ball2_y,
                 pong_ball2_visible: g.ball2_visible(),
