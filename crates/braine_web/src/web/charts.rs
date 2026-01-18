@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+use super::float_fmt::fmt_f64_fixed;
+
 /// Safely sanitize a float value before formatting.
 /// Prevents panics in the dragon algorithm when formatting NaN, Infinity, or subnormal values.
 #[inline]
@@ -397,18 +399,20 @@ pub fn draw_brain_connectivity_sphere(
             let src_rgb = mix_rgb(src_rgb, tint, 0.55);
             let dst_rgb = mix_rgb(dst_rgb, tint, 0.55);
 
+            let alpha = fmt_f64_fixed(alpha, 3);
+
             let grad = ctx.create_linear_gradient(x1, y1, x2, y2);
             let _ = grad.add_color_stop(
                 0.0,
                 &format!(
-                    "rgba({}, {}, {}, {:.3})",
+                    "rgba({}, {}, {}, {})",
                     src_rgb.0, src_rgb.1, src_rgb.2, alpha
                 ),
             );
             let _ = grad.add_color_stop(
                 1.0,
                 &format!(
-                    "rgba({}, {}, {}, {:.3})",
+                    "rgba({}, {}, {}, {})",
                     dst_rgb.0, dst_rgb.1, dst_rgb.2, alpha
                 ),
             );
@@ -454,12 +458,10 @@ pub fn draw_brain_connectivity_sphere(
             let mid = (bucket as f64 + 0.5) / (BUCKETS as f64);
             let width = 0.6 + 2.0 * mid;
             let alpha = 0.08 + 0.22 * mid;
+            let alpha = fmt_f64_fixed(sanitize_f64(alpha), 3);
 
             if !seg_pos[bucket].is_empty() {
-                ctx.set_stroke_style_str(&format!(
-                    "rgba(122, 162, 255, {:.3})",
-                    sanitize_f64(alpha)
-                ));
+                ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {})", alpha));
                 ctx.set_line_width(width);
                 ctx.begin_path();
                 for &(x1, y1, x2, y2) in &seg_pos[bucket] {
@@ -470,10 +472,7 @@ pub fn draw_brain_connectivity_sphere(
             }
 
             if !seg_neg[bucket].is_empty() {
-                ctx.set_stroke_style_str(&format!(
-                    "rgba(251, 113, 133, {:.3})",
-                    sanitize_f64(alpha)
-                ));
+                ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {})", alpha));
                 ctx.set_line_width(width);
                 ctx.begin_path();
                 for &(x1, y1, x2, y2) in &seg_neg[bucket] {
@@ -733,11 +732,13 @@ pub fn draw_causal_graph(
         let alpha = sanitize_f64((0.10 + 0.50 * norm_strength) * (0.35 + 0.65 * depth));
         let width = 0.5 + 2.0 * norm_strength;
 
+        let alpha = fmt_f64_fixed(alpha, 3);
+
         // Color: green for positive causal, red for negative (same as substrate)
         if edge.strength >= 0.0 {
-            ctx.set_stroke_style_str(&format!("rgba(74, 222, 128, {:.3})", sanitize_f64(alpha)));
+            ctx.set_stroke_style_str(&format!("rgba(74, 222, 128, {})", alpha));
         } else {
-            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", sanitize_f64(alpha)));
+            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {})", alpha));
         }
         ctx.set_line_width(width);
 
@@ -808,7 +809,7 @@ pub fn draw_causal_graph(
         let (r, g, b) = node_color_overrides
             .and_then(|m| m.get(&node.id).copied())
             .unwrap_or((34, 211, 238));
-        let color = format!("rgba({r}, {g}, {b}, {:.3})", alpha);
+        let color = format!("rgba({r}, {g}, {b}, {})", fmt_f64_fixed(alpha, 3));
 
         ctx.set_fill_style_str(&color);
         ctx.begin_path();

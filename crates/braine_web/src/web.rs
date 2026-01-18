@@ -13,6 +13,7 @@ use text_web::TextWebGame;
 mod brain_factory;
 mod canvas;
 mod files;
+mod float_fmt;
 mod indexeddb;
 mod latex;
 mod markdown;
@@ -26,6 +27,7 @@ mod storage;
 mod tokens;
 mod tooltip;
 mod types;
+use float_fmt::{fmt_f32_fixed, fmt_f32_signed_fixed};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -2204,10 +2206,10 @@ fn App() -> impl IntoView {
                 let acc = (correct as f32) / (trained_pairs as f32);
                 let avg_r = total_reward / (trained_pairs as f32);
                 set_status.set(format!(
-                    "text: trained {} pairs (acc {:.1}%, avg r {:.2})",
+                    "text: trained {} pairs (acc {}%, avg r {})",
                     trained_pairs,
-                    acc * 100.0,
-                    avg_r
+                    fmt_f32_fixed(acc * 100.0, 1),
+                    fmt_f32_fixed(avg_r, 2)
                 ));
             } else {
                 set_status.set("text: prompt too short".to_string());
@@ -3353,7 +3355,8 @@ fn App() -> impl IntoView {
     });
 
     let training_health_bar_view = move || {
-        let rate = recent_rate.get().clamp(0.0, 1.0);
+        let raw_rate = recent_rate.get();
+        let rate = if raw_rate.is_finite() { raw_rate } else { 0.0 }.clamp(0.0, 1.0);
         let pct = rate * 100.0;
         let (label, color) = if rate >= 0.95 {
             ("mastered", "#4ade80")
@@ -3368,11 +3371,11 @@ fn App() -> impl IntoView {
             <div style="margin-top: 10px;">
                 <div style="display:flex; align-items:center; justify-content: space-between; gap: 10px;">
                     <div style="font-weight: 800; color: var(--text); font-size: 0.86rem;">"Training health"</div>
-                    <div style="font-family: var(--mono); color: var(--muted); font-size: 0.78rem;">{format!("{} • {:.0}%", label, pct)}</div>
+                    <div style="font-family: var(--mono); color: var(--muted); font-size: 0.78rem;">{format!("{label} • {}%", fmt_f32_fixed(pct, 0))}</div>
                 </div>
                 <div style="margin-top: 6px; height: 10px; border-radius: 999px; border: 1px solid var(--border); background: color-mix(in oklab, var(--bg) 70%, transparent); overflow: hidden;">
                     <div
-                        style=move || format!("height: 100%; width: {:.2}%; background: {};", pct, color)
+                        style=move || format!("height: 100%; width: {}%; background: {};", fmt_f32_fixed(pct, 2), color)
                     ></div>
                 </div>
             </div>
@@ -4275,7 +4278,7 @@ fn App() -> impl IntoView {
                                 step="0.01"
                                 class="input compact"
                                     title="Exploration rate (epsilon): probability of taking a random action."
-                                prop:value=move || format!("{:.2}", exploration_eps.get())
+                                prop:value=move || fmt_f32_fixed(exploration_eps.get(), 2)
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
                                     if let Ok(x) = v.parse::<f32>() {
@@ -4293,7 +4296,7 @@ fn App() -> impl IntoView {
                                 step="0.5"
                                 class="input compact"
                                     title="Meaning alpha: weighting for meaning-based action ranking (higher = stronger meaning influence)."
-                                prop:value=move || format!("{:.1}", meaning_alpha.get())
+                                prop:value=move || fmt_f32_fixed(meaning_alpha.get(), 1)
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
                                     if let Ok(x) = v.parse::<f32>() {
@@ -4327,7 +4330,7 @@ fn App() -> impl IntoView {
                                             "metric-v accent"
                                         }
                                     }>
-                                        {move || format!("{:.0}%", recent_rate.get() * 100.0)}
+                                        {move || format!("{}%", fmt_f32_fixed(recent_rate.get() * 100.0, 0))}
                                     </span>
                                 </div>
                                 <div class="metric-chip">
@@ -4349,7 +4352,7 @@ fn App() -> impl IntoView {
                                             "metric-v muted"
                                         }
                                     }>
-                                        {move || format!("{:+.2}", last_reward.get())}
+                                        {move || fmt_f32_signed_fixed(last_reward.get(), 2)}
                                     </span>
                                 </div>
 
@@ -4417,7 +4420,7 @@ fn App() -> impl IntoView {
                                                     "stat-value value-strong"
                                                 }
                                             }>
-                                                {move || format!("{:.1}%", recent_rate.get() * 100.0)}
+                                                {move || format!("{}%", fmt_f32_fixed(recent_rate.get() * 100.0, 1))}
                                             </span>
                                         </div>
                                         <div class="divider"></div>
@@ -4440,7 +4443,7 @@ fn App() -> impl IntoView {
                                                     "stat-value muted value-strong"
                                                 }
                                             }>
-                                                {move || format!("{:+.2}", last_reward.get())}
+                                                {move || fmt_f32_signed_fixed(last_reward.get(), 2)}
                                             </span>
                                         </div>
                                     </div>
@@ -4461,11 +4464,11 @@ fn App() -> impl IntoView {
                                         </div>
                                         <div class="stat-row">
                                             <span class="stat-label">"Avg Weight"</span>
-                                            <span class="stat-value">{move || format!("{:.4}", diag.get().avg_weight)}</span>
+                                            <span class="stat-value">{move || fmt_f32_fixed(diag.get().avg_weight, 4)}</span>
                                         </div>
                                         <div class="stat-row">
                                             <span class="stat-label">"Avg Amplitude"</span>
-                                            <span class="stat-value">{move || format!("{:.4}", diag.get().avg_amp)}</span>
+                                            <span class="stat-value">{move || fmt_f32_fixed(diag.get().avg_amp, 4)}</span>
                                         </div>
                                         <div class="stat-row">
                                             <span class="stat-label">"Pruned (last)"</span>
@@ -4801,7 +4804,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::Spot.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={} ",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -4810,10 +4817,10 @@ fn App() -> impl IntoView {
                                             <pre class="pre">{GameKind::Spot.inputs_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 {move || format!(
-                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    "Trial ms={}  ε={}  α={} ",
                                                     trial_period_ms.get(),
-                                                    exploration_eps.get(),
-                                                    meaning_alpha.get()
+                                                    fmt_f32_fixed(exploration_eps.get(), 2),
+                                                    fmt_f32_fixed(meaning_alpha.get(), 1)
                                                 )}
                                             </div>
                                         </div>
@@ -4868,7 +4875,7 @@ fn App() -> impl IntoView {
                                                     "font-size: 1.5rem; font-weight: 900; color: {};",
                                                     if last_reward.get() > 0.0 { "#4ade80" } else if last_reward.get() < 0.0 { "#f87171" } else { "var(--muted)" }
                                                 )>
-                                                    {move || format!("{:+.1}", last_reward.get())}
+                                                    {move || fmt_f32_signed_fixed(last_reward.get(), 1)}
                                                 </span>
                                                 <span class="subtle">"last reward"</span>
                                             </div>
@@ -4878,7 +4885,11 @@ fn App() -> impl IntoView {
                                     <div class="game-secondary">
                                         <div class="card">
                                             <h3 class="card-title">"Probabilities"</h3>
-                                            <div class="subtle">{move || format!("P(left)={:.2}  P(right)={:.2}", bandit_prob_left.get(), bandit_prob_right.get())}</div>
+                                            <div class="subtle">{move || format!(
+                                                "P(left)={}  P(right)={} ",
+                                                fmt_f32_fixed(bandit_prob_left.get(), 2),
+                                                fmt_f32_fixed(bandit_prob_right.get(), 2)
+                                            )}</div>
                                             <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
                                                 <button class="btn sm" on:click=move |_| do_bandit_set_probs(0.90, 0.10)>
                                                     "Easy"
@@ -4899,7 +4910,7 @@ fn App() -> impl IntoView {
                                                         max="1"
                                                         step="0.05"
                                                         class="input compact"
-                                                        prop:value=move || format!("{:.2}", bandit_prob_left.get())
+                                                        prop:value=move || fmt_f32_fixed(bandit_prob_left.get(), 2)
                                                         on:input=move |ev| {
                                                             if let Ok(x) = event_target_value(&ev).parse::<f32>() {
                                                                 do_bandit_set_probs(x, bandit_prob_right.get_untracked());
@@ -4915,7 +4926,7 @@ fn App() -> impl IntoView {
                                                         max="1"
                                                         step="0.05"
                                                         class="input compact"
-                                                        prop:value=move || format!("{:.2}", bandit_prob_right.get())
+                                                        prop:value=move || fmt_f32_fixed(bandit_prob_right.get(), 2)
                                                         on:input=move |ev| {
                                                             if let Ok(x) = event_target_value(&ev).parse::<f32>() {
                                                                 do_bandit_set_probs(bandit_prob_left.get_untracked(), x);
@@ -4931,7 +4942,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::Bandit.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={} ",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -4940,10 +4955,10 @@ fn App() -> impl IntoView {
                                             <pre class="pre">{GameKind::Bandit.inputs_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 {move || format!(
-                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    "Trial ms={}  ε={}  α={} ",
                                                     trial_period_ms.get(),
-                                                    exploration_eps.get(),
-                                                    meaning_alpha.get()
+                                                    fmt_f32_fixed(exploration_eps.get(), 2),
+                                                    fmt_f32_fixed(meaning_alpha.get(), 1)
                                                 )}
                                             </div>
                                         </div>
@@ -5053,7 +5068,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::SpotReversal.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={}",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -5062,10 +5081,10 @@ fn App() -> impl IntoView {
                                             <pre class="pre">{GameKind::SpotReversal.inputs_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 {move || format!(
-                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    "Trial ms={}  ε={}  α={} ",
                                                     trial_period_ms.get(),
-                                                    exploration_eps.get(),
-                                                    meaning_alpha.get()
+                                                    fmt_f32_fixed(exploration_eps.get(), 2),
+                                                    fmt_f32_fixed(meaning_alpha.get(), 1)
                                                 )}
                                             </div>
                                         </div>
@@ -5175,7 +5194,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::SpotXY.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={}",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -5279,7 +5302,7 @@ fn App() -> impl IntoView {
                                                         max="5"
                                                         step="0.1"
                                                         style="width: 100%; accent-color: #7aa2ff;"
-                                                        prop:value=move || format!("{:.1}", pong_paddle_speed.get())
+                                                        prop:value=move || fmt_f32_fixed(pong_paddle_speed.get(), 1)
                                                         on:input=move |ev| {
                                                             let v = event_target_value(&ev);
                                                             if let Ok(x) = v.parse::<f32>() {
@@ -5287,7 +5310,7 @@ fn App() -> impl IntoView {
                                                             }
                                                         }
                                                     />
-                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.1}", pong_paddle_speed.get())}</span>
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || fmt_f32_fixed(pong_paddle_speed.get(), 1)}</span>
                                                 </div>
 
                                                 <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
@@ -5298,7 +5321,7 @@ fn App() -> impl IntoView {
                                                         max="0.5"
                                                         step="0.01"
                                                         style="width: 100%; accent-color: #7aa2ff;"
-                                                        prop:value=move || format!("{:.2}", pong_paddle_half_height.get())
+                                                        prop:value=move || fmt_f32_fixed(pong_paddle_half_height.get(), 2)
                                                         on:input=move |ev| {
                                                             let v = event_target_value(&ev);
                                                             if let Ok(x) = v.parse::<f32>() {
@@ -5306,7 +5329,7 @@ fn App() -> impl IntoView {
                                                             }
                                                         }
                                                     />
-                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.0}%", pong_paddle_half_height.get() * 100.0)}</span>
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{}%", fmt_f32_fixed(pong_paddle_half_height.get() * 100.0, 0))}</span>
                                                 </div>
 
                                                 <div style="display: flex; flex-direction: column; gap: 4px; min-width: 110px;">
@@ -5317,7 +5340,7 @@ fn App() -> impl IntoView {
                                                         max="3"
                                                         step="0.1"
                                                         style="width: 100%; accent-color: #fbbf24;"
-                                                        prop:value=move || format!("{:.1}", pong_ball_speed.get())
+                                                        prop:value=move || fmt_f32_fixed(pong_ball_speed.get(), 1)
                                                         on:input=move |ev| {
                                                             let v = event_target_value(&ev);
                                                             if let Ok(x) = v.parse::<f32>() {
@@ -5325,7 +5348,7 @@ fn App() -> impl IntoView {
                                                             }
                                                         }
                                                     />
-                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.1}×", pong_ball_speed.get())}</span>
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{}×", fmt_f32_fixed(pong_ball_speed.get(), 1))}</span>
                                                 </div>
 
                                                 <div style="display: flex; flex-direction: column; gap: 4px; min-width: 120px;">
@@ -5336,7 +5359,7 @@ fn App() -> impl IntoView {
                                                         max="2.0"
                                                         step="0.05"
                                                         style="width: 100%; accent-color: #fbbf24;"
-                                                        prop:value=move || format!("{:.2}", pong_paddle_bounce_y.get())
+                                                        prop:value=move || fmt_f32_fixed(pong_paddle_bounce_y.get(), 2)
                                                         on:input=move |ev| {
                                                             let v = event_target_value(&ev);
                                                             if let Ok(x) = v.parse::<f32>() {
@@ -5344,7 +5367,7 @@ fn App() -> impl IntoView {
                                                             }
                                                         }
                                                     />
-                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.2}", pong_paddle_bounce_y.get())}</span>
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || fmt_f32_fixed(pong_paddle_bounce_y.get(), 2)}</span>
                                                 </div>
 
                                                 <div style="display: flex; flex-direction: column; gap: 4px; min-width: 130px;">
@@ -5355,7 +5378,7 @@ fn App() -> impl IntoView {
                                                         max="0.6"
                                                         step="0.01"
                                                         style="width: 100%; accent-color: #7aa2ff;"
-                                                        prop:value=move || format!("{:.2}", pong_respawn_delay_s.get())
+                                                        prop:value=move || fmt_f32_fixed(pong_respawn_delay_s.get(), 2)
                                                         on:input=move |ev| {
                                                             let v = event_target_value(&ev);
                                                             if let Ok(x) = v.parse::<f32>() {
@@ -5363,7 +5386,7 @@ fn App() -> impl IntoView {
                                                             }
                                                         }
                                                     />
-                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{:.2}s", pong_respawn_delay_s.get())}</span>
+                                                    <span style="font-size: 0.8rem; color: var(--text); font-weight: 800; text-align: center;">{move || format!("{}s", fmt_f32_fixed(pong_respawn_delay_s.get(), 2))}</span>
                                                 </div>
 
                                                 <div style="display: flex; flex-direction: column; gap: 6px; min-width: 140px; align-items: center; justify-content: center;">
@@ -5389,7 +5412,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::Pong.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={}",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -5398,10 +5425,10 @@ fn App() -> impl IntoView {
                                             <pre class="pre">{GameKind::Pong.inputs_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 {move || format!(
-                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    "Trial ms={}  ε={}  α={} ",
                                                     trial_period_ms.get(),
-                                                    exploration_eps.get(),
-                                                    meaning_alpha.get()
+                                                    fmt_f32_fixed(exploration_eps.get(), 2),
+                                                    fmt_f32_fixed(meaning_alpha.get(), 1)
                                                 )}
                                             </div>
                                         </div>
@@ -5484,7 +5511,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::Sequence.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={}",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -5493,10 +5524,10 @@ fn App() -> impl IntoView {
                                             <pre class="pre">{GameKind::Sequence.inputs_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 {move || format!(
-                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    "Trial ms={}  ε={}  α={} ",
                                                     trial_period_ms.get(),
-                                                    exploration_eps.get(),
-                                                    meaning_alpha.get()
+                                                    fmt_f32_fixed(exploration_eps.get(), 2),
+                                                    fmt_f32_fixed(meaning_alpha.get(), 1)
                                                 )}
                                             </div>
                                         </div>
@@ -5592,7 +5623,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::Text.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={}",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -5601,10 +5636,10 @@ fn App() -> impl IntoView {
                                             <pre class="pre">{GameKind::Text.inputs_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 {move || format!(
-                                                    "Trial ms={}  ε={:.2}  α={:.1}",
+                                                    "Trial ms={}  ε={}  α={} ",
                                                     trial_period_ms.get(),
-                                                    exploration_eps.get(),
-                                                    meaning_alpha.get()
+                                                    fmt_f32_fixed(exploration_eps.get(), 2),
+                                                    fmt_f32_fixed(meaning_alpha.get(), 1)
                                                 )}
                                             </div>
                                         </div>
@@ -5677,9 +5712,10 @@ fn App() -> impl IntoView {
                                                             }
                                                         })
                                                         .unwrap_or(0.0);
+                                                    let width = fmt_f32_fixed((pct.clamp(0.0, 1.0) * 100.0), 1);
                                                     format!(
-                                                        "height: 100%; width: {:.1}%; background: linear-gradient(90deg, #22d3ee, #7aa2ff);",
-                                                        (pct.clamp(0.0, 1.0) * 100.0)
+                                                        "height: 100%; width: {}%; background: linear-gradient(90deg, #22d3ee, #7aa2ff);",
+                                                        width
                                                     )
                                                 }></div>
                                             </div>
@@ -5737,7 +5773,11 @@ fn App() -> impl IntoView {
                                             <pre class="codeblock">{GameKind::Replay.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
                                                 "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
-                                                {move || format!("Current: bias={:+.2}, scale={:.2}", reward_bias.get(), reward_scale.get())}
+                                                {move || format!(
+                                                    "Current: bias={}, scale={}",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
                                             </div>
                                         </div>
 
@@ -5795,7 +5835,13 @@ fn App() -> impl IntoView {
                                                 let e = brainviz_display_edges.get();
                                                 let avg = brainviz_display_avg_conn.get();
                                                 let maxc = brainviz_display_max_conn.get();
-                                                format!("{} nodes • {} edges • avg {:.2} • max {}", n, e, avg, maxc)
+                                                format!(
+                                                    "{} nodes • {} edges • avg {} • max {}",
+                                                    n,
+                                                    e,
+                                                    fmt_f32_fixed(avg, 2),
+                                                    maxc
+                                                )
                                             }}
                                         </div>
                                         <button
@@ -6064,7 +6110,7 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="1"
                                                     step="0.01"
-                                                    prop:value=move || format!("{:.2}", brainviz_active_amp_threshold.get())
+                                                    prop:value=move || fmt_f32_fixed(brainviz_active_amp_threshold.get(), 2)
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
                                                             set_brainviz_active_amp_threshold.set(v.clamp(0.0, 1.0));
@@ -6081,7 +6127,7 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="1"
                                                     step="0.01"
-                                                    prop:value=move || format!("{:.2}", brainviz_eps_phase_active.get())
+                                                    prop:value=move || fmt_f32_fixed(brainviz_eps_phase_active.get(), 2)
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
                                                             set_brainviz_eps_phase_active.set(v.max(0.0));
@@ -6098,7 +6144,7 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="2"
                                                     step="0.01"
-                                                    prop:value=move || format!("{:.2}", brainviz_eps_phase_inactive.get())
+                                                    prop:value=move || fmt_f32_fixed(brainviz_eps_phase_inactive.get(), 2)
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
                                                             set_brainviz_eps_phase_inactive.set(v.max(0.0));
@@ -6143,7 +6189,7 @@ fn App() -> impl IntoView {
                                                     min="0"
                                                     max="1"
                                                     step="0.001"
-                                                    prop:value=move || format!("{:.3}", brainviz_eps_weight.get())
+                                                    prop:value=move || fmt_f32_fixed(brainviz_eps_weight.get(), 3)
                                                     on:input=move |ev| {
                                                         if let Ok(v) = event_target_value(&ev).parse::<f32>() {
                                                             set_brainviz_eps_weight.set(v.max(0.0));
@@ -6765,7 +6811,13 @@ fn App() -> impl IntoView {
                                             let e = brainviz_display_edges.get();
                                             let avg = brainviz_display_avg_conn.get();
                                             let maxc = brainviz_display_max_conn.get();
-                                            format!("Snapshot: {} nodes • {} edges • avg {:.2} • max {}", n, e, avg, maxc)
+                                            format!(
+                                                "Snapshot: {} nodes • {} edges • avg {} • max {}",
+                                                n,
+                                                e,
+                                                fmt_f32_fixed(avg, 2),
+                                                maxc
+                                            )
                                         }}
                                     </div>
 
@@ -6781,7 +6833,11 @@ fn App() -> impl IntoView {
 
                                     <div class="row wrap" style="margin-top: 12px; gap: 14px; align-items: flex-start;">
                                         <div style="min-width: 260px;">
-                                            <div class="subtle">{move || format!("Trials: {} • recent rate: {:.0}%", trials.get(), recent_rate.get() * 100.0)}</div>
+                                            <div class="subtle">{move || format!(
+                                                "Trials: {} • recent rate: {}%",
+                                                trials.get(),
+                                                fmt_f32_fixed(recent_rate.get() * 100.0, 0)
+                                            )}</div>
                                             <div class="subtle">{move || {
                                                 if game_kind.get() == GameKind::Pong {
                                                     format!(
@@ -6806,7 +6862,11 @@ fn App() -> impl IntoView {
                                                         .unwrap_or_else(|| "Pong score: Hits 0 • Misses 0".to_string())
                                                 }}</div>
                                             </Show>
-                                            <div class="subtle">{move || format!("Last: action={} • reward={:+.2}", last_action.get(), last_reward.get())}</div>
+                                            <div class="subtle">{move || format!(
+                                                "Last: action={} • reward={}",
+                                                last_action.get(),
+                                                fmt_f32_signed_fixed(last_reward.get(), 2)
+                                            )}</div>
                                             <div class="subtle" style="margin-top: 6px; font-weight: 800;">
                                                 {move || learning_milestone.get()}
                                             </div>
@@ -6890,7 +6950,13 @@ fn App() -> impl IntoView {
                                         out.push_str("id       kind      salience  amp01   rel_age\n");
                                         out.push_str("--------------------------------------------\n");
                                         for (id, sal, amp, age, kind) in rows.into_iter().take(k) {
-                                            out.push_str(&format!("{:>7}  {:<8}  {:>7.3}  {:>5.2}  {:>7.2}\n", id, kind, sal, amp, age));
+                                            let sal = fmt_f32_fixed(sal, 3);
+                                            let amp = fmt_f32_fixed(amp, 2);
+                                            let age = fmt_f32_fixed(age, 2);
+                                            out.push_str(&format!(
+                                                "{:>7}  {:<8}  {:>7}  {:>5}  {:>7}\n",
+                                                id, kind, sal, amp, age
+                                            ));
                                         }
                                         out
                                     }}</pre>
@@ -6926,7 +6992,8 @@ fn App() -> impl IntoView {
                                                     let mut out = String::new();
                                                     out.push_str(&format!("neighbors({}) top={}\n\n", id, 16));
                                                     for (t, w) in neigh.into_iter().take(16) {
-                                                        out.push_str(&format!("{:>6}  {:+.4}\n", t, w));
+                                                        let w = fmt_f32_signed_fixed(w, 4);
+                                                        out.push_str(&format!("{:>6}  {:>9}\n", t, w));
                                                     }
                                                     set_inspect_neighbors_text.set(out);
                                                 }
@@ -7006,13 +7073,15 @@ fn App() -> impl IntoView {
                                         let tail = events.into_iter().rev().take(60).collect::<Vec<_>>();
                                         let mut out = String::new();
                                         for e in tail.into_iter().rev() {
+                                            let rate = fmt_f32_fixed(e.recent_rate * 100.0, 1);
+                                            let reward = fmt_f32_signed_fixed(e.reward, 2);
                                             out.push_str(&format!(
-                                                "step {:>6}  {}  trial {:>5}  rate {:>5.1}%  reward {:+.2}  action {}\n",
+                                                "step {:>6}  {}  trial {:>5}  rate {:>5}%  reward {:>6}  action {}\n",
                                                 e.step,
                                                 e.game.label(),
                                                 e.trial,
-                                                e.recent_rate * 100.0,
-                                                e.reward,
+                                                rate,
+                                                reward,
                                                 e.action
                                             ));
                                         }
@@ -7511,7 +7580,7 @@ fn App() -> impl IntoView {
                                                 class="input compact"
                                                 type="number"
                                                 step="0.1"
-                                                prop:value=move || format!("{:.2}", reward_scale.get())
+                                                prop:value=move || fmt_f32_fixed(reward_scale.get(), 2)
                                                 on:input=move |ev| {
                                                     if let Ok(v) = event_target_value(&ev).parse::<f32>() {
                                                         set_reward_scale.set(v.clamp(0.0, 10.0));
@@ -7525,7 +7594,7 @@ fn App() -> impl IntoView {
                                                 class="input compact"
                                                 type="number"
                                                 step="0.1"
-                                                prop:value=move || format!("{:.2}", reward_bias.get())
+                                                prop:value=move || fmt_f32_fixed(reward_bias.get(), 2)
                                                 on:input=move |ev| {
                                                     if let Ok(v) = event_target_value(&ev).parse::<f32>() {
                                                         set_reward_bias.set(v.clamp(-2.0, 2.0));

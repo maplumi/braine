@@ -1,5 +1,7 @@
 use leptos::prelude::*;
 
+use super::float_fmt::fmt_f64_fixed;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TooltipPayload {
     pub id: String,
@@ -25,7 +27,9 @@ pub fn TooltipPortal(store: TooltipStore) -> impl IntoView {
                     .get()
                     .expect("Show guarantees payload is Some when rendered");
 
-                let style = format!("top: {:.0}px; left: {:.0}px;", p.top_px, p.left_px);
+                let top = fmt_f64_fixed(p.top_px, 0);
+                let left = fmt_f64_fixed(p.left_px, 0);
+                let style = format!("top: {top}px; left: {left}px;");
                 let id = p.id;
                 let title = p.title;
                 let body = p.body;

@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use std::rc::Rc;
 
+use super::float_fmt::fmt_f32_fixed;
 use super::settings_schema::{ParamSpec, RecommendedRange, Risk};
 use super::tooltip::{TooltipPayload, TooltipStore};
 
@@ -21,28 +22,8 @@ fn decimals_for_step(step: f32) -> usize {
 }
 
 fn format_float(v: f32, step: f32) -> String {
-    // Sanitize the value before formatting to prevent panics in the dragon algorithm.
-    // NaN, Infinity, and subnormal values can cause integer overflow in float formatting.
-    if !v.is_finite() {
-        return if v.is_nan() {
-            "NaN".to_string()
-        } else if v.is_sign_positive() {
-            "Inf".to_string()
-        } else {
-            "-Inf".to_string()
-        };
-    }
-
     let d = decimals_for_step(step);
-    // Keep it stable for typical numeric params; do not trim aggressively.
-    match d {
-        0 => format!("{v:.0}"),
-        1 => format!("{v:.1}"),
-        2 => format!("{v:.2}"),
-        3 => format!("{v:.3}"),
-        4 => format!("{v:.4}"),
-        _ => format!("{v:.6}"),
-    }
+    fmt_f32_fixed(v, d)
 }
 
 fn risk_label(r: Risk) -> &'static str {
@@ -54,7 +35,13 @@ fn risk_label(r: Risk) -> &'static str {
 }
 
 fn recommended_hint(rec: Option<RecommendedRange>) -> Option<String> {
-    rec.map(|r| format!("Recommended: {:.4} – {:.4}", r.min, r.max))
+    rec.map(|r| {
+        format!(
+            "Recommended: {} – {}",
+            fmt_f32_fixed(r.min, 4),
+            fmt_f32_fixed(r.max, 4)
+        )
+    })
 }
 
 #[component]
