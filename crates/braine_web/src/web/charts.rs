@@ -228,6 +228,7 @@ fn mix_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
     (lerp(a.0, b.0), lerp(a.1, b.1), lerp(a.2, b.2))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_brain_connectivity_sphere(
     canvas: &HtmlCanvasElement,
     nodes: &[braine::substrate::UnitPlotPoint],

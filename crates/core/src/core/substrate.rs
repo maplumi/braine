@@ -3534,6 +3534,7 @@ impl Brain {
                 None => return false,
                 Some(Err(_e)) => {
                     crate::gpu::wasm_cancel_pending_step();
+                    crate::gpu::disable_gpu_for_session();
                     self.step();
                     return true;
                 }
@@ -3635,6 +3636,7 @@ impl Brain {
         if started {
             false
         } else {
+            crate::gpu::disable_gpu_for_session();
             self.step();
             true
         }

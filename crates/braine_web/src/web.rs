@@ -2626,8 +2626,8 @@ fn App() -> impl IntoView {
         let last_ts_ms: std::rc::Rc<std::cell::RefCell<Option<f64>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
 
-        let f: std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(f64)>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
+        type RafCallbackCell = std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+        let f: RafCallbackCell = std::rc::Rc::new(std::cell::RefCell::new(None));
         let g = f.clone();
 
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |ts_ms: f64| {
@@ -5712,7 +5712,7 @@ fn App() -> impl IntoView {
                                                             }
                                                         })
                                                         .unwrap_or(0.0);
-                                                    let width = fmt_f32_fixed((pct.clamp(0.0, 1.0) * 100.0), 1);
+                                                    let width = fmt_f32_fixed(pct.clamp(0.0, 1.0) * 100.0, 1);
                                                     format!(
                                                         "height: 100%; width: {}%; background: linear-gradient(90deg, #22d3ee, #7aa2ff);",
                                                         width

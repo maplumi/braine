@@ -1,12 +1,12 @@
-/// Float formatting helpers for wasm.
-///
-/// Rust's core float-to-decimal formatting has had wasm-facing panics in some
-/// toolchain/browser combinations (see `dragon.rs` panics). To avoid that class
-/// of issues, these helpers do **not** use `format!` on floats.
-///
-/// They:
-/// - Handle `NaN`/`±Inf` explicitly.
-/// - For finite values, scale + round into an `i64`, then format integers.
+//! Float formatting helpers for wasm.
+//!
+//! Rust's core float-to-decimal formatting has had wasm-facing panics in some
+//! toolchain/browser combinations (see `dragon.rs` panics). To avoid that class
+//! of issues, these helpers do **not** use `format!` on floats.
+//!
+//! They:
+//! - Handle `NaN`/`±Inf` explicitly.
+//! - For finite values, scale + round into an `i64`, then format integers.
 
 #[inline]
 pub fn fmt_f32_fixed(v: f32, decimals: usize) -> String {

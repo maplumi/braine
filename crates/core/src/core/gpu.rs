@@ -14,6 +14,18 @@ thread_local! {
     static GPU_CTX: std::cell::OnceCell<Option<GpuContext>> = const { std::cell::OnceCell::new() };
 }
 
+thread_local! {
+    static GPU_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Disable GPU usage for the remainder of this session.
+///
+/// This is primarily used on wasm/WebGPU when validation errors occur at runtime;
+/// we prefer a clean CPU fallback over retrying a broken GPU pipeline every tick.
+pub fn disable_gpu_for_session() {
+    GPU_DISABLED.with(|d| d.set(true));
+}
+
 #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
 thread_local! {
     static GPU_PENDING: std::cell::RefCell<Option<PendingGpuReadback>> =
@@ -46,16 +58,18 @@ pub async fn init_gpu_context(max_units: usize) -> Result<(), String> {
             };
         }
 
-        let ctx = GpuContext::new_async(max_units).await;
+        let ctx_res = GpuContext::new_async(max_units).await;
+        let ok = ctx_res.is_ok();
         GPU_CTX.with(|cell| {
             // Ignore double-set races; wasm is single-threaded, but be defensive.
-            let _ = cell.set(ctx);
+            let _ = cell.set(ctx_res.ok());
         });
-
-        if GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some()) {
+        if ok {
+            GPU_DISABLED.with(|d| d.set(false));
             Ok(())
         } else {
-            Err("WebGPU adapter/device unavailable".to_string())
+            GPU_DISABLED.with(|d| d.set(true));
+            Err("WebGPU init failed".to_string())
         }
     }
 
@@ -77,6 +91,10 @@ pub fn with_gpu_context<T>(max_units: usize, f: impl FnOnce(Option<&GpuContext>)
     #[cfg(target_arch = "wasm32")]
     {
         let _ = max_units;
+        if GPU_DISABLED.with(|d| d.get()) {
+            return f(None);
+        }
+
         GPU_CTX.with(|cell| match cell.get() {
             Some(ctx) => f(ctx.as_ref()),
             None => f(None),
@@ -101,7 +119,8 @@ pub fn gpu_available(max_units: usize) -> bool {
         let _ = max_units;
         // On wasm, GPU initialization must be done asynchronously.
         // This function only reports whether the shared context is ready.
-        GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some())
+        !GPU_DISABLED.with(|d| d.get())
+            && GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -289,7 +308,7 @@ impl GpuContext {
 
     /// Create a new GPU context asynchronously (WebGPU).
     #[cfg(target_arch = "wasm32")]
-    pub async fn new_async(max_units: usize) -> Option<Self> {
+    pub async fn new_async(max_units: usize) -> Result<Self, String> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::BROWSER_WEBGPU,
             ..Default::default()
@@ -301,7 +320,8 @@ impl GpuContext {
                 compatible_surface: None,
                 force_fallback_adapter: false,
             })
-            .await?;
+            .await
+            .ok_or_else(|| "WebGPU: request_adapter returned None".to_string())?;
 
         let (device, queue) = adapter
             .request_device(
@@ -314,7 +334,10 @@ impl GpuContext {
                 None,
             )
             .await
-            .ok()?;
+            .map_err(|e| format!("WebGPU: request_device failed: {e:?}"))?;
+
+        // Capture validation errors during shader/pipeline/layout setup.
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Dynamics Shader"),
@@ -382,7 +405,60 @@ impl GpuContext {
             cache: None,
         });
 
-        Some(Self {
+        // Also validate bind group creation against the layout.
+        // This catches common Storage/Uniform mismatches early.
+        let dummy_units = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Units Buffer (dummy)"),
+            size: std::mem::size_of::<GpuUnit>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let dummy_influences = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Influences Buffer (dummy)"),
+            size: std::mem::size_of::<GpuInfluence>() as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let dummy_inputs = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Inputs Buffer (dummy)"),
+            size: std::mem::size_of::<GpuInput>() as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let dummy_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Params Buffer (dummy)"),
+            size: std::mem::size_of::<GpuParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+        let _ = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Dynamics Bind Group (dummy)"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dummy_units.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: dummy_influences.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: dummy_inputs.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: dummy_params.as_entire_binding(),
+                },
+            ],
+        });
+
+        if let Some(e) = device.pop_error_scope().await {
+            return Err(format!("WebGPU validation error: {e}"));
+        }
+
+        Ok(Self {
             device,
             queue,
             pipeline,
