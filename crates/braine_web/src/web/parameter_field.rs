@@ -21,6 +21,18 @@ fn decimals_for_step(step: f32) -> usize {
 }
 
 fn format_float(v: f32, step: f32) -> String {
+    // Sanitize the value before formatting to prevent panics in the dragon algorithm.
+    // NaN, Infinity, and subnormal values can cause integer overflow in float formatting.
+    if !v.is_finite() {
+        return if v.is_nan() {
+            "NaN".to_string()
+        } else if v.is_sign_positive() {
+            "Inf".to_string()
+        } else {
+            "-Inf".to_string()
+        };
+    }
+
     let d = decimals_for_step(step);
     // Keep it stable for typical numeric params; do not trim aggressively.
     match d {

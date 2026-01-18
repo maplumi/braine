@@ -4,6 +4,17 @@ use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+/// Safely sanitize a float value before formatting.
+/// Prevents panics in the dragon algorithm when formatting NaN, Infinity, or subnormal values.
+#[inline]
+fn sanitize_f64(v: f64) -> f64 {
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        0.0 // Default to 0 for NaN, Infinity, or other special values
+    }
+}
+
 const SERIES_COLORS: [&str; 8] = [
     "#7aa2ff", // blue
     "#fbbf24", // amber
@@ -124,7 +135,7 @@ pub fn draw_brain_activity(
         let y = cy + r * angle.sin();
 
         let size = 2.0 + 4.0 * (unit.amp01 as f64);
-        let alpha = 0.3 + 0.7 * (unit.amp01 as f64);
+        let alpha = sanitize_f64(0.3 + 0.7 * (unit.amp01 as f64));
 
         let color = if unit.is_sensor {
             format!("rgba(74, 222, 128, {})", alpha) // green for sensors
@@ -375,7 +386,7 @@ pub fn draw_brain_connectivity_sphere(
             let width = 0.6 + 2.4 * absw.powf(0.75);
             let mut alpha = 0.05 + 0.28 * absw;
             alpha *= 0.35 + 0.65 * depth;
-            alpha = alpha.clamp(0.03, 0.45);
+            alpha = sanitize_f64(alpha.clamp(0.03, 0.45));
 
             let src_rgb = brainviz_node_rgb(&nodes[s], opts.learning_mode);
             let dst_rgb = brainviz_node_rgb(&nodes[t], opts.learning_mode);
@@ -445,7 +456,10 @@ pub fn draw_brain_connectivity_sphere(
             let alpha = 0.08 + 0.22 * mid;
 
             if !seg_pos[bucket].is_empty() {
-                ctx.set_stroke_style_str(&format!("rgba(122, 162, 255, {:.3})", alpha));
+                ctx.set_stroke_style_str(&format!(
+                    "rgba(122, 162, 255, {:.3})",
+                    sanitize_f64(alpha)
+                ));
                 ctx.set_line_width(width);
                 ctx.begin_path();
                 for &(x1, y1, x2, y2) in &seg_pos[bucket] {
@@ -456,7 +470,10 @@ pub fn draw_brain_connectivity_sphere(
             }
 
             if !seg_neg[bucket].is_empty() {
-                ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
+                ctx.set_stroke_style_str(&format!(
+                    "rgba(251, 113, 133, {:.3})",
+                    sanitize_f64(alpha)
+                ));
                 ctx.set_line_width(width);
                 ctx.begin_path();
                 for &(x1, y1, x2, y2) in &seg_neg[bucket] {
@@ -511,7 +528,7 @@ pub fn draw_brain_connectivity_sphere(
         size = size.clamp(1.2, max_size);
 
         // Alpha: keep it readable but not flashy.
-        let alpha = (0.22 + 0.38 * salience + 0.30 * amp).clamp(0.10, 0.95);
+        let alpha = sanitize_f64((0.22 + 0.38 * salience + 0.30 * amp).clamp(0.10, 0.95));
 
         // Color nodes based on type AND learning/inference mode unless overridden.
         // Overrides are used to highlight manually tagged nodes.
@@ -713,14 +730,14 @@ pub fn draw_causal_graph(
         let x2 = cx + tx * tp;
         let y2 = cy + ty * tp;
 
-        let alpha = (0.10 + 0.50 * norm_strength) * (0.35 + 0.65 * depth);
+        let alpha = sanitize_f64((0.10 + 0.50 * norm_strength) * (0.35 + 0.65 * depth));
         let width = 0.5 + 2.0 * norm_strength;
 
         // Color: green for positive causal, red for negative (same as substrate)
         if edge.strength >= 0.0 {
-            ctx.set_stroke_style_str(&format!("rgba(74, 222, 128, {:.3})", alpha));
+            ctx.set_stroke_style_str(&format!("rgba(74, 222, 128, {:.3})", sanitize_f64(alpha)));
         } else {
-            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", alpha));
+            ctx.set_stroke_style_str(&format!("rgba(251, 113, 133, {:.3})", sanitize_f64(alpha)));
         }
         ctx.set_line_width(width);
 
@@ -784,7 +801,8 @@ pub fn draw_causal_graph(
 
         // Alpha based on depth and frequency
         let depth = (z3d + 1.0) * 0.5;
-        let alpha = (0.4 + 0.4 * norm_count) * (0.5 + 0.5 * depth) * (0.9 + 0.1 * pulse);
+        let alpha =
+            sanitize_f64((0.4 + 0.4 * norm_count) * (0.5 + 0.5 * depth) * (0.9 + 0.1 * pulse));
 
         // Cyan by default; optionally overridden for tagged symbols.
         let (r, g, b) = node_color_overrides
