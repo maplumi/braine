@@ -1230,6 +1230,12 @@ fn App() -> impl IntoView {
     let (exec_tier_effective, set_exec_tier_effective) =
         signal(runtime.with_value(|r| r.brain.effective_execution_tier()));
 
+    // UI refresh throttles:
+    // - Heavy brain sampling (diagnostics/causal stats/unit plot) is expensive on wasm.
+    // - localStorage writes are synchronous and can cause severe jank if done per-trial.
+    let ui_last_heavy_refresh_ms = StoredValue::new(0.0f64);
+    let ui_last_persist_ms = StoredValue::new(0.0f64);
+
     // If WebGPU is present and this build has the web `gpu` feature, initialize
     // the GPU context asynchronously. By default we auto-enable GPU on first load,
     // but if the user explicitly selected CPU we do not auto-switch.
@@ -1279,7 +1285,9 @@ fn App() -> impl IntoView {
     let refresh_ui_from_runtime = {
         let runtime = runtime.clone();
         move || {
-            set_diag.set(runtime.with_value(|r| r.brain.diagnostics()));
+            let now_ms = js_sys::Date::now();
+            let running = is_running.get_untracked();
+
             set_exec_tier_selected.set(runtime.with_value(|r| r.brain.execution_tier()));
             set_exec_tier_effective.set(runtime.with_value(|r| r.brain.effective_execution_tier()));
             let stats = runtime.with_value(|r| r.game.stats().clone());
@@ -1290,16 +1298,6 @@ fn App() -> impl IntoView {
             set_incorrect_count.set(stats.incorrect);
             set_learned_at_trial.set(stats.learned_at_trial);
             set_mastered_at_trial.set(stats.mastered_at_trial);
-
-            // Update unit plot data for Graph page (sample 128 units)
-            let plot_points = runtime.with_value(|r| r.brain.unit_plot_points(128));
-            set_unit_plot.set(plot_points);
-
-            // Update brain age and causal stats
-            set_brain_age.set(runtime.with_value(|r| r.brain.age_steps()));
-            let cstats = runtime.with_value(|r| r.brain.causal_stats());
-            set_causal_symbols.set(cstats.base_symbols);
-            set_causal_edges.set(cstats.edges);
 
             // Update game accuracy in memory (will be persisted on game switch or save)
             let game_label = game_kind.get_untracked().label().to_string();
@@ -1328,6 +1326,9 @@ fn App() -> impl IntoView {
                 set_learning_milestone.set("🔄 Training".to_string());
                 set_learning_milestone_tone.set("training".to_string());
             }
+
+            // Keep game-specific UI state responsive.
+            // (This is intentionally lightweight compared to brain-wide sampling.)
 
             let snap = runtime.with_value(|r| r.game_ui_snapshot());
             set_spotxy_pos.set(snap.spotxy_pos);
@@ -1359,6 +1360,32 @@ fn App() -> impl IntoView {
                 }
             });
 
+            // Heavy brain-wide sampling: throttle aggressively while running.
+            // This is the main UI perf lever on wasm.
+            let heavy_interval_ms = if running { 1_000.0 } else { 250.0 };
+            let should_do_heavy =
+                (now_ms - ui_last_heavy_refresh_ms.get_value()) >= heavy_interval_ms;
+
+            // Unit plot sampling is only needed when the UnitPlot analytics panel is visible.
+            let need_unit_plot = analytics_modal_open.get_untracked()
+                && analytics_panel.get_untracked() == AnalyticsPanel::UnitPlot;
+
+            if should_do_heavy || need_unit_plot {
+                ui_last_heavy_refresh_ms.set_value(now_ms);
+
+                set_diag.set(runtime.with_value(|r| r.brain.diagnostics()));
+                set_brain_age.set(runtime.with_value(|r| r.brain.age_steps()));
+
+                let cstats = runtime.with_value(|r| r.brain.causal_stats());
+                set_causal_symbols.set(cstats.base_symbols);
+                set_causal_edges.set(cstats.edges);
+
+                if need_unit_plot {
+                    let plot_points = runtime.with_value(|r| r.brain.unit_plot_points(128));
+                    set_unit_plot.set(plot_points);
+                }
+            }
+
             // Persist per-game stats + chart history so refresh restores the current state.
             let kind = game_kind.get_untracked();
             let should_persist =
@@ -1368,17 +1395,27 @@ fn App() -> impl IntoView {
                     *k = kind;
                     *t = stats.trials;
                 });
-                let state = PersistedStatsState {
-                    version: 1,
-                    game: kind.label().to_string(),
-                    stats: PersistedGameStats::from(&stats),
-                    perf_history: perf_history.with_value(|h| h.data().to_vec()),
-                    neuromod_history: neuromod_history.with_value(|h| h.data().to_vec()),
-                    choice_events: choice_events.with_value(|v| v.clone()),
-                    last_action: last_action.get_untracked(),
-                    last_reward: last_reward.get_untracked(),
-                };
-                save_persisted_stats_state(kind, &state);
+
+                // localStorage writes are synchronous and can be very costly.
+                // During gameplay, debounce to keep the main thread smooth.
+                let persist_interval_ms = if running { 2_000.0 } else { 0.0 };
+                let ok_to_persist = persist_interval_ms == 0.0
+                    || (now_ms - ui_last_persist_ms.get_value()) >= persist_interval_ms;
+
+                if ok_to_persist {
+                    ui_last_persist_ms.set_value(now_ms);
+                    let state = PersistedStatsState {
+                        version: 1,
+                        game: kind.label().to_string(),
+                        stats: PersistedGameStats::from(&stats),
+                        perf_history: perf_history.with_value(|h| h.data().to_vec()),
+                        neuromod_history: neuromod_history.with_value(|h| h.data().to_vec()),
+                        choice_events: choice_events.with_value(|v| v.clone()),
+                        last_action: last_action.get_untracked(),
+                        last_reward: last_reward.get_untracked(),
+                    };
+                    save_persisted_stats_state(kind, &state);
+                }
             }
         }
     };
