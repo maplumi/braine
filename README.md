@@ -10,10 +10,11 @@ Web demo: https://maplumi.github.io/braine/
 
 ## Framing (vs familiar baselines)
 
-This project behaves like a **continuous-time recurrent substrate** with **local plasticity** (Hebbian-ish) and a scalar **neuromodulator** used as reward/salience. That puts it closest to these reference frames:
+This project behaves like a **continuous-time recurrent substrate** with **local plasticity** (Hebbian-ish) and a scalar **neuromodulator** used as reward/salience. Plasticity is implemented as continuously-updated eligibility traces with a deadband-gated (and sign-correct) neuromodulated commit. That puts it closest to these reference frames:
 
 ### 1) Neuromodulated Hebbian RL (3-factor learning)
-- **Overlap:** local co-activity updates (Hebb) scaled by a reward-like signal (neuromodulator).
+- **Overlap:** local co-activity / phase-alignment learning scaled by a reward-like signal (neuromodulator).
+- **Implementation note:** eligibility traces accumulate locally; weights change only when `|neuromod|` exceeds a small deadband (negative neuromod supports LTD).
 - **Difference:** no explicit $Q(s,a)$ table, no policy gradient, and no backprop-through-time; “credit assignment” is structural/local.
 - **Where you’ll see it:** action-group reinforcement in the interactive demos (Pong/Bandit).
 
@@ -147,7 +148,7 @@ The visualizer exposes a few manual “accelerators”:
 
 | Mechanism | Status | Description |
 |-----------|--------|-------------|
-| Three-Factor Hebbian | ✅ | Core learning rule (pre × post × neuromodulator) |
+| Three-Factor Hebbian | ✅ | Core learning rule: eligibility (pre/post/phase) + neuromodulated commit (deadband-gated; signed neuromod) |
 | One-Shot Imprinting | ✅ | Instant concept formation on novel stimuli |
 | Neurogenesis | ✅ | Dynamic capacity expansion when saturated |
 | Pruning | ✅ | Structural forgetting of weak connections |
