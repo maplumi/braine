@@ -175,6 +175,10 @@
     <!-- Trunk entrypoint: builds the crate in this folder to WASM -->
     <link data-trunk rel="rust" data-wasm-opt="z" />
 
+    <!-- App icon (SVG, non-brain) -->
+    <link data-trunk rel="copy-file" href="assets/braine-icon.svg" />
+    <link rel="icon" type="image/svg+xml" href="braine-icon.svg" />
+
     <!-- App styles (mobile-first, includes responsive dashboard drawer) -->
     <link data-trunk rel="css" href="app.css" />
   </head>

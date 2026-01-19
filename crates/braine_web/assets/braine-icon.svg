@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Braine icon">
+  <defs>
+    <radialGradient id="bg" cx="30%" cy="20%" r="80%">
+      <stop offset="0" stop-color="#0f1b33"/>
+      <stop offset="1" stop-color="#070b14"/>
+    </radialGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2ae6ff"/>
+      <stop offset="1" stop-color="#7cf7d4"/>
+    </linearGradient>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="2.8" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Circular badge background -->
+  <circle cx="128" cy="128" r="112" fill="url(#bg)" stroke="#1b2a44" stroke-width="8"/>
+  <circle cx="128" cy="128" r="98" fill="none" stroke="#2ae6ff" stroke-opacity="0.10" stroke-width="6"/>
+
+  <!-- Circuit motif (kept bold so it reads well at 48px) -->
+  <g fill="none" stroke="url(#g)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)" opacity="0.96">
+    <!-- Outer ring traces -->
+    <path d="M128 58 V78"/>
+    <path d="M198 128 H178"/>
+    <path d="M128 198 V178"/>
+    <path d="M58 128 H78"/>
+
+    <path d="M178 78 L164 92"/>
+    <path d="M78 78 L92 92"/>
+    <path d="M178 178 L164 164"/>
+    <path d="M78 178 L92 164"/>
+
+    <!-- Inner network (neural-ish connectivity) -->
+    <path d="M128 86 C106 94 96 110 92 128 C96 146 106 162 128 170"/>
+    <path d="M128 86 C150 94 160 110 164 128 C160 146 150 162 128 170"/>
+
+    <path d="M108 108 L128 128 L108 148"/>
+    <path d="M148 108 L128 128 L148 148"/>
+
+    <!-- Small bus lines to give an IC feel -->
+    <path d="M108 108 H92"/>
+    <path d="M148 108 H164"/>
+    <path d="M108 148 H92"/>
+    <path d="M148 148 H164"/>
+  </g>
+
+  <!-- Nodes / pads -->
+  <g fill="url(#g)" opacity="0.98">
+    <!-- Outer pads -->
+    <circle cx="128" cy="58" r="11"/>
+    <circle cx="198" cy="128" r="11"/>
+    <circle cx="128" cy="198" r="11"/>
+    <circle cx="58" cy="128" r="11"/>
+
+    <circle cx="178" cy="78" r="9.5"/>
+    <circle cx="78" cy="78" r="9.5"/>
+    <circle cx="178" cy="178" r="9.5"/>
+    <circle cx="78" cy="178" r="9.5"/>
+
+    <!-- Inner synapses -->
+    <circle cx="128" cy="86" r="9.5"/>
+    <circle cx="128" cy="170" r="9.5"/>
+    <circle cx="92" cy="128" r="8.5"/>
+    <circle cx="164" cy="128" r="8.5"/>
+    <circle cx="108" cy="108" r="8"/>
+    <circle cx="148" cy="108" r="8"/>
+    <circle cx="108" cy="148" r="8"/>
+    <circle cx="148" cy="148" r="8"/>
+
+    <!-- Center hub -->
+    <circle cx="128" cy="128" r="10"/>
+  </g>
+</svg>

@@ -118,10 +118,20 @@ button {
 
 .brand {
   margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-size: 1.3rem;
   font-weight: 800;
   color: var(--accent);
   letter-spacing: 0.2px;
+}
+
+.brand-icon {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  image-rendering: auto;
 }
 
 .subtle {
@@ -1330,6 +1340,22 @@ a.good { color: var(--accent-2); }
   color: var(--text);
   font-size: 0.92rem;
   line-height: 1.75;
+}
+
+.docs-section {
+  margin: 12px 0;
+  padding: 14px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel) 55%, transparent);
+}
+
+.docs-section > :first-child {
+  margin-top: 0;
+}
+
+.docs-section > :last-child {
+  margin-bottom: 0;
 }
 
 .docs-markdown h1,

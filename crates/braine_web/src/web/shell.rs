@@ -32,7 +32,10 @@ pub(super) fn Topbar(
                 >
                     "☰"
                 </button>
-                <h1 class="brand">"🧠 Braine"</h1>
+                <h1 class="brand">
+                    <img class="brand-icon" src="braine-icon.svg" alt="" aria-hidden="true" />
+                    "Braine"
+                </h1>
                 <span class="subtle">{move || gpu_status.get()}</span>
             </div>
             <div class="app-header-right">

@@ -45,5 +45,33 @@ pub fn render_markdown_with_mermaid(md: &str) -> String {
 
     let mut out = String::new();
     html::push_html(&mut out, events.into_iter());
+
+    // For doc pages, we want each H2 section to read like a separate "card".
+    // We do this as a post-process on the rendered HTML to avoid complicating
+    // the pulldown-cmark event stream.
+    wrap_h2_sections(&out)
+}
+
+fn wrap_h2_sections(html: &str) -> String {
+    let first = match html.find("<h2") {
+        Some(i) => i,
+        None => return html.to_string(),
+    };
+
+    let mut out = String::with_capacity(html.len() + 64);
+    out.push_str(&html[..first]);
+
+    let mut rest = &html[first..];
+    while let Some(next) = rest[3..].find("<h2").map(|i| i + 3) {
+        let (section, tail) = rest.split_at(next);
+        out.push_str("<section class=\"docs-section\">");
+        out.push_str(section);
+        out.push_str("</section>");
+        rest = tail;
+    }
+
+    out.push_str("<section class=\"docs-section\">");
+    out.push_str(rest);
+    out.push_str("</section>");
     out
 }
