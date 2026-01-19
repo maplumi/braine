@@ -232,6 +232,41 @@ pub struct BrainConfig {
 
     /// Run homeostasis every N `step()` calls.
     pub homeostasis_every: u32,
+
+    // ---------------------------------------------------------------------
+    // Module-local learning + routing (scaling phase 1–2)
+    // ---------------------------------------------------------------------
+    /// If >0, gate learning to the top-K modules selected from the most recent
+    /// committed symbol set.
+    ///
+    /// 0 disables routing (default; preserves legacy behavior).
+    pub module_routing_top_k: u8,
+
+    /// If true, units with no module assignment are excluded from
+    /// routing-gated learning.
+    pub module_routing_strict: bool,
+
+    /// Weight on per-module reward EMA in routing score.
+    pub module_routing_beta: f32,
+
+    /// Per-commit decay rate for module signature association weights in [0,1].
+    ///
+    /// 0 disables signature decay and reward EMA updates.
+    pub module_signature_decay: f32,
+
+    /// Maximum number of symbol associations stored per module.
+    pub module_signature_cap: u8,
+
+    /// If >0, skip learning updates for units with learning-activity below this threshold.
+    ///
+    /// Learning-activity is `max(activity_trace, max(amp, 0))` when
+    /// `activity_trace_decay > 0`, otherwise `max(amp, 0)`.
+    pub module_learning_activity_threshold: f32,
+
+    /// Optional per-module plasticity budget (L1 of |Δw|) per step.
+    ///
+    /// 0 disables per-module budgeting.
+    pub module_plasticity_budget: f32,
 }
 
 impl Default for BrainConfig {
@@ -285,6 +320,15 @@ impl Default for BrainConfig {
             homeostasis_target_amp: 0.25,
             homeostasis_rate: 0.0,
             homeostasis_every: 50,
+
+            // Scaling defaults (off by default).
+            module_routing_top_k: 0,
+            module_routing_strict: false,
+            module_routing_beta: 0.2,
+            module_signature_decay: 0.01,
+            module_signature_cap: 32,
+            module_learning_activity_threshold: 0.0,
+            module_plasticity_budget: 0.0,
         }
     }
 }
@@ -432,6 +476,27 @@ impl BrainConfig {
         }
         if self.homeostasis_every == 0 {
             return Err("homeostasis_every must be >= 1");
+        }
+
+        if !self.module_routing_beta.is_finite() || self.module_routing_beta < 0.0 {
+            return Err("module_routing_beta must be finite and >= 0");
+        }
+        if !self.module_signature_decay.is_finite()
+            || self.module_signature_decay < 0.0
+            || self.module_signature_decay > 1.0
+        {
+            return Err("module_signature_decay must be in [0, 1]");
+        }
+        if self.module_signature_cap == 0 {
+            return Err("module_signature_cap must be >= 1");
+        }
+        if !self.module_learning_activity_threshold.is_finite()
+            || self.module_learning_activity_threshold < 0.0
+        {
+            return Err("module_learning_activity_threshold must be finite and >= 0");
+        }
+        if !self.module_plasticity_budget.is_finite() || self.module_plasticity_budget < 0.0 {
+            return Err("module_plasticity_budget must be finite and >= 0");
         }
         Ok(())
     }
@@ -644,6 +709,18 @@ struct NamedGroup {
     units: Vec<UnitId>,
 }
 
+const NO_MODULE: u16 = u16::MAX;
+
+#[derive(Debug, Clone)]
+struct RoutingModule {
+    // Base name without kind prefix.
+    name: String,
+    // Sparse associations between this module and boundary symbols.
+    signature: HashMap<SymbolId, f32>,
+    // Reward summary to bias routing.
+    reward_ema: f32,
+}
+
 /// A dynamical brain-like substrate with local learning.
 ///
 /// `Brain` is the core cognitive substrate: a collection of oscillating units
@@ -715,6 +792,12 @@ pub struct Brain {
     // External "sensor" input is just injected current to some units.
     sensor_groups: Vec<NamedGroup>,
     action_groups: Vec<NamedGroup>,
+
+    // Module routing state (ephemeral; not persisted).
+    routing_modules: Vec<RoutingModule>,
+    routing_module_index: HashMap<String, u16>,
+    unit_module: Vec<u16>,
+    learning_route_modules: Vec<u16>,
 
     // Fast lookup: stimulus name -> sensor group index.
     // Derived from `sensor_groups`; not serialized.
@@ -924,9 +1007,15 @@ impl Brain {
         let sensor_member = vec![false; cfg.unit_count];
         let group_member = vec![false; cfg.unit_count];
 
+        let unit_module = vec![NO_MODULE; cfg.unit_count];
+
         let mut symbols: HashMap<String, SymbolId> = HashMap::new();
         let mut symbols_rev: Vec<String> = Vec::new();
         let sensor_group_index: HashMap<String, usize> = HashMap::new();
+
+        let routing_modules: Vec<RoutingModule> = Vec::new();
+        let routing_module_index: HashMap<String, u16> = HashMap::new();
+        let learning_route_modules: Vec<u16> = Vec::new();
 
         // Reserve reward symbols up front.
         let reward_pos_symbol = intern_symbol(&mut symbols, &mut symbols_rev, "reward_pos");
@@ -949,6 +1038,11 @@ impl Brain {
             sensor_groups: Vec::new(),
             action_groups: Vec::new(),
             sensor_group_index,
+
+            routing_modules,
+            routing_module_index,
+            unit_module,
+            learning_route_modules,
             pending_input,
             neuromod: 0.0,
             pruned_last_step: 0,
@@ -971,6 +1065,141 @@ impl Brain {
             age_steps: 0,
             telemetry: Telemetry::default(),
             learning_monitors: LearningMonitors::default(),
+        }
+    }
+
+    fn ensure_routing_module(&mut self, kind: &str, name: &str) -> u16 {
+        let key = if kind == "sensor" {
+            let mut s = String::with_capacity(8 + name.len());
+            s.push_str("sensor::");
+            s.push_str(name);
+            s
+        } else {
+            let mut s = String::with_capacity(8 + name.len());
+            s.push_str("action::");
+            s.push_str(name);
+            s
+        };
+
+        if let Some(&idx) = self.routing_module_index.get(&key) {
+            return idx;
+        }
+
+        let idx: u16 = self
+            .routing_modules
+            .len()
+            .try_into()
+            .unwrap_or(u16::MAX - 1);
+
+        self.routing_modules.push(RoutingModule {
+            name: name.to_string(),
+            signature: HashMap::new(),
+            reward_ema: 0.0,
+        });
+        self.routing_module_index.insert(key, idx);
+        idx
+    }
+
+    #[inline]
+    fn learning_allowed_for_unit(&self, unit: usize) -> bool {
+        if self.cfg.module_routing_top_k == 0 {
+            return true;
+        }
+        if self.learning_route_modules.is_empty() {
+            // Router is enabled but currently uninformative: do not gate.
+            return true;
+        }
+        let mid = self.unit_module.get(unit).copied().unwrap_or(NO_MODULE);
+        if mid == NO_MODULE {
+            return !self.cfg.module_routing_strict;
+        }
+        self.learning_route_modules.contains(&mid)
+    }
+
+    fn route_modules_from_symbols(&self, symbols: &[SymbolId]) -> Vec<u16> {
+        let top_k = self.cfg.module_routing_top_k as usize;
+        if top_k == 0 {
+            return Vec::new();
+        }
+        if self.routing_modules.is_empty() {
+            return Vec::new();
+        }
+
+        // Build a score per module.
+        let beta = self.cfg.module_routing_beta;
+        let mut scored: Vec<(u16, f32)> = Vec::with_capacity(self.routing_modules.len());
+        for (i, m) in self.routing_modules.iter().enumerate() {
+            let mut score = beta * m.reward_ema;
+
+            // Seed match: if a boundary symbol name matches module name, prefer it.
+            for &sid in symbols {
+                if let Some(sym) = self.symbols_rev.get(sid as usize) {
+                    if sym.as_str() == m.name.as_str() {
+                        score += 1.0;
+                    }
+                }
+                if let Some(v) = m.signature.get(&sid) {
+                    score += *v;
+                }
+            }
+
+            scored.push((i as u16, score));
+        }
+
+        // If all scores are ~zero, do not gate.
+        let best = scored
+            .iter()
+            .map(|(_i, s)| *s)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if !best.is_finite() || best <= 0.0 {
+            return Vec::new();
+        }
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+        scored
+            .into_iter()
+            .take(top_k.min(self.routing_modules.len()))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn update_routing_signatures(&mut self, routed: &[u16], symbols: &[SymbolId], reward: f32) {
+        let decay = self.cfg.module_signature_decay;
+        let cap = self.cfg.module_signature_cap.max(1) as usize;
+        if decay <= 0.0 {
+            return;
+        }
+
+        for &mid in routed {
+            let Some(m) = self.routing_modules.get_mut(mid as usize) else {
+                continue;
+            };
+
+            // Decay existing association weights.
+            for v in m.signature.values_mut() {
+                *v *= 1.0 - decay;
+            }
+
+            // Add current symbols.
+            for &sid in symbols {
+                let entry = m.signature.entry(sid).or_insert(0.0);
+                *entry += 1.0;
+            }
+
+            // Keep bounded size by dropping the weakest entries.
+            if m.signature.len() > cap {
+                let mut entries: Vec<(SymbolId, f32)> =
+                    m.signature.iter().map(|(k, v)| (*k, *v)).collect();
+                entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+                entries.truncate(cap);
+                m.signature.clear();
+                for (k, v) in entries {
+                    m.signature.insert(k, v);
+                }
+            }
+
+            // Reward EMA (bounded, cheap summary).
+            m.reward_ema = (1.0 - decay) * m.reward_ema + decay * reward;
         }
     }
 
@@ -1002,6 +1231,45 @@ impl Brain {
             for &id in &g.units {
                 if id < self.group_member.len() {
                     self.group_member[id] = true;
+                }
+            }
+        }
+    }
+
+    fn rebuild_routing_from_groups(&mut self) {
+        self.routing_modules.clear();
+        self.routing_module_index.clear();
+
+        if self.unit_module.len() != self.units.len() {
+            self.unit_module.resize(self.units.len(), NO_MODULE);
+        }
+        self.unit_module.fill(NO_MODULE);
+
+        // Avoid borrow conflicts by snapshotting group definitions.
+        let sensor_groups: Vec<(String, Vec<UnitId>)> = self
+            .sensor_groups
+            .iter()
+            .map(|g| (g.name.clone(), g.units.clone()))
+            .collect();
+        for (name, units) in sensor_groups {
+            let module = self.ensure_routing_module("sensor", name.as_str());
+            for id in units {
+                if id < self.unit_module.len() {
+                    self.unit_module[id] = module;
+                }
+            }
+        }
+
+        let action_groups: Vec<(String, Vec<UnitId>)> = self
+            .action_groups
+            .iter()
+            .map(|g| (g.name.clone(), g.units.clone()))
+            .collect();
+        for (name, units) in action_groups {
+            let module = self.ensure_routing_module("action", name.as_str());
+            for id in units {
+                if id < self.unit_module.len() {
+                    self.unit_module[id] = module;
                 }
             }
         }
@@ -1605,6 +1873,11 @@ impl Brain {
             sensor_groups,
             sensor_group_index: HashMap::new(),
             action_groups,
+
+            routing_modules: Vec::new(),
+            routing_module_index: HashMap::new(),
+            unit_module: vec![NO_MODULE; unit_count],
+            learning_route_modules: Vec::new(),
             pending_input: vec![0.0; unit_count],
             neuromod: 0.0,
             symbols,
@@ -1623,6 +1896,7 @@ impl Brain {
 
         brain.rebuild_group_membership();
         brain.rebuild_sensor_group_index();
+        brain.rebuild_routing_from_groups();
         Ok(brain)
     }
 
@@ -1723,6 +1997,13 @@ impl Brain {
                 + 4 // causal_lag_steps
                 + 4 // causal_lag_decay
                 + 4 // causal_symbol_cap
+                + 4 // module_routing_top_k
+                + 4 // module_routing_strict
+                + 4 // module_routing_beta
+                + 4 // module_signature_decay
+                + 4 // module_signature_cap
+                + 4 // module_learning_activity_threshold
+                + 4 // module_plasticity_budget
     }
 
     #[cfg(feature = "std")]
@@ -1770,6 +2051,15 @@ impl Brain {
         storage::write_u32_le(w, self.cfg.causal_lag_steps as u32)?;
         storage::write_f32_le(w, self.cfg.causal_lag_decay)?;
         storage::write_u32_le(w, self.cfg.causal_symbol_cap as u32)?;
+
+        // Scaling knobs (appended; backwards compatible on load).
+        storage::write_u32_le(w, self.cfg.module_routing_top_k as u32)?;
+        storage::write_u32_le(w, if self.cfg.module_routing_strict { 1 } else { 0 })?;
+        storage::write_f32_le(w, self.cfg.module_routing_beta)?;
+        storage::write_f32_le(w, self.cfg.module_signature_decay)?;
+        storage::write_u32_le(w, self.cfg.module_signature_cap as u32)?;
+        storage::write_f32_le(w, self.cfg.module_learning_activity_threshold)?;
+        storage::write_f32_le(w, self.cfg.module_plasticity_budget)?;
         Ok(())
     }
 
@@ -1880,6 +2170,15 @@ impl Brain {
             let causal_lag_decay = read_f32_default(&mut c, 0.7);
             let causal_symbol_cap = read_u32_default(&mut c, 32) as u8;
 
+            // Optional appended scaling knobs (safe defaults).
+            let module_routing_top_k = read_u32_default(&mut c, 0) as u8;
+            let module_routing_strict = read_u32_default(&mut c, 0) != 0;
+            let module_routing_beta = read_f32_default(&mut c, 0.2);
+            let module_signature_decay = read_f32_default(&mut c, 0.01);
+            let module_signature_cap = read_u32_default(&mut c, 32) as u8;
+            let module_learning_activity_threshold = read_f32_default(&mut c, 0.0);
+            let module_plasticity_budget = read_f32_default(&mut c, 0.0);
+
             let cfg = BrainConfig {
                 unit_count,
                 connectivity_per_unit,
@@ -1921,6 +2220,14 @@ impl Brain {
                 homeostasis_target_amp,
                 homeostasis_rate,
                 homeostasis_every,
+
+                module_routing_top_k,
+                module_routing_strict,
+                module_routing_beta,
+                module_signature_decay,
+                module_signature_cap,
+                module_learning_activity_threshold,
+                module_plasticity_budget,
             };
 
             // Basic sanity: only accept if seed_present looks plausible and cfg validates.
@@ -2490,6 +2797,7 @@ impl Brain {
         }
 
         if let Some(idx) = self.sensor_groups.iter().position(|g| g.name == name) {
+            let module = self.ensure_routing_module("sensor", name);
             let cur = self.sensor_groups[idx].units.len();
             if cur >= min_width {
                 return 0;
@@ -2499,6 +2807,9 @@ impl Brain {
             for &id in &extra {
                 self.sensor_member[id] = true;
                 self.group_member[id] = true;
+                if id < self.unit_module.len() {
+                    self.unit_module[id] = module;
+                }
             }
             self.sensor_groups[idx].units.extend(extra);
             self.intern(name);
@@ -2535,6 +2846,7 @@ impl Brain {
         }
 
         if let Some(idx) = self.action_groups.iter().position(|g| g.name == name) {
+            let module = self.ensure_routing_module("action", name);
             let cur = self.action_groups[idx].units.len();
             if cur >= min_width {
                 return 0;
@@ -2544,6 +2856,9 @@ impl Brain {
             for &id in &extra {
                 self.units[id].bias += 0.02;
                 self.group_member[id] = true;
+                if id < self.unit_module.len() {
+                    self.unit_module[id] = module;
+                }
             }
             self.action_groups[idx].units.extend(extra);
             self.intern(name);
@@ -2784,10 +3099,14 @@ impl Brain {
     /// * `name` - Unique name for this sensor group
     /// * `width` - Number of units in the group
     pub fn define_sensor(&mut self, name: &str, width: usize) {
+        let module = self.ensure_routing_module("sensor", name);
         let units = self.allocate_units(width);
         for &id in &units {
             self.sensor_member[id] = true;
             self.group_member[id] = true;
+            if id < self.unit_module.len() {
+                self.unit_module[id] = module;
+            }
         }
         self.sensor_groups.push(NamedGroup {
             name: name.to_string(),
@@ -2809,11 +3128,15 @@ impl Brain {
     /// * `name` - Unique name for this action group
     /// * `width` - Number of units in the group
     pub fn define_action(&mut self, name: &str, width: usize) {
+        let module = self.ensure_routing_module("action", name);
         let units = self.allocate_units(width);
         // Slight positive bias so actions can become stable attractors.
         for &id in &units {
             self.units[id].bias += 0.02;
             self.group_member[id] = true;
+            if id < self.unit_module.len() {
+                self.unit_module[id] = module;
+            }
         }
         self.action_groups.push(NamedGroup {
             name: name.to_string(),
@@ -3215,6 +3538,25 @@ impl Brain {
                 .extend_from_slice(&self.active_symbols);
         }
 
+        // Phase 2 (routing-as-attention): decide which modules are eligible to learn
+        // on the *next* step, based on this committed boundary symbol set.
+        if self.cfg.module_routing_top_k > 0 {
+            let routed = self.route_modules_from_symbols(&self.active_symbols);
+            self.learning_route_modules = routed;
+
+            // Update signatures for routed modules to make routing self-organizing.
+            // If routing is currently uninformative (empty selection), skip the update.
+            if !self.learning_route_modules.is_empty() {
+                let reward = self.neuromod.clamp(-1.0, 1.0);
+                // Clone small vectors to avoid borrow conflicts with `&mut self`.
+                let routed = self.learning_route_modules.clone();
+                let symbols = self.active_symbols.clone();
+                self.update_routing_signatures(&routed, &symbols, reward);
+            }
+        } else {
+            self.learning_route_modules.clear();
+        }
+
         // Lagged causal update:
         // - lag 1 is stored inside `CausalMemory.prev_symbols`
         // - we keep lag>=2 history in `self.causal_lag_history`
@@ -3259,6 +3601,9 @@ impl Brain {
                 .last_committed_symbols
                 .extend_from_slice(&self.active_symbols);
         }
+
+        // Discard should not steer routing state.
+        self.learning_route_modules.clear();
 
         self.active_symbols.clear();
     }
@@ -4547,6 +4892,7 @@ impl Brain {
         self.sensor_member.push(false);
         self.group_member.push(false);
         self.activity_trace.push(0.0);
+        self.unit_module.push(NO_MODULE);
 
         // Append to CSR: add offset for new unit, then add connections.
         let old_end = *self.connections.offsets.last().unwrap_or(&0);
@@ -4603,6 +4949,7 @@ impl Brain {
         self.sensor_member.reserve(count);
         self.group_member.reserve(count);
         self.activity_trace.reserve(count);
+        self.unit_module.reserve(count);
 
         self.connections.offsets.reserve(count);
         self.connections.targets.reserve(count * connectivity);
@@ -4689,6 +5036,8 @@ impl Brain {
             return Vec::new();
         }
 
+        let module = self.ensure_routing_module(group_type, group_name);
+
         let mut new_ids = Vec::with_capacity(count);
 
         for _ in 0..count {
@@ -4711,6 +5060,7 @@ impl Brain {
             self.sensor_member.push(false);
             self.group_member.push(false);
             self.activity_trace.push(0.0);
+            self.unit_module.push(module);
             self.cfg.unit_count = self.units.len();
 
             // Wire FROM new unit TO group units (new unit can influence the group).
@@ -5130,6 +5480,7 @@ impl Brain {
 
         let thr = self.cfg.coactive_threshold;
         let phase_thr = self.cfg.phase_lock_threshold;
+        let activity_thr = self.cfg.module_learning_activity_threshold;
 
         let decay = (1.0 - self.cfg.eligibility_decay).clamp(0.0, 1.0);
         let gain = self.cfg.eligibility_gain;
@@ -5153,7 +5504,14 @@ impl Brain {
                 continue;
             }
 
+            if !self.learning_allowed_for_unit(owner) {
+                continue;
+            }
+
             let a_amp = activity_for_learning(self, owner);
+            if activity_thr > 0.0 && a_amp < activity_thr {
+                continue;
+            }
             if a_amp <= thr {
                 continue;
             }
@@ -5168,6 +5526,9 @@ impl Brain {
                 }
 
                 let b_amp = activity_for_learning(self, target);
+                if activity_thr > 0.0 && b_amp < activity_thr {
+                    continue;
+                }
                 if b_amp <= thr {
                     continue;
                 }
@@ -5234,39 +5595,106 @@ impl Brain {
             f32::INFINITY
         };
 
+        let module_budget = self.cfg.module_plasticity_budget;
+        let mut module_remaining: Vec<f32> = if module_budget > 0.0 {
+            vec![module_budget; self.routing_modules.len()]
+        } else {
+            Vec::new()
+        };
+
+        let activity_thr = self.cfg.module_learning_activity_threshold;
         let mut l1 = 0.0f32;
         let mut edges = 0u32;
 
-        for (idx, w) in self.connections.weights.iter_mut().enumerate() {
-            if self.connections.targets[idx] == INVALID_UNIT {
+        for owner in 0..self.units.len() {
+            if !self.learning_enabled[owner] {
                 continue;
             }
-            let e = self.eligibility[idx];
-            if e == 0.0 {
+            if !self.learning_allowed_for_unit(owner) {
                 continue;
             }
 
-            let mut dw = lr * e;
-            // Keep single-step changes bounded even under large eligibility.
-            dw = dw.clamp(-0.25, 0.25);
+            if activity_thr > 0.0 {
+                let instant = self.units[owner].amp.max(0.0);
+                let a = if self.cfg.activity_trace_decay <= 0.0 {
+                    instant
+                } else {
+                    self.activity_trace
+                        .get(owner)
+                        .copied()
+                        .unwrap_or(0.0)
+                        .max(instant)
+                };
+                if a < activity_thr {
+                    continue;
+                }
+            }
 
-            let cost = dw.abs();
-            if remaining_budget.is_finite() {
-                if remaining_budget <= 0.0 {
+            let mid = self.unit_module.get(owner).copied().unwrap_or(NO_MODULE);
+            if module_budget > 0.0 && mid != NO_MODULE {
+                let Some(rem) = module_remaining.get(mid as usize) else {
+                    continue;
+                };
+                if *rem <= 0.0 {
+                    continue;
+                }
+            }
+
+            let range = self.conn_range(owner);
+            for idx in range {
+                if self.connections.targets[idx] == INVALID_UNIT {
+                    continue;
+                }
+                let e = self.eligibility[idx];
+                if e == 0.0 {
+                    continue;
+                }
+
+                let mut dw = lr * e;
+                // Keep single-step changes bounded even under large eligibility.
+                dw = dw.clamp(-0.25, 0.25);
+
+                // Enforce global and (optional) per-module budgets.
+                let mut allowed = remaining_budget;
+                if module_budget > 0.0 && mid != NO_MODULE {
+                    if let Some(mrem) = module_remaining.get(mid as usize) {
+                        allowed = allowed.min(*mrem);
+                    }
+                }
+                if allowed.is_finite() {
+                    if allowed <= 0.0 {
+                        break;
+                    }
+                    let cost = dw.abs();
+                    if cost > allowed {
+                        dw = dw.signum() * allowed;
+                    }
+                }
+
+                let cost = dw.abs();
+                if remaining_budget.is_finite() {
+                    remaining_budget = (remaining_budget - cost).max(0.0);
+                }
+                if module_budget > 0.0 && mid != NO_MODULE {
+                    if let Some(mrem) = module_remaining.get_mut(mid as usize) {
+                        *mrem = (*mrem - cost).max(0.0);
+                    }
+                }
+
+                self.connections.weights[idx] =
+                    (self.connections.weights[idx] + dw).clamp(-1.5, 1.5);
+
+                l1 += cost;
+                edges = edges.saturating_add(1);
+
+                if remaining_budget.is_finite() && remaining_budget <= 0.0 {
                     break;
                 }
-                if cost > remaining_budget {
-                    dw = dw.signum() * remaining_budget;
-                    remaining_budget = 0.0;
-                } else {
-                    remaining_budget -= cost;
-                }
             }
 
-            *w = (*w + dw).clamp(-1.5, 1.5);
-
-            l1 += dw.abs();
-            edges = edges.saturating_add(1);
+            if remaining_budget.is_finite() && remaining_budget <= 0.0 {
+                break;
+            }
         }
 
         self.learning_monitors.plasticity_l1 = l1;
@@ -5995,6 +6423,13 @@ mod tests {
             causal_lag_steps: 5,
             causal_lag_decay: 0.62,
             causal_symbol_cap: 21,
+            module_routing_top_k: 3,
+            module_routing_strict: true,
+            module_routing_beta: 0.9,
+            module_signature_decay: 0.2,
+            module_signature_cap: 9,
+            module_learning_activity_threshold: 0.42,
+            module_plasticity_budget: 1.23,
             ..Default::default()
         };
 
@@ -6033,6 +6468,31 @@ mod tests {
         assert_eq!(loaded.cfg.causal_lag_steps, brain.cfg.causal_lag_steps);
         assert!((loaded.cfg.causal_lag_decay - brain.cfg.causal_lag_decay).abs() < 1e-6);
         assert_eq!(loaded.cfg.causal_symbol_cap, brain.cfg.causal_symbol_cap);
+        assert_eq!(
+            loaded.cfg.module_routing_top_k,
+            brain.cfg.module_routing_top_k
+        );
+        assert_eq!(
+            loaded.cfg.module_routing_strict,
+            brain.cfg.module_routing_strict
+        );
+        assert!((loaded.cfg.module_routing_beta - brain.cfg.module_routing_beta).abs() < 1e-6);
+        assert!(
+            (loaded.cfg.module_signature_decay - brain.cfg.module_signature_decay).abs() < 1e-6
+        );
+        assert_eq!(
+            loaded.cfg.module_signature_cap,
+            brain.cfg.module_signature_cap
+        );
+        assert!(
+            (loaded.cfg.module_learning_activity_threshold
+                - brain.cfg.module_learning_activity_threshold)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (loaded.cfg.module_plasticity_budget - brain.cfg.module_plasticity_budget).abs() < 1e-6
+        );
         assert_eq!(loaded.units.len(), brain.units.len());
         assert_eq!(loaded.reserved.len(), brain.reserved.len());
         assert_eq!(loaded.learning_enabled.len(), brain.learning_enabled.len());
@@ -6049,6 +6509,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn routing_gates_plasticity_by_module() {
+        let cfg = BrainConfig {
+            unit_count: 12,
+            connectivity_per_unit: 1,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.1,
+            forget_rate: 0.0,
+            prune_below: 0.0,
+            coactive_threshold: 0.2,
+            phase_lock_threshold: 0.2,
+            imprint_rate: 0.0,
+            learning_deadband: 0.0,
+            module_routing_top_k: 1,
+            module_routing_strict: true,
+            // Keep activity gating off so we can seed eligibility directly.
+            module_learning_activity_threshold: 0.0,
+            module_plasticity_budget: 0.0,
+            seed: Some(1),
+            causal_decay: 0.01,
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+        brain.define_action("a1", 1);
+        brain.define_action("a2", 1);
+
+        let u_a1 = brain.action_units("a1").unwrap()[0];
+        let u_a2 = brain.action_units("a2").unwrap()[0];
+
+        let idx_a1 = brain.connections.offsets[u_a1];
+        let idx_a2 = brain.connections.offsets[u_a2];
+
+        brain.connections.weights[idx_a1] = 0.0;
+        brain.connections.weights[idx_a2] = 0.0;
+        brain.eligibility[idx_a1] = 1.0;
+        brain.eligibility[idx_a2] = 1.0;
+
+        // Route learning to module "a1".
+        brain.note_action("a1");
+        brain.commit_observation();
+        assert!(!brain.learning_route_modules.is_empty());
+
+        brain.neuromod = 1.0;
+        brain.apply_plasticity_scalar();
+
+        assert!(brain.connections.weights[idx_a1].abs() > 0.0);
+        assert_eq!(brain.connections.weights[idx_a2], 0.0);
+    }
     #[test]
     fn csr_neighbors_iteration() {
         let cfg = BrainConfig {
