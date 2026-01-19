@@ -267,6 +267,27 @@ pub struct BrainConfig {
     ///
     /// 0 disables per-module budgeting.
     pub module_plasticity_budget: f32,
+
+    // ---------------------------------------------------------------------
+    // Cross-module coupling governance (scaling phase 3)
+    // ---------------------------------------------------------------------
+    /// Scale factor applied to committed plasticity (`Δw`) for cross-module edges.
+    ///
+    /// 1.0 preserves legacy behavior; smaller values make cross-module couplings
+    /// harder to form.
+    pub cross_module_plasticity_scale: f32,
+
+    /// Additional forgetting applied to cross-module edges.
+    ///
+    /// Effective decay becomes `1 - forget_rate - cross_module_forget_boost`.
+    /// 0.0 disables extra forgetting.
+    pub cross_module_forget_boost: f32,
+
+    /// Extra prune threshold applied to cross-module edges.
+    ///
+    /// Effective prune threshold becomes `prune_below + cross_module_prune_bonus`.
+    /// 0.0 disables extra pruning.
+    pub cross_module_prune_bonus: f32,
 }
 
 impl Default for BrainConfig {
@@ -329,6 +350,11 @@ impl Default for BrainConfig {
             module_signature_cap: 32,
             module_learning_activity_threshold: 0.0,
             module_plasticity_budget: 0.0,
+
+            // Cross-module governance defaults (off by default).
+            cross_module_plasticity_scale: 1.0,
+            cross_module_forget_boost: 0.0,
+            cross_module_prune_bonus: 0.0,
         }
     }
 }
@@ -497,6 +523,18 @@ impl BrainConfig {
         }
         if !self.module_plasticity_budget.is_finite() || self.module_plasticity_budget < 0.0 {
             return Err("module_plasticity_budget must be finite and >= 0");
+        }
+
+        if !self.cross_module_plasticity_scale.is_finite()
+            || self.cross_module_plasticity_scale < 0.0
+        {
+            return Err("cross_module_plasticity_scale must be finite and >= 0");
+        }
+        if !self.cross_module_forget_boost.is_finite() || self.cross_module_forget_boost < 0.0 {
+            return Err("cross_module_forget_boost must be finite and >= 0");
+        }
+        if !self.cross_module_prune_bonus.is_finite() || self.cross_module_prune_bonus < 0.0 {
+            return Err("cross_module_prune_bonus must be finite and >= 0");
         }
         Ok(())
     }
@@ -2004,6 +2042,9 @@ impl Brain {
                 + 4 // module_signature_cap
                 + 4 // module_learning_activity_threshold
                 + 4 // module_plasticity_budget
+                + 4 // cross_module_plasticity_scale
+                + 4 // cross_module_forget_boost
+                + 4 // cross_module_prune_bonus
     }
 
     #[cfg(feature = "std")]
@@ -2060,6 +2101,11 @@ impl Brain {
         storage::write_u32_le(w, self.cfg.module_signature_cap as u32)?;
         storage::write_f32_le(w, self.cfg.module_learning_activity_threshold)?;
         storage::write_f32_le(w, self.cfg.module_plasticity_budget)?;
+
+        // Phase 3: cross-module coupling governance (appended; backwards compatible on load).
+        storage::write_f32_le(w, self.cfg.cross_module_plasticity_scale)?;
+        storage::write_f32_le(w, self.cfg.cross_module_forget_boost)?;
+        storage::write_f32_le(w, self.cfg.cross_module_prune_bonus)?;
         Ok(())
     }
 
@@ -2179,6 +2225,11 @@ impl Brain {
             let module_learning_activity_threshold = read_f32_default(&mut c, 0.0);
             let module_plasticity_budget = read_f32_default(&mut c, 0.0);
 
+            // Optional appended phase 3 knobs (safe defaults).
+            let cross_module_plasticity_scale = read_f32_default(&mut c, 1.0);
+            let cross_module_forget_boost = read_f32_default(&mut c, 0.0);
+            let cross_module_prune_bonus = read_f32_default(&mut c, 0.0);
+
             let cfg = BrainConfig {
                 unit_count,
                 connectivity_per_unit,
@@ -2228,6 +2279,10 @@ impl Brain {
                 module_signature_cap,
                 module_learning_activity_threshold,
                 module_plasticity_budget,
+
+                cross_module_plasticity_scale,
+                cross_module_forget_boost,
+                cross_module_prune_bonus,
             };
 
             // Basic sanity: only accept if seed_present looks plausible and cfg validates.
@@ -5603,6 +5658,7 @@ impl Brain {
         };
 
         let activity_thr = self.cfg.module_learning_activity_threshold;
+        let cross_plasticity_scale = self.cfg.cross_module_plasticity_scale;
         let mut l1 = 0.0f32;
         let mut edges = 0u32;
 
@@ -5645,6 +5701,7 @@ impl Brain {
                 if self.connections.targets[idx] == INVALID_UNIT {
                     continue;
                 }
+                let target = self.connections.targets[idx];
                 let e = self.eligibility[idx];
                 if e == 0.0 {
                     continue;
@@ -5653,6 +5710,18 @@ impl Brain {
                 let mut dw = lr * e;
                 // Keep single-step changes bounded even under large eligibility.
                 dw = dw.clamp(-0.25, 0.25);
+
+                // Phase 3: cross-module coupling should be harder to form.
+                // Only apply when both endpoints have module assignments.
+                if cross_plasticity_scale != 1.0
+                    && cross_plasticity_scale >= 0.0
+                    && mid != NO_MODULE
+                {
+                    let tmid = self.unit_module.get(target).copied().unwrap_or(NO_MODULE);
+                    if tmid != NO_MODULE && tmid != mid {
+                        dw *= cross_plasticity_scale;
+                    }
+                }
 
                 // Enforce global and (optional) per-module budgets.
                 let mut allowed = remaining_budget;
@@ -5737,6 +5806,11 @@ impl Brain {
     fn forget_and_prune(&mut self) {
         let decay = 1.0 - self.cfg.forget_rate;
         let prune_below = self.cfg.prune_below;
+        let cross_forget = self.cfg.cross_module_forget_boost;
+        let cross_prune = self.cfg.cross_module_prune_bonus;
+
+        // Optional extra decay for cross-module edges.
+        let cross_decay = (1.0 - self.cfg.forget_rate - cross_forget).clamp(0.0, 1.0);
 
         // Apply decay and prune. For “engrams” (sensor↔concept links), keep a weak trace:
         // allow decay, but do not prune to zero.
@@ -5756,8 +5830,13 @@ impl Brain {
                     continue;
                 }
 
-                // Decay all active weights.
-                self.connections.weights[idx] *= decay;
+                let owner_mid = self.unit_module.get(owner).copied().unwrap_or(NO_MODULE);
+                let target_mid = self.unit_module.get(target).copied().unwrap_or(NO_MODULE);
+                let is_cross_module =
+                    owner_mid != NO_MODULE && target_mid != NO_MODULE && owner_mid != target_mid;
+
+                // Decay all active weights (optionally harsher across module boundaries).
+                self.connections.weights[idx] *= if is_cross_module { cross_decay } else { decay };
 
                 let target_is_concept = self.reserved[target] && !self.group_member[target];
                 let target_is_sensor = self.sensor_member[target];
@@ -5767,17 +5846,23 @@ impl Brain {
                 let w = self.connections.weights[idx];
                 let abs = w.abs();
 
+                let prune_thr = if is_cross_module {
+                    prune_below + cross_prune
+                } else {
+                    prune_below
+                };
+
                 if is_engram_edge {
                     // Keep a minimal, non-zero trace so it can be rapidly re-strengthened
                     // on re-exposure (“savings” / muscle memory).
-                    if abs < prune_below {
+                    if abs < prune_thr {
                         self.connections.weights[idx] =
-                            if w < 0.0 { -prune_below } else { prune_below };
+                            if w < 0.0 { -prune_thr } else { prune_thr };
                     }
                     continue;
                 }
 
-                if abs < prune_below {
+                if abs < prune_thr {
                     self.connections.targets[idx] = INVALID_UNIT;
                     self.connections.weights[idx] = 0.0;
                     if idx < self.eligibility.len() {
@@ -6430,6 +6515,9 @@ mod tests {
             module_signature_cap: 9,
             module_learning_activity_threshold: 0.42,
             module_plasticity_budget: 1.23,
+            cross_module_plasticity_scale: 0.25,
+            cross_module_forget_boost: 0.02,
+            cross_module_prune_bonus: 0.003,
             ..Default::default()
         };
 
@@ -6492,6 +6580,18 @@ mod tests {
         );
         assert!(
             (loaded.cfg.module_plasticity_budget - brain.cfg.module_plasticity_budget).abs() < 1e-6
+        );
+        assert!(
+            (loaded.cfg.cross_module_plasticity_scale - brain.cfg.cross_module_plasticity_scale)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (loaded.cfg.cross_module_forget_boost - brain.cfg.cross_module_forget_boost).abs()
+                < 1e-6
+        );
+        assert!(
+            (loaded.cfg.cross_module_prune_bonus - brain.cfg.cross_module_prune_bonus).abs() < 1e-6
         );
         assert_eq!(loaded.units.len(), brain.units.len());
         assert_eq!(loaded.reserved.len(), brain.reserved.len());
@@ -6561,6 +6661,61 @@ mod tests {
 
         assert!(brain.connections.weights[idx_a1].abs() > 0.0);
         assert_eq!(brain.connections.weights[idx_a2], 0.0);
+    }
+
+    #[test]
+    fn cross_module_plasticity_is_scaled_down() {
+        let cfg = BrainConfig {
+            unit_count: 12,
+            connectivity_per_unit: 1,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.1,
+            forget_rate: 0.0,
+            prune_below: 0.0,
+            coactive_threshold: 0.2,
+            phase_lock_threshold: 0.2,
+            imprint_rate: 0.0,
+            learning_deadband: 0.0,
+            // Disable routing so both edges are eligible.
+            module_routing_top_k: 0,
+            module_routing_strict: false,
+            module_learning_activity_threshold: 0.0,
+            module_plasticity_budget: 0.0,
+            cross_module_plasticity_scale: 0.25,
+            seed: Some(2),
+            causal_decay: 0.01,
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+        brain.define_action("a1", 1);
+        brain.define_action("a2", 1);
+
+        let u_a1 = brain.action_units("a1").unwrap()[0];
+        let u_a2 = brain.action_units("a2").unwrap()[0];
+
+        let idx_a1 = brain.connections.offsets[u_a1];
+        let idx_a2 = brain.connections.offsets[u_a2];
+
+        // Force the first outgoing connection of each owner to point to the opposite module.
+        brain.connections.targets[idx_a1] = u_a2;
+        brain.connections.targets[idx_a2] = u_a1;
+        brain.connections.weights[idx_a1] = 0.0;
+        brain.connections.weights[idx_a2] = 0.0;
+        brain.eligibility[idx_a1] = 1.0;
+        brain.eligibility[idx_a2] = 1.0;
+
+        brain.neuromod = 1.0;
+        brain.apply_plasticity_scalar();
+
+        // With lr=hebb_rate*neuromod=0.1 and eligibility=1, base dw=0.1.
+        // Cross-module scaling at 0.25 yields dw≈0.025.
+        assert!((brain.connections.weights[idx_a1] - 0.025).abs() < 1e-6);
+        assert!((brain.connections.weights[idx_a2] - 0.025).abs() < 1e-6);
     }
     #[test]
     fn csr_neighbors_iteration() {

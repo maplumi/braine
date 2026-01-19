@@ -73,6 +73,28 @@ After committing an observation, update the signatures for the modules that were
 
 ---
 
+## Phase 3: cross-module rent (governance)
+
+Even with routing, cross-module edges can still accumulate and create unintended entanglement. Phase 3 introduces an explicit *rent* on cross-module couplings so that:
+
+- within-module structure is cheap to form and retain,
+- cross-module structure must “earn its keep”.
+
+This is not a new learner and not expert spawning; it is a bias that shapes the same local plasticity + forgetting/pruning dynamics.
+
+### Mechanisms
+
+- **Cross-module plasticity scaling**: weight updates on edges crossing module boundaries are multiplied by a scale factor.
+	- Config: `cross_module_plasticity_scale` ($\in [0,\infty)$, default `1.0`).
+- **Cross-module extra forgetting**: cross-module edges decay faster during forgetting.
+	- Config: `cross_module_forget_boost` ($\in [0,\infty)$, default `0.0`).
+- **Cross-module stricter pruning**: cross-module edges are pruned using a higher threshold.
+	- Config: `cross_module_prune_bonus` ($\in [0,\infty)$, default `0.0`).
+
+These apply only when both endpoints are assigned to modules; unassigned nodes use baseline behavior.
+
+---
+
 ## Constraints / safety
 
 - Defaults must preserve current behavior (routing/budgets off by default).
@@ -90,6 +112,10 @@ After committing an observation, update the signatures for the modules that were
 **Phase 2 success:**
 - on mixed-context workloads, plasticity concentrates into a subset of modules
 - interference between unrelated contexts reduces (qualitative and via targeted tests/assays)
+
+**Phase 3 success:**
+- cross-module couplings are measurably harder to grow/retain than within-module couplings under equal eligibility
+- saved brains from older versions still load unchanged (defaults apply)
 
 ---
 
