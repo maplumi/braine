@@ -452,9 +452,7 @@ pub(super) fn draw_maze(
     let _ = ctx.fill_text(
         &format!(
             "Maze {}  steps {}  event {}",
-            s.difficulty,
-            s.steps,
-            s.last_event
+            s.difficulty, s.steps, s.last_event
         ),
         12.0,
         20.0,

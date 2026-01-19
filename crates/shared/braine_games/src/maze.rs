@@ -38,7 +38,7 @@ pub enum MazeAction {
 }
 
 impl MazeAction {
-    pub fn from_str(action: &str) -> Option<Self> {
+    pub fn from_action_str(action: &str) -> Option<Self> {
         match action {
             "up" => Some(MazeAction::Up),
             "right" => Some(MazeAction::Right),
@@ -333,7 +333,10 @@ impl MazeGame {
     pub fn apply_stimuli(&self, brain: &mut Brain) {
         let walls = self.sim.grid.walls(self.sim.player_x, self.sim.player_y);
 
-        brain.apply_stimulus(Stimulus::new("maze_wall_up", if walls & W_UP != 0 { 1.0 } else { 0.0 }));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_wall_up",
+            if walls & W_UP != 0 { 1.0 } else { 0.0 },
+        ));
         brain.apply_stimulus(Stimulus::new(
             "maze_wall_right",
             if walls & W_RIGHT != 0 { 1.0 } else { 0.0 },
@@ -350,12 +353,18 @@ impl MazeGame {
         let dx = self.sim.goal_x as i32 - self.sim.player_x as i32;
         let dy = self.sim.goal_y as i32 - self.sim.player_y as i32;
 
-        brain.apply_stimulus(Stimulus::new("maze_goal_left", if dx < 0 { 1.0 } else { 0.0 }));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_goal_left",
+            if dx < 0 { 1.0 } else { 0.0 },
+        ));
         brain.apply_stimulus(Stimulus::new(
             "maze_goal_right",
             if dx > 0 { 1.0 } else { 0.0 },
         ));
-        brain.apply_stimulus(Stimulus::new("maze_goal_up", if dy < 0 { 1.0 } else { 0.0 }));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_goal_up",
+            if dy < 0 { 1.0 } else { 0.0 },
+        ));
         brain.apply_stimulus(Stimulus::new(
             "maze_goal_down",
             if dy > 0 { 1.0 } else { 0.0 },
@@ -382,20 +391,36 @@ impl MazeGame {
 
         brain.apply_stimulus(Stimulus::new(
             "maze_mode_easy",
-            if self.difficulty == MazeDifficulty::Easy { 1.0 } else { 0.0 },
+            if self.difficulty == MazeDifficulty::Easy {
+                1.0
+            } else {
+                0.0
+            },
         ));
         brain.apply_stimulus(Stimulus::new(
             "maze_mode_medium",
-            if self.difficulty == MazeDifficulty::Medium { 1.0 } else { 0.0 },
+            if self.difficulty == MazeDifficulty::Medium {
+                1.0
+            } else {
+                0.0
+            },
         ));
         brain.apply_stimulus(Stimulus::new(
             "maze_mode_hard",
-            if self.difficulty == MazeDifficulty::Hard { 1.0 } else { 0.0 },
+            if self.difficulty == MazeDifficulty::Hard {
+                1.0
+            } else {
+                0.0
+            },
         ));
 
         brain.apply_stimulus(Stimulus::new(
             "maze_bump",
-            if self.last_event == MazeEvent::Bump { 1.0 } else { 0.0 },
+            if self.last_event == MazeEvent::Bump {
+                1.0
+            } else {
+                0.0
+            },
         ));
         brain.apply_stimulus(Stimulus::new(
             "maze_reached_goal",
@@ -412,7 +437,7 @@ impl MazeGame {
             return None;
         }
 
-        let act = MazeAction::from_str(action)?;
+        let act = MazeAction::from_action_str(action)?;
 
         let dist_before = self.sim.manhattan_to_goal() as i32;
         let prev_idx = (self.sim.player_y as usize) * (self.sim.grid.w() as usize)
@@ -516,8 +541,20 @@ impl MazeGame {
         let walls = self.sim.grid.walls(self.sim.player_x, self.sim.player_y) & 0x0F;
         let dx = (self.sim.goal_x as i32 - self.sim.player_x as i32).signum();
         let dy = (self.sim.goal_y as i32 - self.sim.player_y as i32).signum();
-        let dx_tag = if dx < 0 { 'L' } else if dx > 0 { 'R' } else { '0' };
-        let dy_tag = if dy < 0 { 'U' } else if dy > 0 { 'D' } else { '0' };
+        let dx_tag = if dx < 0 {
+            'L'
+        } else if dx > 0 {
+            'R'
+        } else {
+            '0'
+        };
+        let dy_tag = if dy < 0 {
+            'U'
+        } else if dy > 0 {
+            'D'
+        } else {
+            '0'
+        };
 
         let dist = self.sim.manhattan_to_goal();
         let denom = (self.sim.grid.w() + self.sim.grid.h()).max(1);
@@ -532,6 +569,12 @@ impl MazeGame {
             dy_tag,
             bucket
         );
+    }
+}
+
+impl Default for MazeGame {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -616,10 +659,7 @@ impl Lcg64 {
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.state = self
-            .state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         self.state
     }
 
@@ -647,7 +687,9 @@ mod tests {
     fn maze_has_openings() {
         let sim = MazeSim::new_with_dims(42, 9, 9);
         // Ensure at least one cell has an opening.
-        let any_open = sim.grid.cells.iter().any(|c| (c & (W_UP | W_RIGHT | W_DOWN | W_LEFT)) != (W_UP | W_RIGHT | W_DOWN | W_LEFT));
+        let any_open = sim.grid.cells.iter().any(|c| {
+            (c & (W_UP | W_RIGHT | W_DOWN | W_LEFT)) != (W_UP | W_RIGHT | W_DOWN | W_LEFT)
+        });
         assert!(any_open);
     }
 }

@@ -892,7 +892,11 @@ impl DaemonGameState {
 
     fn maze_goal_xy(&self) -> (u32, u32) {
         match self {
-            Self::Maze { maze_goal_x, maze_goal_y, .. } => (*maze_goal_x, *maze_goal_y),
+            Self::Maze {
+                maze_goal_x,
+                maze_goal_y,
+                ..
+            } => (*maze_goal_x, *maze_goal_y),
             _ => (0, 0),
         }
     }

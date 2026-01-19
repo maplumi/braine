@@ -1248,8 +1248,8 @@ impl DaemonState {
             }
             _ => {
                 return Err(format!(
-                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|maze|pong|text|replay"
-                ))
+                "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|maze|pong|text|replay"
+            ))
             }
         }
 

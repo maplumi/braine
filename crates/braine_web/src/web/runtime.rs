@@ -9,7 +9,9 @@ use braine_games::{
 };
 
 use super::brain_factory::make_default_brain;
-use super::types::{GameUiSnapshot, MazeUiState, PongUiState, ReplayUiState, SequenceUiState, TextUiState};
+use super::types::{
+    GameUiSnapshot, MazeUiState, PongUiState, ReplayUiState, SequenceUiState, TextUiState,
+};
 use super::GameKind;
 
 use super::pong_web::PongWebGame;

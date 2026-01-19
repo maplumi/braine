@@ -475,7 +475,7 @@ impl GameState {
         }
     }
 
-    fn maze_summary(&self) -> Option<(&str, u32, u32, u32, u32, u32, u32, u32, &str)> {
+    fn maze_summary(&self) -> Option<MazeSummary<'_>> {
         match self {
             Self::Maze {
                 maze_mode,
@@ -488,20 +488,33 @@ impl GameState {
                 maze_steps,
                 maze_event,
                 ..
-            } => Some((
-                maze_mode.as_str(),
-                *maze_w,
-                *maze_h,
-                *maze_player_x,
-                *maze_player_y,
-                *maze_goal_x,
-                *maze_goal_y,
-                *maze_steps,
-                maze_event.as_str(),
-            )),
+            } => Some(MazeSummary {
+                mode: maze_mode.as_str(),
+                w: *maze_w,
+                h: *maze_h,
+                player_x: *maze_player_x,
+                player_y: *maze_player_y,
+                goal_x: *maze_goal_x,
+                goal_y: *maze_goal_y,
+                steps: *maze_steps,
+                event: maze_event.as_str(),
+            }),
             _ => None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MazeSummary<'a> {
+    mode: &'a str,
+    w: u32,
+    h: u32,
+    player_x: u32,
+    player_y: u32,
+    goal_x: u32,
+    goal_y: u32,
+    steps: u32,
+    event: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -750,10 +763,18 @@ fn print_state(s: StateSnapshot) {
         );
     }
 
-    if let Some((mode, w, h, px, py, gx, gy, steps, event)) = s.game.maze_summary() {
+    if let Some(m) = s.game.maze_summary() {
         println!(
             "maze: mode={} size={}x{} player=({}, {}) goal=({}, {}) steps={} event={}",
-            mode, w, h, px, py, gx, gy, steps, if event.is_empty() { "-" } else { event }
+            m.mode,
+            m.w,
+            m.h,
+            m.player_x,
+            m.player_y,
+            m.goal_x,
+            m.goal_y,
+            m.steps,
+            if m.event.is_empty() { "-" } else { m.event }
         );
     }
 
