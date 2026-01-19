@@ -1568,6 +1568,7 @@ impl Brain {
         }
     }
 
+    #[cfg(feature = "std")]
     fn rebuild_routing_from_groups(&mut self) {
         self.routing_modules.clear();
         self.routing_module_index.clear();

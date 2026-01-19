@@ -110,6 +110,11 @@ impl MazeGrid {
     }
 
     pub fn walls(&self, x: u32, y: u32) -> u8 {
+        // Defensive: never allow a bad (x,y) to take down the whole runtime.
+        // Treat out-of-bounds as fully walled.
+        if x >= self.w || y >= self.h {
+            return W_UP | W_RIGHT | W_DOWN | W_LEFT;
+        }
         self.cells[self.idx(x, y)]
     }
 
@@ -186,6 +191,12 @@ impl MazeSim {
     }
 
     pub fn try_step(&mut self, action: MazeAction) -> MazeEvent {
+        // Keep invariants stable even if some caller ends up with a stale position
+        // after a resize/migration.
+        if self.player_x >= self.grid.w() || self.player_y >= self.grid.h() {
+            self.player_x = 0;
+            self.player_y = 0;
+        }
         let (x, y) = (self.player_x, self.player_y);
         let walls = self.grid.walls(x, y);
 
@@ -331,7 +342,14 @@ impl MazeGame {
 
     #[cfg(feature = "braine")]
     pub fn apply_stimuli(&self, brain: &mut Brain) {
-        let walls = self.sim.grid.walls(self.sim.player_x, self.sim.player_y);
+        // Clamp for safety (WASM panics are fatal). If the position is ever stale,
+        // keep the game running and allow recovery via normal stepping.
+        let w = self.sim.grid.w().max(1);
+        let h = self.sim.grid.h().max(1);
+        let px = self.sim.player_x.min(w.saturating_sub(1));
+        let py = self.sim.player_y.min(h.saturating_sub(1));
+
+        let walls = self.sim.grid.walls(px, py);
 
         brain.apply_stimulus(Stimulus::new(
             "maze_wall_up",
@@ -350,8 +368,8 @@ impl MazeGame {
             if walls & W_LEFT != 0 { 1.0 } else { 0.0 },
         ));
 
-        let dx = self.sim.goal_x as i32 - self.sim.player_x as i32;
-        let dy = self.sim.goal_y as i32 - self.sim.player_y as i32;
+        let dx = self.sim.goal_x as i32 - px as i32;
+        let dy = self.sim.goal_y as i32 - py as i32;
 
         brain.apply_stimulus(Stimulus::new(
             "maze_goal_left",
@@ -435,6 +453,12 @@ impl MazeGame {
     pub fn score_action(&mut self, action: &str) -> Option<(f32, bool)> {
         if self.response_made {
             return None;
+        }
+
+        // Sanity: never trust persisted/externally-driven state to be in-bounds.
+        if self.sim.player_x >= self.sim.grid.w() || self.sim.player_y >= self.sim.grid.h() {
+            self.sim.player_x = 0;
+            self.sim.player_y = 0;
         }
 
         let act = MazeAction::from_action_str(action)?;

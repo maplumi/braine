@@ -147,7 +147,9 @@ use crate::ui_model::{AnalyticsPanel, DashboardTab, GameKind};
 
 use canvas::{clear_canvas, draw_maze, draw_pong, draw_spotxy};
 use files::{download_bytes, read_file_bytes};
-use indexeddb::{idb_get_bytes, idb_put_bytes, load_game_accuracies, save_game_accuracies};
+use indexeddb::{
+    idb_delete_key, idb_get_bytes, idb_put_bytes, load_game_accuracies, save_game_accuracies,
+};
 use runtime::{AppRuntime, TickConfig, TickResult, WebGame};
 use shell::{Sidebar, SystemErrorBanner, ToastStack, Topbar};
 use storage::{
@@ -2416,10 +2418,31 @@ fn App() -> impl IntoView {
                             set_brain_dirty.set(false);
                             set_status.set(format!("loaded {} bytes from IndexedDB", bytes.len()));
                         }
-                        Err(e) => set_status.set(format!("load failed: {e}")),
+                        Err(e) => {
+                            set_status.set(format!(
+                                "load failed: {e} (try 'Clear saved brain' if this was an older/corrupt image)"
+                            ));
+                        }
                     },
                     Ok(None) => set_status.set("no saved brain image in IndexedDB".to_string()),
                     Err(e) => set_status.set(format!("load failed: {e}")),
+                }
+            });
+        }
+    };
+
+    let do_clear_saved_brain = {
+        move || {
+            let set_status = set_status.clone();
+            spawn_local(async move {
+                match idb_delete_key(IDB_KEY_BRAIN_IMAGE).await {
+                    Ok(()) => {
+                        set_idb_loaded.set(false);
+                        set_brain_dirty.set(false);
+                        set_idb_last_save.set(String::new());
+                        set_status.set("cleared saved brain image (IndexedDB)".to_string());
+                    }
+                    Err(e) => set_status.set(format!("clear failed: {e}")),
                 }
             });
         }
@@ -2483,7 +2506,12 @@ fn App() -> impl IntoView {
                             set_status
                                 .set(format!("auto-loaded {} bytes from IndexedDB", bytes.len()));
                         }
-                        Err(e) => set_status.set(format!("auto-load failed: {e}")),
+                        Err(e) => {
+                            // Don't crash: show a clear error and let the user clear/reset.
+                            set_status.set(format!(
+                                "auto-load failed: {e} (you can clear the saved brain image in Persistence)"
+                            ));
+                        }
                     },
                     Ok(None) => {
                         // No-op
@@ -7577,6 +7605,7 @@ fn App() -> impl IntoView {
                                             <div class="stack tight" style="margin-top: 10px;">
                                                 <button class="btn" on:click=move |_| do_save()>"💾 Save (IndexedDB)"</button>
                                                 <button class="btn" on:click=move |_| do_load()>"📂 Load (IndexedDB)"</button>
+                                                <button class="btn" on:click=move |_| do_clear_saved_brain()>"🧹 Clear saved brain"</button>
                                                 <button class="btn" on:click=move |_| do_migrate_idb_format()>"🔁 Migrate stored format"</button>
                                                 <button class="btn" on:click=move |_| do_export_bbi()>"📥 Export .bbi"</button>
                                                 <button class="btn" on:click=move |_| do_import_bbi_click()>"📤 Import .bbi"</button>

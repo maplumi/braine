@@ -9,8 +9,13 @@ pub fn compress_lz4(input: &[u8]) -> Vec<u8> {
 }
 
 pub fn decompress_lz4(input: &[u8], expected_size: usize) -> io::Result<Vec<u8>> {
-    lz4_flex::decompress(input, expected_size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "lz4 decompression failed"))
+    // Primary format (current): raw LZ4 block with external expected size.
+    // Compatibility: older persisted images may have used size-prepended blocks.
+    match lz4_flex::decompress(input, expected_size) {
+        Ok(v) => Ok(v),
+        Err(_) => lz4_flex::decompress_size_prepended(input)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "lz4 decompression failed")),
+    }
 }
 
 pub struct CapacityWriter<W> {

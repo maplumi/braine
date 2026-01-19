@@ -42,6 +42,22 @@ pub(super) async fn idb_get_bytes(key: &str) -> Result<Option<Vec<u8>>, String> 
     Ok(Some(out))
 }
 
+pub(super) async fn idb_delete_key(key: &str) -> Result<(), String> {
+    let db = idb_open().await?;
+    let tx = db
+        .transaction_with_str_and_mode(super::IDB_STORE, web_sys::IdbTransactionMode::Readwrite)
+        .map_err(|_| "indexeddb: failed to open transaction".to_string())?;
+    let store = tx
+        .object_store(super::IDB_STORE)
+        .map_err(|_| "indexeddb: failed to open object store".to_string())?;
+
+    let req = store
+        .delete(&JsValue::from_str(key))
+        .map_err(|_| "indexeddb: delete() threw".to_string())?;
+    idb_request_done(req).await?;
+    Ok(())
+}
+
 /// Save game accuracies to IndexedDB as JSON
 pub(super) async fn save_game_accuracies(
     accs: &std::collections::HashMap<String, f32>,
