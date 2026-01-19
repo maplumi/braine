@@ -35,6 +35,7 @@ pub(super) struct MazeUiState {
     pub(super) w: u32,
     pub(super) h: u32,
     pub(super) seed: u64,
+    pub(super) episodes_per_maze: u32,
     pub(super) player_x: u32,
     pub(super) player_y: u32,
     pub(super) goal_x: u32,

@@ -108,6 +108,10 @@ export component MainWindow inherits Window {
     in-out property <int> spotxy-grid-n-min: 0;
     in-out property <int> spotxy-grid-n-max: 8;
     in-out property <int> spotxy-grid-n-default: 0;
+
+    in-out property <float> maze-episodes-per-maze-min: 1;
+    in-out property <float> maze-episodes-per-maze-max: 1000;
+    in-out property <float> maze-episodes-per-maze-default: 8;
     
     // Control state
     in-out property <bool> is-braine-mode: true;
@@ -666,6 +670,38 @@ export component MainWindow inherits Window {
                                         color: Theme.text-secondary;
                                         font-size: 12px;
                                         wrap: word-wrap;
+                                    }
+
+                                    if root.effective-game-kind == "maze": Text {
+                                        text: "Maze";
+                                        color: Theme.text-primary;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                    }
+
+                                    if root.effective-game-kind == "maze": Text {
+                                        text: "Keys: W/Up = up, S/Down = down, A/Left = left, D/Right = right";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    if root.effective-game-kind == "maze": HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Episodes per maze:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Slider {
+                                            width: 220px;
+                                            minimum: root.maze-episodes-per-maze-min;
+                                            maximum: root.maze-episodes-per-maze-max;
+                                            value: root.game.maze-episodes-per-maze;
+                                            changed => { set-game-param("maze", "episodes_per_maze", round(self.value)); }
+                                        }
+                                        Text {
+                                            text: "" + round(root.game.maze-episodes-per-maze);
+                                            color: Theme.text-secondary;
+                                            vertical-alignment: center;
+                                            font-size: 12px;
+                                        }
                                     }
 
                                     if root.effective-game-kind == "spotxy": Text {

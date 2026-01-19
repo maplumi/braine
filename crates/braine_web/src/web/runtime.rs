@@ -813,6 +813,7 @@ impl WebGame {
                     w: g.sim.grid.w(),
                     h: g.sim.grid.h(),
                     seed: g.sim.seed,
+                    episodes_per_maze: g.episodes_per_maze(),
                     player_x: g.sim.player_x,
                     player_y: g.sim.player_y,
                     goal_x: g.sim.goal_x,

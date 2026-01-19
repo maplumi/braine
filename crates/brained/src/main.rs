@@ -835,6 +835,8 @@ enum GameState {
         #[serde(default)]
         maze_mode: String,
         #[serde(default)]
+        maze_episodes_per_maze: u32,
+        #[serde(default)]
         maze_w: u32,
         #[serde(default)]
         maze_h: u32,
@@ -1786,6 +1788,7 @@ impl DaemonState {
             ActiveGame::Maze(g) => GameState::Maze {
                 common: common(),
                 maze_mode: g.difficulty_name().to_string(),
+                maze_episodes_per_maze: g.episodes_per_maze(),
                 maze_w: g.sim.grid.w(),
                 maze_h: g.sim.grid.h(),
                 maze_seed: g.sim.seed,
@@ -3360,14 +3363,24 @@ async fn handle_client(
                     "maze" => {
                         Response::GameParams {
                             game: "maze".to_string(),
-                            params: vec![GameParamDef {
-                                key: "difficulty".to_string(),
-                                label: "Difficulty".to_string(),
-                                description: "0=easy, 1=medium, 2=hard".to_string(),
-                                min: 0.0,
-                                max: 2.0,
-                                default: 0.0,
-                            }],
+                            params: vec![
+                                GameParamDef {
+                                    key: "difficulty".to_string(),
+                                    label: "Difficulty".to_string(),
+                                    description: "0=easy, 1=medium, 2=hard".to_string(),
+                                    min: 0.0,
+                                    max: 2.0,
+                                    default: 0.0,
+                                },
+                                GameParamDef {
+                                    key: "episodes_per_maze".to_string(),
+                                    label: "Episodes per maze".to_string(),
+                                    description: "How many episodes to run before regenerating a new maze layout. Higher values reduce non-stationarity and usually learn faster.".to_string(),
+                                    min: 1.0,
+                                    max: 1000.0,
+                                    default: 8.0,
+                                },
+                            ],
                         }
                     }
                     "spotxy" => {
@@ -3450,9 +3463,18 @@ async fn handle_client(
                                     message: format!("Set {game}.{key} = {}", d.name()),
                                 }
                             }
+                            "episodes_per_maze" => {
+                                let n = value.round().clamp(1.0, 1000.0) as u32;
+                                g.set_episodes_per_maze(n);
+                                s.pending_neuromod = 0.0;
+                                s.last_reward = 0.0;
+                                Response::Success {
+                                    message: format!("Set {game}.{key} = {n}"),
+                                }
+                            }
                             _ => Response::Error {
                                 message: format!(
-                                    "Unknown Maze param '{key}'. Use difficulty (0=easy,1=medium,2=hard)"
+                                    "Unknown Maze param '{key}'. Use difficulty (0=easy,1=medium,2=hard) | episodes_per_maze (1..1000)"
                                 ),
                             },
                         },

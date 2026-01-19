@@ -633,6 +633,7 @@ fn App() -> impl IntoView {
     let (spotxy_grid_n, set_spotxy_grid_n) = signal(0u32);
 
     let (maze_state, set_maze_state) = signal::<Option<MazeUiState>>(None);
+    let (maze_episodes_per_maze, set_maze_episodes_per_maze) = signal(8u32);
 
     let (pong_state, set_pong_state) = signal::<Option<PongUiState>>(None);
     let (_pong_stimulus_key, set_pong_stimulus_key) = signal(String::new());
@@ -1428,6 +1429,8 @@ fn App() -> impl IntoView {
 
             let snap = runtime.with_value(|r| r.game_ui_snapshot());
             set_maze_state.set(snap.maze_state);
+            set_maze_episodes_per_maze
+                .set(snap.maze_state.map(|s| s.episodes_per_maze).unwrap_or(8));
             set_spotxy_pos.set(snap.spotxy_pos);
             set_spotxy_stimulus_key.set(snap.spotxy_stimulus_key);
             set_spotxy_eval.set(snap.spotxy_eval);
@@ -1532,6 +1535,8 @@ fn App() -> impl IntoView {
             let snap = runtime.with_value(|r| r.game_ui_snapshot());
 
             set_maze_state.set(snap.maze_state);
+            set_maze_episodes_per_maze
+                .set(snap.maze_state.map(|s| s.episodes_per_maze).unwrap_or(8));
 
             set_spotxy_pos.set(snap.spotxy_pos);
             set_spotxy_stimulus_key.set(snap.spotxy_stimulus_key);
@@ -2659,6 +2664,20 @@ fn App() -> impl IntoView {
                     ));
                 }
             });
+            refresh_ui_from_runtime();
+        }
+    };
+
+    let do_maze_set_episodes_per_maze = {
+        let runtime = runtime.clone();
+        move |episodes_per_maze: u32| {
+            let n = episodes_per_maze.clamp(1, 1000);
+            runtime.update_value(|r| {
+                if let WebGame::Maze(g) = &mut r.game {
+                    g.set_episodes_per_maze(n);
+                }
+            });
+            set_maze_episodes_per_maze.set(n);
             refresh_ui_from_runtime();
         }
     };
@@ -5514,6 +5533,27 @@ fn App() -> impl IntoView {
                                                 <button class="btn sm" on:click=move |_| { do_maze_set_difficulty(2.0); set_trial_period_ms.set(110); }>
                                                     "Hard"
                                                 </button>
+                                            </div>
+
+                                            <label class="label" style="margin-top: 10px;">
+                                                <span title="How many episodes to run before regenerating a new maze layout.">"Episodes per maze"</span>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    max="1000"
+                                                    step="1"
+                                                    class="input compact"
+                                                    prop:value=move || maze_episodes_per_maze.get().to_string()
+                                                    on:change=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        if let Ok(n) = v.parse::<u32>() {
+                                                            do_maze_set_episodes_per_maze(n);
+                                                        }
+                                                    }
+                                                />
+                                            </label>
+                                            <div class="subtle" style="margin-top: 6px; line-height: 1.4;">
+                                                "Higher values reduce non-stationarity and usually learn faster (default 8)."
                                             </div>
                                         </div>
 

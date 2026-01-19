@@ -688,6 +688,8 @@ enum DaemonGameState {
         #[serde(default)]
         maze_mode: String,
         #[serde(default)]
+        maze_episodes_per_maze: u32,
+        #[serde(default)]
         maze_w: u32,
         #[serde(default)]
         maze_h: u32,
@@ -869,6 +871,16 @@ impl DaemonGameState {
         match self {
             Self::Maze { maze_mode, .. } => maze_mode.as_str(),
             _ => "",
+        }
+    }
+
+    fn maze_episodes_per_maze(&self) -> u32 {
+        match self {
+            Self::Maze {
+                maze_episodes_per_maze,
+                ..
+            } => *maze_episodes_per_maze,
+            _ => 0,
         }
     }
 
@@ -2067,6 +2079,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     pos_x,
                     pos_y,
                     maze_mode: snap.game.maze_mode().into(),
+                    maze_episodes_per_maze: snap.game.maze_episodes_per_maze() as f32,
                     maze_w: maze_w as i32,
                     maze_h: maze_h as i32,
                     maze_player_x: maze_player_x as i32,
@@ -2361,6 +2374,14 @@ fn main() -> Result<(), slint::PlatformError> {
                                 // Boolean represented as 0 or 1.
                             }
                             _ => {}
+                        }
+                    }
+                } else if snap.game.kind() == "maze" {
+                    for p in &params {
+                        if p.key.as_str() == "episodes_per_maze" {
+                            ui.set_maze_episodes_per_maze_min(p.min);
+                            ui.set_maze_episodes_per_maze_max(p.max);
+                            ui.set_maze_episodes_per_maze_default(p.default);
                         }
                     }
                 }
