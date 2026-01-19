@@ -1,4 +1,4 @@
-# Scaling plan: module-local learning + routing (Phase 1–2)
+# Scaling plan: module-local learning + routing (Phase 1–4)
 
 This document translates the scalability recommendations into a Braine-aligned implementation path.
 
@@ -6,7 +6,7 @@ This document translates the scalability recommendations into a Braine-aligned i
 - Scale should primarily come from **reusing the same recurrent dynamics and local learning rules**, not from spawning expert/child brains just because a task is larger.
 - Child brains remain reserved for **novelty / distribution shift / collapse**, and should consolidate structure back into the parent.
 
-The goal of Phase 1–2 is to make compute and interference predictable without turning the system into an MoE/LLM.
+The goal of Phase 1–4 is to make compute and interference predictable without turning the system into an MoE/LLM.
 
 ---
 
@@ -95,6 +95,25 @@ These apply only when both endpoints are assigned to modules; unassigned nodes u
 
 ---
 
+## Phase 4: persisted latent modules
+
+Phase 1–3 treat modules as a learning boundary derived mostly from sensor/action groups. Phase 4 adds **latent modules**: internal module definitions that:
+
+- are persisted in the brain image,
+- participate in routing/gating like other modules,
+- are not exposed as sensors or actions.
+
+This enables future work where the substrate can carve out reusable internal partitions without changing the IO contract.
+
+### Mechanisms
+
+- Add a persisted list of latent module groups (name + unit IDs).
+- Include latent modules in routing module rebuild and learning gating.
+
+Persistence is implemented as an **optional chunk** in the brain image (forward-compatible): older images load with no latent modules.
+
+---
+
 ## Constraints / safety
 
 - Defaults must preserve current behavior (routing/budgets off by default).
@@ -116,6 +135,10 @@ These apply only when both endpoints are assigned to modules; unassigned nodes u
 **Phase 3 success:**
 - cross-module couplings are measurably harder to grow/retain than within-module couplings under equal eligibility
 - saved brains from older versions still load unchanged (defaults apply)
+
+**Phase 4 success:**
+- latent modules roundtrip through save/load
+- latent modules can be selected by routing (e.g., via symbol seed-match)
 
 ---
 

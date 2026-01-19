@@ -747,6 +747,9 @@ struct NamedGroup {
     units: Vec<UnitId>,
 }
 
+#[cfg(feature = "std")]
+const LATENT_MODULES_CHUNK: [u8; 4] = *b"LMOD";
+
 const NO_MODULE: u16 = u16::MAX;
 
 #[derive(Debug, Clone)]
@@ -830,6 +833,9 @@ pub struct Brain {
     // External "sensor" input is just injected current to some units.
     sensor_groups: Vec<NamedGroup>,
     action_groups: Vec<NamedGroup>,
+
+    // Persisted latent modules (not sensors/actions).
+    latent_groups: Vec<NamedGroup>,
 
     // Module routing state (ephemeral; not persisted).
     routing_modules: Vec<RoutingModule>,
@@ -1075,6 +1081,7 @@ impl Brain {
             tier: ExecutionTier::default(),
             sensor_groups: Vec::new(),
             action_groups: Vec::new(),
+            latent_groups: Vec::new(),
             sensor_group_index,
 
             routing_modules,
@@ -1107,17 +1114,15 @@ impl Brain {
     }
 
     fn ensure_routing_module(&mut self, kind: &str, name: &str) -> u16 {
-        let key = if kind == "sensor" {
-            let mut s = String::with_capacity(8 + name.len());
-            s.push_str("sensor::");
-            s.push_str(name);
-            s
-        } else {
-            let mut s = String::with_capacity(8 + name.len());
-            s.push_str("action::");
-            s.push_str(name);
-            s
+        let prefix = match kind {
+            "sensor" => "sensor::",
+            "action" => "action::",
+            "latent" => "latent::",
+            _ => "other::",
         };
+        let mut key = String::with_capacity(prefix.len() + name.len());
+        key.push_str(prefix);
+        key.push_str(name);
 
         if let Some(&idx) = self.routing_module_index.get(&key) {
             return idx;
@@ -1305,6 +1310,20 @@ impl Brain {
             .collect();
         for (name, units) in action_groups {
             let module = self.ensure_routing_module("action", name.as_str());
+            for id in units {
+                if id < self.unit_module.len() {
+                    self.unit_module[id] = module;
+                }
+            }
+        }
+
+        let latent_groups: Vec<(String, Vec<UnitId>)> = self
+            .latent_groups
+            .iter()
+            .map(|g| (g.name.clone(), g.units.clone()))
+            .collect();
+        for (name, units) in latent_groups {
+            let module = self.ensure_routing_module("latent", name.as_str());
             for id in units {
                 if id < self.unit_module.len() {
                     self.unit_module[id] = module;
@@ -1722,6 +1741,7 @@ impl Brain {
         self.write_mask_chunk(w)?;
         self.write_salience_chunk(w)?;
         self.write_groups_chunk(w)?;
+        self.write_latent_modules_chunk(w)?;
         self.write_symbols_chunk(w)?;
         self.write_causality_chunk(w)?;
         Ok(())
@@ -1739,6 +1759,7 @@ impl Brain {
         self.write_mask_chunk_v2(w)?;
         self.write_salience_chunk_v2(w)?;
         self.write_groups_chunk_v2(w)?;
+        self.write_latent_modules_chunk_v2(w)?;
         self.write_symbols_chunk_v2(w)?;
         self.write_causality_chunk_v2(w)?;
         Ok(())
@@ -1775,6 +1796,7 @@ impl Brain {
         let mut salience: Option<Vec<f32>> = None;
         let mut sensor_groups: Option<Vec<NamedGroup>> = None;
         let mut action_groups: Option<Vec<NamedGroup>> = None;
+        let mut latent_groups: Option<Vec<NamedGroup>> = None;
         let mut symbols_rev: Option<Vec<String>> = None;
         let mut causal: Option<CausalMemory> = None;
 
@@ -1824,6 +1846,7 @@ impl Brain {
                     sensor_groups = Some(sg);
                     action_groups = Some(ag);
                 }
+                b"LMOD" => latent_groups = Some(Self::read_latent_modules_payload(&mut cursor)?),
                 b"SYMB" => symbols_rev = Some(Self::read_symbols_payload(&mut cursor)?),
                 b"CAUS" => causal = Some(CausalMemory::read_image_payload(&mut cursor)?),
                 _ => {
@@ -1862,6 +1885,7 @@ impl Brain {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing GRPS"))?;
         let action_groups = action_groups
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing GRPS"))?;
+        let latent_groups = latent_groups.unwrap_or_default();
 
         let symbols_rev = symbols_rev
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing SYMB"))?;
@@ -1911,6 +1935,7 @@ impl Brain {
             sensor_groups,
             sensor_group_index: HashMap::new(),
             action_groups,
+            latent_groups,
 
             routing_modules: Vec::new(),
             routing_module_index: HashMap::new(),
@@ -2710,6 +2735,55 @@ impl Brain {
     }
 
     #[cfg(feature = "std")]
+    fn latent_modules_payload_len_bytes(&self) -> io::Result<u32> {
+        let mut len: u64 = 0;
+        len += 4; // group count
+        for g in &self.latent_groups {
+            len += 4 + g.name.len() as u64;
+            len += 4; // unit count
+            len += 4 * g.units.len() as u64;
+        }
+
+        u32::try_from(len)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "LMOD chunk too large"))
+    }
+
+    #[cfg(feature = "std")]
+    fn write_latent_modules_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let payload_len = self.latent_modules_payload_len_bytes()?;
+        w.write_all(&LATENT_MODULES_CHUNK)?;
+        storage::write_u32_le(w, payload_len)?;
+
+        storage::write_u32_le(w, self.latent_groups.len() as u32)?;
+        for g in &self.latent_groups {
+            storage::write_string(w, &g.name)?;
+            storage::write_u32_le(w, g.units.len() as u32)?;
+            for &u in &g.units {
+                storage::write_u32_le(w, u as u32)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    fn write_latent_modules_chunk_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut payload: Vec<u8> =
+            Vec::with_capacity(self.latent_modules_payload_len_bytes()? as usize);
+
+        storage::write_u32_le(&mut payload, self.latent_groups.len() as u32)?;
+        for g in &self.latent_groups {
+            storage::write_string(&mut payload, &g.name)?;
+            storage::write_u32_le(&mut payload, g.units.len() as u32)?;
+            for &u in &g.units {
+                storage::write_u32_le(&mut payload, u as u32)?;
+            }
+        }
+
+        storage::write_chunk_v2_lz4(w, LATENT_MODULES_CHUNK, &payload)
+    }
+
+    #[cfg(feature = "std")]
     fn read_groups_payload<R: Read>(r: &mut R) -> io::Result<(Vec<NamedGroup>, Vec<NamedGroup>)> {
         let sg_n = storage::read_u32_le(r)? as usize;
         let mut sensor_groups: Vec<NamedGroup> = Vec::with_capacity(sg_n);
@@ -2736,6 +2810,22 @@ impl Brain {
         }
 
         Ok((sensor_groups, action_groups))
+    }
+
+    #[cfg(feature = "std")]
+    fn read_latent_modules_payload<R: Read>(r: &mut R) -> io::Result<Vec<NamedGroup>> {
+        let n = storage::read_u32_le(r)? as usize;
+        let mut groups: Vec<NamedGroup> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let name = storage::read_string(r)?;
+            let k = storage::read_u32_le(r)? as usize;
+            let mut units: Vec<UnitId> = Vec::with_capacity(k);
+            for _ in 0..k {
+                units.push(storage::read_u32_le(r)? as usize);
+            }
+            groups.push(NamedGroup { name, units });
+        }
+        Ok(groups)
     }
 
     #[cfg(feature = "std")]
@@ -3058,10 +3148,12 @@ impl Brain {
         child.eligibility = vec![0.0; child.connections.weights.len()];
         child.sensor_groups = self.sensor_groups.clone();
         child.action_groups = self.action_groups.clone();
+        child.latent_groups = self.latent_groups.clone();
         child.reserved = self.reserved.clone();
 
         // Derived caches depend on groups copied above.
         child.rebuild_sensor_group_index();
+        child.rebuild_routing_from_groups();
 
         // Copy symbol table + causal memory.
         child.symbols = self.symbols.clone();
@@ -3194,6 +3286,40 @@ impl Brain {
             }
         }
         self.action_groups.push(NamedGroup {
+            name: name.to_string(),
+            units,
+        });
+
+        self.intern(name);
+    }
+
+    /// Define a named latent module with the specified number of units.
+    ///
+    /// Latent modules are internal learning/routing partitions that are persisted
+    /// in the brain image, but are not exposed as sensors or actions.
+    ///
+    /// If a module with the same name already exists (or collides with an existing
+    /// sensor/action group), this is a no-op.
+    pub fn define_module(&mut self, name: &str, width: usize) {
+        if width == 0 {
+            return;
+        }
+        if self.sensor_groups.iter().any(|g| g.name == name)
+            || self.action_groups.iter().any(|g| g.name == name)
+            || self.latent_groups.iter().any(|g| g.name == name)
+        {
+            return;
+        }
+
+        let module = self.ensure_routing_module("latent", name);
+        let units = self.allocate_units(width);
+        for &id in &units {
+            if id < self.unit_module.len() {
+                self.unit_module[id] = module;
+            }
+        }
+
+        self.latent_groups.push(NamedGroup {
             name: name.to_string(),
             units,
         });
@@ -6521,7 +6647,10 @@ mod tests {
             ..Default::default()
         };
 
-        let brain = Brain::new(cfg);
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("vision", 3);
+        brain.define_action("move", 2);
+        brain.define_module("ctx", 4);
         let mut bytes: Vec<u8> = Vec::new();
         brain.save_image_to(&mut bytes).unwrap();
 
@@ -6597,6 +6726,14 @@ mod tests {
         assert_eq!(loaded.reserved.len(), brain.reserved.len());
         assert_eq!(loaded.learning_enabled.len(), brain.learning_enabled.len());
         assert_eq!(loaded.symbols_rev, brain.symbols_rev);
+        assert_eq!(loaded.sensor_groups.len(), brain.sensor_groups.len());
+        assert_eq!(loaded.action_groups.len(), brain.action_groups.len());
+        assert_eq!(loaded.latent_groups.len(), brain.latent_groups.len());
+        assert_eq!(loaded.latent_groups[0].name, brain.latent_groups[0].name);
+        assert_eq!(
+            loaded.latent_groups[0].units.len(),
+            brain.latent_groups[0].units.len()
+        );
 
         // Verify CSR connections match.
         assert_eq!(
@@ -6716,6 +6853,43 @@ mod tests {
         // Cross-module scaling at 0.25 yields dw≈0.025.
         assert!((brain.connections.weights[idx_a1] - 0.025).abs() < 1e-6);
         assert!((brain.connections.weights[idx_a2] - 0.025).abs() < 1e-6);
+    }
+
+    #[test]
+    fn latent_modules_participate_in_routing() {
+        let cfg = BrainConfig {
+            unit_count: 12,
+            connectivity_per_unit: 1,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.1,
+            forget_rate: 0.0,
+            prune_below: 0.0,
+            imprint_rate: 0.0,
+            learning_deadband: 0.0,
+            module_routing_top_k: 1,
+            module_routing_strict: true,
+            module_signature_decay: 0.1,
+            seed: Some(7),
+            causal_decay: 0.01,
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+        brain.define_module("ctx", 2);
+
+        let ctx_mid = *brain
+            .routing_module_index
+            .get("latent::ctx")
+            .expect("latent module should exist");
+
+        brain.note_compound_symbol(&["ctx"]);
+        brain.commit_observation();
+
+        assert_eq!(brain.learning_route_modules, vec![ctx_mid]);
     }
     #[test]
     fn csr_neighbors_iteration() {
