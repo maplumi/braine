@@ -681,6 +681,29 @@ enum DaemonGameState {
         #[serde(default)]
         spotxy_grid_n: u32,
     },
+    #[serde(rename = "maze")]
+    Maze {
+        #[serde(flatten)]
+        common: DaemonGameCommon,
+        #[serde(default)]
+        maze_mode: String,
+        #[serde(default)]
+        maze_w: u32,
+        #[serde(default)]
+        maze_h: u32,
+        #[serde(default)]
+        maze_player_x: u32,
+        #[serde(default)]
+        maze_player_y: u32,
+        #[serde(default)]
+        maze_goal_x: u32,
+        #[serde(default)]
+        maze_goal_y: u32,
+        #[serde(default)]
+        maze_steps: u32,
+        #[serde(default)]
+        maze_event: String,
+    },
     #[serde(rename = "pong")]
     Pong {
         #[serde(flatten)]
@@ -753,6 +776,7 @@ impl DaemonGameState {
             Self::Bandit { .. } => "bandit",
             Self::SpotReversal { .. } => "spot_reversal",
             Self::SpotXY { .. } => "spotxy",
+            Self::Maze { .. } => "maze",
             Self::Pong { .. } => "pong",
             Self::Text { .. } => "text",
             Self::Replay { .. } => "replay",
@@ -766,6 +790,7 @@ impl DaemonGameState {
             | Self::Bandit { common }
             | Self::SpotReversal { common, .. }
             | Self::SpotXY { common, .. }
+            | Self::Maze { common, .. }
             | Self::Pong { common, .. }
             | Self::Text { common, .. }
             | Self::Replay { common, .. } => Some(common),
@@ -837,6 +862,52 @@ impl DaemonGameState {
         match self {
             Self::SpotXY { spotxy_eval, .. } => *spotxy_eval,
             _ => false,
+        }
+    }
+
+    fn maze_mode(&self) -> &str {
+        match self {
+            Self::Maze { maze_mode, .. } => maze_mode.as_str(),
+            _ => "",
+        }
+    }
+
+    fn maze_dims(&self) -> (u32, u32) {
+        match self {
+            Self::Maze { maze_w, maze_h, .. } => (*maze_w, *maze_h),
+            _ => (0, 0),
+        }
+    }
+
+    fn maze_player_xy(&self) -> (u32, u32) {
+        match self {
+            Self::Maze {
+                maze_player_x,
+                maze_player_y,
+                ..
+            } => (*maze_player_x, *maze_player_y),
+            _ => (0, 0),
+        }
+    }
+
+    fn maze_goal_xy(&self) -> (u32, u32) {
+        match self {
+            Self::Maze { maze_goal_x, maze_goal_y, .. } => (*maze_goal_x, *maze_goal_y),
+            _ => (0, 0),
+        }
+    }
+
+    fn maze_steps(&self) -> u32 {
+        match self {
+            Self::Maze { maze_steps, .. } => *maze_steps,
+            _ => 0,
+        }
+    }
+
+    fn maze_event(&self) -> &str {
+        match self {
+            Self::Maze { maze_event, .. } => maze_event.as_str(),
+            _ => "",
         }
     }
 
@@ -1980,12 +2051,26 @@ fn main() -> Result<(), slint::PlatformError> {
                     snap.game.pong_params();
                 let (pong_hits, pong_misses) = snap.game.pong_scores();
 
+                let (maze_w, maze_h) = snap.game.maze_dims();
+                let (maze_player_x, maze_player_y) = snap.game.maze_player_xy();
+                let (maze_goal_x, maze_goal_y) = snap.game.maze_goal_xy();
+                let maze_steps = snap.game.maze_steps();
+
                 ui.set_game(GameState {
                     kind: snap.game.kind().into(),
                     reversal_active: snap.game.reversal_active(),
                     chosen_action: snap.game.chosen_action().into(),
                     pos_x,
                     pos_y,
+                    maze_mode: snap.game.maze_mode().into(),
+                    maze_w: maze_w as i32,
+                    maze_h: maze_h as i32,
+                    maze_player_x: maze_player_x as i32,
+                    maze_player_y: maze_player_y as i32,
+                    maze_goal_x: maze_goal_x as i32,
+                    maze_goal_y: maze_goal_y as i32,
+                    maze_steps: maze_steps as i32,
+                    maze_event: snap.game.maze_event().into(),
                     pong_ball_visible: snap.game.pong_ball_visible(),
                     pong_ball2_x,
                     pong_ball2_y,

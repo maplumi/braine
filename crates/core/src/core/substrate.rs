@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::String, string::ToString, vec, vec::Vec};
+use alloc::{format, string::String, string::ToString, vec, vec::Vec};
 #[cfg(not(feature = "std"))]
 use hashbrown::{HashMap, HashSet};
 

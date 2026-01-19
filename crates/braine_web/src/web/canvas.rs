@@ -1,7 +1,9 @@
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-use super::types::PongUiState;
+use super::types::{MazeUiState, PongUiState};
+
+use braine_games::maze::MazeSim;
 
 #[allow(deprecated)]
 pub(super) fn clear_canvas(canvas: &web_sys::HtmlCanvasElement) -> Result<(), String> {
@@ -330,6 +332,133 @@ pub(super) fn draw_pong(
     // Score zone indicator (right edge)
     ctx.set_fill_style_str("rgba(239, 68, 68, 0.12)");
     ctx.fill_rect(field_right - 6.0, field_top, 6.0, field_bottom - field_top);
+
+    Ok(())
+}
+
+#[allow(deprecated)]
+pub(super) fn draw_maze(
+    canvas: &web_sys::HtmlCanvasElement,
+    s: &MazeUiState,
+    selected_action: Option<&str>,
+) -> Result<(), String> {
+    let ctx = canvas
+        .get_context("2d")
+        .map_err(|_| "canvas: get_context threw".to_string())?
+        .ok_or("canvas: missing 2d context".to_string())?
+        .dyn_into::<web_sys::CanvasRenderingContext2d>()
+        .map_err(|_| "canvas: context is not 2d".to_string())?;
+
+    let wpx = canvas.width() as f64;
+    let hpx = canvas.height() as f64;
+
+    // Background
+    ctx.set_fill_style_str("#0a0f1a");
+    ctx.fill_rect(0.0, 0.0, wpx, hpx);
+
+    let mw = s.w.max(2) as f64;
+    let mh = s.h.max(2) as f64;
+
+    let inset = 12.0;
+    let field_w = (wpx - 2.0 * inset).max(1.0);
+    let field_h = (hpx - 2.0 * inset).max(1.0);
+    let cell = (field_w / mw).min(field_h / mh).max(1.0);
+
+    let draw_w = cell * mw;
+    let draw_h = cell * mh;
+    let ox = (wpx - draw_w) * 0.5;
+    let oy = (hpx - draw_h) * 0.5;
+
+    // Reconstruct maze deterministically.
+    let sim = MazeSim::new_with_dims(s.seed, s.w, s.h);
+
+    // Wall styling
+    ctx.set_stroke_style_str("rgba(122, 162, 255, 0.55)");
+    ctx.set_line_width((cell * 0.10).clamp(1.0, 3.0));
+
+    // Wall bits: 1=up,2=right,4=down,8=left.
+    for y in 0..s.h {
+        for x in 0..s.w {
+            let wx = ox + (x as f64) * cell;
+            let wy = oy + (y as f64) * cell;
+            let walls = sim.grid.walls(x, y);
+
+            // Draw per-wall.
+            if (walls & 1) != 0 {
+                ctx.begin_path();
+                ctx.move_to(wx, wy);
+                ctx.line_to(wx + cell, wy);
+                ctx.stroke();
+            }
+            if (walls & 2) != 0 {
+                ctx.begin_path();
+                ctx.move_to(wx + cell, wy);
+                ctx.line_to(wx + cell, wy + cell);
+                ctx.stroke();
+            }
+            if (walls & 4) != 0 {
+                ctx.begin_path();
+                ctx.move_to(wx, wy + cell);
+                ctx.line_to(wx + cell, wy + cell);
+                ctx.stroke();
+            }
+            if (walls & 8) != 0 {
+                ctx.begin_path();
+                ctx.move_to(wx, wy);
+                ctx.line_to(wx, wy + cell);
+                ctx.stroke();
+            }
+        }
+    }
+
+    // Goal (square)
+    let gx = ox + (s.goal_x as f64 + 0.5) * cell;
+    let gy = oy + (s.goal_y as f64 + 0.5) * cell;
+    let gr = (cell * 0.22).clamp(3.0, 10.0);
+    ctx.set_fill_style_str("rgba(34, 197, 94, 0.85)");
+    ctx.fill_rect(gx - gr, gy - gr, 2.0 * gr, 2.0 * gr);
+
+    // Player (circle)
+    let px = ox + (s.player_x as f64 + 0.5) * cell;
+    let py = oy + (s.player_y as f64 + 0.5) * cell;
+    let pr = (cell * 0.22).clamp(3.0, 10.0);
+    ctx.set_fill_style_str("rgba(251, 191, 36, 0.95)");
+    ctx.begin_path();
+    let _ = ctx.arc(px, py, pr, 0.0, std::f64::consts::PI * 2.0);
+    ctx.fill();
+
+    // Small direction hint (selected action)
+    if let Some(a) = selected_action {
+        let (dx, dy) = match a {
+            "up" => (0.0, -1.0),
+            "right" => (1.0, 0.0),
+            "down" => (0.0, 1.0),
+            "left" => (-1.0, 0.0),
+            _ => (0.0, 0.0),
+        };
+        if dx != 0.0 || dy != 0.0 {
+            ctx.set_stroke_style_str("rgba(251, 191, 36, 0.85)");
+            ctx.set_line_width((cell * 0.08).clamp(1.0, 3.0));
+            ctx.begin_path();
+            ctx.move_to(px, py);
+            ctx.line_to(px + dx * cell * 0.35, py + dy * cell * 0.35);
+            ctx.stroke();
+        }
+    }
+
+    // Legend text
+    ctx.set_fill_style_str("rgba(255, 255, 255, 0.78)");
+    ctx.set_font("12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto");
+    let _ = ctx.fill_text(
+        &format!(
+            "Maze {}  steps {}  event {}",
+            s.difficulty,
+            s.steps,
+            s.last_event
+        ),
+        12.0,
+        20.0,
+    );
 
     Ok(())
 }

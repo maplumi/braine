@@ -20,6 +20,7 @@ export component GameHeader inherits Rectangle {
         (kind == "bandit") ? "Bandit" :
         (kind == "spot_reversal") ? "Spot Reversal" :
         (kind == "spotxy") ? "SpotXY" :
+        (kind == "maze") ? "Maze" :
         (kind == "pong") ? "Pong" :
         (kind == "text") ? "Text" :
         (kind == "replay") ? "Replay" :
@@ -27,6 +28,7 @@ export component GameHeader inherits Rectangle {
 
     property <string> help_text:
         (kind == "pong") ? "Keys: W/Up = up, S/Down = down, Space = stay" :
+        (kind == "maze") ? "Keys: arrows/WASD = navigate (up/down/left/right)." :
         (kind == "bandit") ? "Two-armed bandit: rewards are stochastic; learn which arm pays." :
         (kind == "spotxy") ? "Track the dot (TRAIN) or holdout (EVAL)." :
         (kind == "spot_reversal") ? "Rule flips; context bit helps detect reversals." :
@@ -62,6 +64,15 @@ export component GameHeader inherits Rectangle {
             text: "dataset=" + game.replay-dataset +
                   " trial=" + game.replay-index + "/" + game.replay-total +
                   ((game.replay-trial-id != "") ? (" id=" + game.replay-trial-id) : "");
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        if kind == "maze": Text {
+            text: "mode=" + game.maze-mode +
+                  " size=" + game.maze-w + "×" + game.maze-h +
+                  " steps=" + game.maze-steps +
+                  ((game.maze-event != "") ? (" event=" + game.maze-event) : "");
             color: Theme.text-secondary;
             font-size: 12px;
         }

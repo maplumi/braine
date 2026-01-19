@@ -1,6 +1,7 @@
 use braine::substrate::{Brain, Stimulus};
 use braine_games::{
     bandit::BanditGame,
+    maze::MazeGame,
     replay::{ReplayDataset, ReplayGame},
     spot::SpotGame,
     spot_reversal::SpotReversalGame,
@@ -8,7 +9,7 @@ use braine_games::{
 };
 
 use super::brain_factory::make_default_brain;
-use super::types::{GameUiSnapshot, PongUiState, ReplayUiState, SequenceUiState, TextUiState};
+use super::types::{GameUiSnapshot, MazeUiState, PongUiState, ReplayUiState, SequenceUiState, TextUiState};
 use super::GameKind;
 
 use super::pong_web::PongWebGame;
@@ -82,6 +83,10 @@ impl AppRuntime {
                 let g = SpotXYGame::new(16);
                 self.ensure_spotxy_actions(&g);
                 WebGame::SpotXY(g)
+            }
+            GameKind::Maze => {
+                self.ensure_maze_io();
+                WebGame::Maze(MazeGame::new())
             }
             GameKind::Pong => {
                 self.ensure_pong_io();
@@ -232,6 +237,26 @@ impl AppRuntime {
                         .unwrap_or_else(|| "stay".to_string())
                 }
             }
+            WebGame::Maze(g) => {
+                let allowed = g.allowed_actions();
+                if allowed.is_empty() {
+                    return TickResult::Advanced(None);
+                }
+
+                if explore {
+                    allowed[rand_idx % allowed.len()].to_string()
+                } else {
+                    let ranked = self
+                        .brain
+                        .ranked_actions_with_meaning(context_key, cfg.meaning_alpha);
+                    ranked
+                        .into_iter()
+                        .find(|(name, _score)| allowed.iter().any(|a| a == name))
+                        .map(|(name, _score)| name)
+                        .or_else(|| allowed.first().cloned())
+                        .unwrap_or_else(|| "up".to_string())
+                }
+            }
             _ => {
                 let allowed = ["left", "right"];
                 if explore {
@@ -291,6 +316,34 @@ impl AppRuntime {
         }
         self.brain.ensure_action_min_width("left", 6);
         self.brain.ensure_action_min_width("right", 6);
+    }
+
+    fn ensure_maze_io(&mut self) {
+        for name in [
+            "maze_wall_up",
+            "maze_wall_right",
+            "maze_wall_down",
+            "maze_wall_left",
+            "maze_goal_left",
+            "maze_goal_right",
+            "maze_goal_up",
+            "maze_goal_down",
+            "maze_goal_here",
+            "maze_dist_b0",
+            "maze_dist_b1",
+            "maze_dist_b2",
+            "maze_dist_b3",
+            "maze_mode_easy",
+            "maze_mode_medium",
+            "maze_mode_hard",
+            "maze_bump",
+            "maze_reached_goal",
+        ] {
+            self.brain.ensure_sensor_min_width(name, 2);
+        }
+        for action in ["up", "right", "down", "left"] {
+            self.brain.ensure_action_min_width(action, 6);
+        }
     }
 
     fn ensure_pong_io(&mut self) {
@@ -523,6 +576,9 @@ impl AppRuntime {
             WebGame::SpotXY(g) => {
                 g.apply_stimuli(&mut self.brain);
             }
+            WebGame::Maze(g) => {
+                g.apply_stimuli(&mut self.brain);
+            }
             WebGame::Pong(g) => {
                 g.apply_stimuli(&mut self.brain);
             }
@@ -578,6 +634,7 @@ pub(super) enum WebGame {
     Bandit(BanditGame),
     SpotReversal(SpotReversalGame),
     SpotXY(SpotXYGame),
+    Maze(MazeGame),
     Pong(PongWebGame),
     Sequence(SequenceWebGame),
     Text(TextWebGame),
@@ -591,6 +648,7 @@ impl WebGame {
                 vec!["left".to_string(), "right".to_string()]
             }
             WebGame::SpotXY(g) => g.allowed_actions().to_vec(),
+            WebGame::Maze(g) => g.allowed_actions().to_vec(),
             WebGame::Pong(g) => g.allowed_actions().to_vec(),
             WebGame::Sequence(g) => g.allowed_actions().to_vec(),
             WebGame::Text(g) => g.allowed_actions().to_vec(),
@@ -604,6 +662,7 @@ impl WebGame {
             WebGame::Bandit(g) => g.stimulus_name(),
             WebGame::SpotReversal(g) => g.stimulus_name(),
             WebGame::SpotXY(g) => g.stimulus_name(),
+            WebGame::Maze(g) => g.stimulus_name(),
             WebGame::Pong(g) => g.stimulus_name(),
             WebGame::Sequence(g) => g.stimulus_name(),
             WebGame::Text(g) => g.stimulus_name(),
@@ -614,6 +673,7 @@ impl WebGame {
     pub(super) fn stimulus_key(&self) -> Option<&str> {
         match self {
             WebGame::SpotXY(g) => Some(g.stimulus_key()),
+            WebGame::Maze(g) => Some(g.stimulus_key()),
             WebGame::Pong(g) => Some(g.stimulus_key()),
             WebGame::Sequence(g) => Some(g.stimulus_key()),
             WebGame::Text(g) => Some(g.stimulus_key()),
@@ -642,6 +702,7 @@ impl WebGame {
             WebGame::Bandit(g) => g.response_made,
             WebGame::SpotReversal(g) => g.response_made,
             WebGame::SpotXY(g) => g.response_made,
+            WebGame::Maze(g) => g.response_made,
             WebGame::Pong(g) => g.response_made,
             WebGame::Sequence(g) => g.response_made(),
             WebGame::Text(g) => g.response_made(),
@@ -655,6 +716,7 @@ impl WebGame {
             WebGame::Bandit(g) => g.update_timing(trial_period_ms),
             WebGame::SpotReversal(g) => g.update_timing(trial_period_ms),
             WebGame::SpotXY(g) => g.update_timing(trial_period_ms),
+            WebGame::Maze(g) => g.update_timing(trial_period_ms),
             WebGame::Pong(g) => g.update_timing(trial_period_ms),
             WebGame::Sequence(g) => g.update_timing(trial_period_ms),
             WebGame::Text(g) => g.update_timing(trial_period_ms),
@@ -672,6 +734,10 @@ impl WebGame {
             WebGame::Bandit(g) => g.score_action(action),
             WebGame::SpotReversal(g) => g.score_action(action),
             WebGame::SpotXY(g) => g.score_action(action),
+            WebGame::Maze(g) => {
+                let _ = trial_period_ms;
+                g.score_action(action)
+            }
             WebGame::Pong(g) => {
                 let _ = trial_period_ms;
                 g.score_action(action)
@@ -697,6 +763,7 @@ impl WebGame {
             WebGame::Bandit(g) => &g.stats,
             WebGame::SpotReversal(g) => &g.stats,
             WebGame::SpotXY(g) => &g.stats,
+            WebGame::Maze(g) => &g.stats,
             WebGame::Pong(g) => &g.stats,
             WebGame::Sequence(g) => &g.game.stats,
             WebGame::Text(g) => &g.game.stats,
@@ -710,6 +777,7 @@ impl WebGame {
             WebGame::Bandit(g) => g.stats = stats,
             WebGame::SpotReversal(g) => g.stats = stats,
             WebGame::SpotXY(g) => g.stats = stats,
+            WebGame::Maze(g) => g.stats = stats,
             WebGame::Pong(g) => g.stats = stats,
             WebGame::Sequence(g) => g.game.stats = stats,
             WebGame::Text(g) => g.game.stats = stats,
@@ -736,6 +804,21 @@ impl WebGame {
                 spotxy_eval: g.eval_mode,
                 spotxy_mode: g.mode_name().to_string(),
                 spotxy_grid_n: g.grid_n(),
+                ..GameUiSnapshot::default()
+            },
+            WebGame::Maze(g) => GameUiSnapshot {
+                maze_state: Some(MazeUiState {
+                    w: g.sim.grid.w(),
+                    h: g.sim.grid.h(),
+                    seed: g.sim.seed,
+                    player_x: g.sim.player_x,
+                    player_y: g.sim.player_y,
+                    goal_x: g.sim.goal_x,
+                    goal_y: g.sim.goal_y,
+                    steps: g.steps_in_episode,
+                    difficulty: g.difficulty_name(),
+                    last_event: g.last_event.as_str(),
+                }),
                 ..GameUiSnapshot::default()
             },
             WebGame::Pong(g) => GameUiSnapshot {

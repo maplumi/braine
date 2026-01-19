@@ -36,8 +36,8 @@ mod state_image;
 
 use experts::{ExpertManager, ExpertsPersistenceMode, ParentLearningPolicy};
 use game::{
-    BanditGame, PongGame, ReplayDataset, ReplayGame, SpotGame, SpotReversalGame, SpotXYGame,
-    TextNextTokenGame,
+    BanditGame, MazeGame, PongGame, ReplayDataset, ReplayGame, SpotGame, SpotReversalGame,
+    SpotXYGame, TextNextTokenGame,
 };
 use paths::AppPaths;
 
@@ -68,6 +68,7 @@ enum ActiveGame {
     Bandit(BanditGame),
     SpotReversal(SpotReversalGame),
     SpotXY(SpotXYGame),
+    Maze(MazeGame),
     Pong(PongGame),
     Text(TextNextTokenGame),
     Replay(ReplayGame),
@@ -80,6 +81,7 @@ impl ActiveGame {
             ActiveGame::Bandit(_) => "bandit",
             ActiveGame::SpotReversal(_) => "spot_reversal",
             ActiveGame::SpotXY(_) => "spotxy",
+            ActiveGame::Maze(_) => "maze",
             ActiveGame::Pong(_) => "pong",
             ActiveGame::Text(_) => "text",
             ActiveGame::Replay(_) => "replay",
@@ -92,6 +94,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.update_timing(trial_period_ms),
             ActiveGame::SpotReversal(g) => g.update_timing(trial_period_ms),
             ActiveGame::SpotXY(g) => g.update_timing(trial_period_ms),
+            ActiveGame::Maze(g) => g.update_timing(trial_period_ms),
             ActiveGame::Pong(g) => g.update_timing(trial_period_ms),
             ActiveGame::Text(g) => g.update_timing(trial_period_ms),
             ActiveGame::Replay(g) => g.update_timing(trial_period_ms),
@@ -104,6 +107,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.stimulus_name(),
             ActiveGame::SpotReversal(g) => g.stimulus_name(),
             ActiveGame::SpotXY(g) => g.stimulus_name(),
+            ActiveGame::Maze(g) => g.stimulus_name(),
             ActiveGame::Pong(g) => g.stimulus_name(),
             ActiveGame::Text(g) => g.stimulus_name(),
             ActiveGame::Replay(g) => g.stimulus_name(),
@@ -116,6 +120,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => std::borrow::Cow::Borrowed(g.best_action()),
             ActiveGame::SpotReversal(g) => std::borrow::Cow::Borrowed(g.correct_action()),
             ActiveGame::SpotXY(g) => std::borrow::Cow::Borrowed(g.correct_action()),
+            ActiveGame::Maze(_) => std::borrow::Cow::Borrowed(""),
             ActiveGame::Pong(g) => std::borrow::Cow::Borrowed(g.correct_action()),
             ActiveGame::Text(g) => std::borrow::Cow::Owned(g.correct_action()),
             ActiveGame::Replay(g) => std::borrow::Cow::Borrowed(g.correct_action()),
@@ -129,6 +134,7 @@ impl ActiveGame {
                 ACTIONS.get_or_init(|| vec!["left".to_string(), "right".to_string()])
             }
             ActiveGame::SpotXY(g) => g.allowed_actions(),
+            ActiveGame::Maze(g) => g.allowed_actions(),
             ActiveGame::Pong(g) => g.allowed_actions(),
             ActiveGame::Text(g) => g.allowed_actions(),
             ActiveGame::Replay(g) => g.allowed_actions(),
@@ -141,6 +147,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.response_made,
             ActiveGame::SpotReversal(g) => g.response_made,
             ActiveGame::SpotXY(g) => g.response_made,
+            ActiveGame::Maze(g) => g.response_made,
             ActiveGame::Pong(g) => g.response_made,
             ActiveGame::Text(g) => g.response_made,
             ActiveGame::Replay(g) => g.response_made,
@@ -153,6 +160,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.trial_frame,
             ActiveGame::SpotReversal(g) => g.trial_frame,
             ActiveGame::SpotXY(g) => g.trial_frame,
+            ActiveGame::Maze(g) => g.trial_frame,
             ActiveGame::Pong(g) => g.trial_frame,
             ActiveGame::Text(g) => g.trial_frame,
             ActiveGame::Replay(g) => g.trial_frame,
@@ -167,6 +175,8 @@ impl ActiveGame {
             ActiveGame::SpotReversal(g) => g.spot_is_left,
             // For SpotXY, reuse this field as "correct side is left" (x < 0).
             ActiveGame::SpotXY(g) => g.pos_x < 0.0,
+            // For Maze, this field is not meaningful.
+            ActiveGame::Maze(_) => false,
             // For Pong, reuse this field as "ball is above paddle".
             ActiveGame::Pong(g) => g.sim.state.ball_y > g.sim.state.paddle_y,
             // For Text, this field is not meaningful.
@@ -190,6 +200,10 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.score_action(action),
             ActiveGame::SpotReversal(g) => g.score_action(action),
             ActiveGame::SpotXY(g) => g.score_action(action),
+            ActiveGame::Maze(g) => {
+                let _ = trial_period_ms;
+                g.score_action(action)
+            }
             ActiveGame::Pong(g) => g.score_action(action, trial_period_ms),
             ActiveGame::Text(g) => {
                 let _ = trial_period_ms;
@@ -208,6 +222,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => &g.stats,
             ActiveGame::SpotReversal(g) => &g.stats,
             ActiveGame::SpotXY(g) => &g.stats,
+            ActiveGame::Maze(g) => &g.stats,
             ActiveGame::Pong(g) => &g.stats,
             ActiveGame::Text(g) => &g.stats,
             ActiveGame::Replay(g) => &g.stats,
@@ -220,6 +235,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => &mut g.stats,
             ActiveGame::SpotReversal(g) => &mut g.stats,
             ActiveGame::SpotXY(g) => &mut g.stats,
+            ActiveGame::Maze(g) => &mut g.stats,
             ActiveGame::Pong(g) => &mut g.stats,
             ActiveGame::Text(g) => &mut g.stats,
             ActiveGame::Replay(g) => &mut g.stats,
@@ -232,6 +248,7 @@ impl ActiveGame {
             ActiveGame::Bandit(g) => g.last_action.as_deref(),
             ActiveGame::SpotReversal(g) => g.last_action.as_deref(),
             ActiveGame::SpotXY(g) => g.last_action.as_deref(),
+            ActiveGame::Maze(g) => g.last_action.as_deref(),
             ActiveGame::Pong(g) => g.last_action.as_deref(),
             ActiveGame::Text(g) => g.last_action.as_deref(),
             ActiveGame::Replay(g) => g.last_action.as_deref(),
@@ -241,6 +258,7 @@ impl ActiveGame {
     fn stimulus_key(&self) -> Option<&str> {
         match self {
             ActiveGame::SpotXY(g) => Some(g.stimulus_key()),
+            ActiveGame::Maze(g) => Some(g.stimulus_key()),
             ActiveGame::Pong(g) => Some(g.stimulus_key()),
             ActiveGame::Text(g) => Some(g.stimulus_key()),
             ActiveGame::Replay(g) => Some(g.stimulus_key()),
@@ -809,6 +827,32 @@ enum GameState {
         #[serde(default)]
         spotxy_grid_n: u32,
     },
+
+    #[serde(rename = "maze")]
+    Maze {
+        #[serde(flatten)]
+        common: GameCommon,
+        #[serde(default)]
+        maze_mode: String,
+        #[serde(default)]
+        maze_w: u32,
+        #[serde(default)]
+        maze_h: u32,
+        #[serde(default)]
+        maze_seed: u64,
+        #[serde(default)]
+        maze_player_x: u32,
+        #[serde(default)]
+        maze_player_y: u32,
+        #[serde(default)]
+        maze_goal_x: u32,
+        #[serde(default)]
+        maze_goal_y: u32,
+        #[serde(default)]
+        maze_steps: u32,
+        #[serde(default)]
+        maze_event: String,
+    },
     #[serde(rename = "pong")]
     Pong {
         #[serde(flatten)]
@@ -1184,6 +1228,10 @@ impl DaemonState {
                 self.ensure_spotxy_io();
                 self.game = ActiveGame::SpotXY(SpotXYGame::new(16));
             }
+            "maze" => {
+                self.ensure_maze_io();
+                self.game = ActiveGame::Maze(MazeGame::new());
+            }
             "pong" => {
                 self.ensure_pong_io();
                 self.game = ActiveGame::Pong(PongGame::new());
@@ -1200,7 +1248,7 @@ impl DaemonState {
             }
             _ => {
                 return Err(format!(
-                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|pong|text|replay"
+                    "Unknown game '{game}'. Use spot|bandit|spot_reversal|spotxy|maze|pong|text|replay"
                 ))
             }
         }
@@ -1273,6 +1321,36 @@ impl DaemonState {
         self.brain.ensure_action_min_width("up", 6);
         self.brain.ensure_action_min_width("down", 6);
         self.brain.ensure_action_min_width("stay", 6);
+    }
+
+    fn ensure_maze_io(&mut self) {
+        // Sensors used by `braine_games::maze::MazeGame::apply_stimuli`.
+        for name in [
+            "maze_wall_up",
+            "maze_wall_right",
+            "maze_wall_down",
+            "maze_wall_left",
+            "maze_goal_left",
+            "maze_goal_right",
+            "maze_goal_up",
+            "maze_goal_down",
+            "maze_goal_here",
+            "maze_dist_b0",
+            "maze_dist_b1",
+            "maze_dist_b2",
+            "maze_dist_b3",
+            "maze_mode_easy",
+            "maze_mode_medium",
+            "maze_mode_hard",
+            "maze_bump",
+            "maze_reached_goal",
+        ] {
+            self.brain.ensure_sensor_min_width(name, 2);
+        }
+
+        for action in ["up", "right", "down", "left"] {
+            self.brain.ensure_action_min_width(action, 6);
+        }
     }
 
     fn ensure_text_io(&mut self, g: &TextNextTokenGame) {
@@ -1426,6 +1504,10 @@ impl DaemonState {
             // Observe stimulus and advance dynamics.
             match &self.game {
                 ActiveGame::SpotXY(g) => {
+                    g.apply_stimuli(brain);
+                    brain.note_compound_symbol(&[stimulus_key]);
+                }
+                ActiveGame::Maze(g) => {
                     g.apply_stimuli(brain);
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
@@ -1701,6 +1783,19 @@ impl DaemonState {
                     spotxy_grid_n: self.game.spotxy_grid_n(),
                 }
             }
+            ActiveGame::Maze(g) => GameState::Maze {
+                common: common(),
+                maze_mode: g.difficulty_name().to_string(),
+                maze_w: g.sim.grid.w(),
+                maze_h: g.sim.grid.h(),
+                maze_seed: g.sim.seed,
+                maze_player_x: g.sim.player_x,
+                maze_player_y: g.sim.player_y,
+                maze_goal_x: g.sim.goal_x,
+                maze_goal_y: g.sim.goal_y,
+                maze_steps: g.steps_in_episode,
+                maze_event: g.last_event.as_str().to_string(),
+            },
             ActiveGame::Pong(g) => GameState::Pong {
                 common: common(),
                 pong_ball_x: g.sim.state.ball_x,
@@ -3262,6 +3357,19 @@ async fn handle_client(
                             ],
                         }
                     }
+                    "maze" => {
+                        Response::GameParams {
+                            game: "maze".to_string(),
+                            params: vec![GameParamDef {
+                                key: "difficulty".to_string(),
+                                label: "Difficulty".to_string(),
+                                description: "0=easy, 1=medium, 2=hard".to_string(),
+                                min: 0.0,
+                                max: 2.0,
+                                default: 0.0,
+                            }],
+                        }
+                    }
                     "spotxy" => {
                         // SpotXY grid range: 0 (binary mode) or 2..=8 grid.
                         Response::GameParams {
@@ -3330,6 +3438,23 @@ async fn handle_client(
                                 message: format!("Set {game}.{key} = {value}"),
                             },
                             Err(e) => Response::Error { message: e },
+                        },
+                        ActiveGame::Maze(g) => match key {
+                            "difficulty" => {
+                                let d = braine_games::maze::MazeDifficulty::from_param(value);
+                                g.set_difficulty(d);
+                                s.ensure_maze_io();
+                                s.pending_neuromod = 0.0;
+                                s.last_reward = 0.0;
+                                Response::Success {
+                                    message: format!("Set {game}.{key} = {}", d.name()),
+                                }
+                            }
+                            _ => Response::Error {
+                                message: format!(
+                                    "Unknown Maze param '{key}'. Use difficulty (0=easy,1=medium,2=hard)"
+                                ),
+                            },
                         },
                         ActiveGame::SpotXY(g) => {
                             // SpotXY tunable params: grid_n, eval.

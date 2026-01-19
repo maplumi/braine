@@ -105,7 +105,7 @@ struct BrainvizGameRecording {
     keyframes: Vec<(usize, BrainvizKeyframe)>,
 }
 
-const GAME_KIND_COUNT: usize = 8;
+const GAME_KIND_COUNT: usize = 9;
 
 fn game_kind_index(kind: crate::ui_model::GameKind) -> usize {
     match kind {
@@ -113,10 +113,11 @@ fn game_kind_index(kind: crate::ui_model::GameKind) -> usize {
         crate::ui_model::GameKind::Bandit => 1,
         crate::ui_model::GameKind::SpotReversal => 2,
         crate::ui_model::GameKind::SpotXY => 3,
-        crate::ui_model::GameKind::Pong => 4,
-        crate::ui_model::GameKind::Sequence => 5,
-        crate::ui_model::GameKind::Text => 6,
-        crate::ui_model::GameKind::Replay => 7,
+        crate::ui_model::GameKind::Maze => 4,
+        crate::ui_model::GameKind::Pong => 5,
+        crate::ui_model::GameKind::Sequence => 6,
+        crate::ui_model::GameKind::Text => 7,
+        crate::ui_model::GameKind::Replay => 8,
     }
 }
 
@@ -136,7 +137,7 @@ fn wrap_delta_phase_to_pi(mut d: f32) -> f32 {
 
 use crate::ui_model::{AnalyticsPanel, DashboardTab, GameKind};
 
-use canvas::{clear_canvas, draw_pong, draw_spotxy};
+use canvas::{clear_canvas, draw_maze, draw_pong, draw_spotxy};
 use files::{download_bytes, read_file_bytes};
 use indexeddb::{idb_get_bytes, idb_put_bytes, load_game_accuracies, save_game_accuracies};
 use runtime::{AppRuntime, TickConfig, TickResult, WebGame};
@@ -148,7 +149,7 @@ use storage::{
     save_persisted_stats_state, PersistedGameStats, PersistedSettings, PersistedStatsState,
 };
 use tokens::{choose_text_token_sensor, token_action_name_from_sensor};
-use types::{PongUiState, ReplayUiState, SequenceUiState, TextUiState};
+use types::{MazeUiState, PongUiState, ReplayUiState, SequenceUiState, TextUiState};
 
 type ErrorSink = std::cell::RefCell<Option<Box<dyn Fn(String)>>>;
 
@@ -620,6 +621,8 @@ fn App() -> impl IntoView {
     let (spotxy_eval, set_spotxy_eval) = signal(false);
     let (spotxy_mode, set_spotxy_mode) = signal(String::new());
     let (spotxy_grid_n, set_spotxy_grid_n) = signal(0u32);
+
+    let (maze_state, set_maze_state) = signal::<Option<MazeUiState>>(None);
 
     let (pong_state, set_pong_state) = signal::<Option<PongUiState>>(None);
     let (_pong_stimulus_key, set_pong_stimulus_key) = signal(String::new());
@@ -1338,6 +1341,7 @@ fn App() -> impl IntoView {
             // (This is intentionally lightweight compared to brain-wide sampling.)
 
             let snap = runtime.with_value(|r| r.game_ui_snapshot());
+            set_maze_state.set(snap.maze_state);
             set_spotxy_pos.set(snap.spotxy_pos);
             set_spotxy_stimulus_key.set(snap.spotxy_stimulus_key);
             set_spotxy_eval.set(snap.spotxy_eval);
@@ -1440,6 +1444,8 @@ fn App() -> impl IntoView {
         let runtime = runtime.clone();
         move || {
             let snap = runtime.with_value(|r| r.game_ui_snapshot());
+
+            set_maze_state.set(snap.maze_state);
 
             set_spotxy_pos.set(snap.spotxy_pos);
             set_spotxy_stimulus_key.set(snap.spotxy_stimulus_key);
@@ -2531,6 +2537,20 @@ fn App() -> impl IntoView {
         }
     };
 
+    let do_maze_set_difficulty = {
+        let runtime = runtime.clone();
+        move |difficulty_param: f32| {
+            runtime.update_value(|r| {
+                if let WebGame::Maze(g) = &mut r.game {
+                    g.set_difficulty(braine_games::maze::MazeDifficulty::from_param(
+                        difficulty_param,
+                    ));
+                }
+            });
+            refresh_ui_from_runtime();
+        }
+    };
+
     let do_bandit_set_probs = {
         let runtime = runtime.clone();
         move |prob_left: f32, prob_right: f32| {
@@ -2649,6 +2669,27 @@ fn App() -> impl IntoView {
             None => {
                 let _ = draw_spotxy(&canvas, 0.0, 0.0, grid_n, accent, selected);
             }
+        }
+    });
+
+    let maze_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    Effect::new(move |_| {
+        let s = maze_state.get();
+        let action = last_action.get();
+        let Some(canvas) = maze_canvas_ref.get() else {
+            return;
+        };
+
+        let selected = if action.is_empty() {
+            None
+        } else {
+            Some(action.as_str())
+        };
+
+        if let Some(s) = &s {
+            let _ = draw_maze(&canvas, s, selected);
+        } else {
+            let _ = clear_canvas(&canvas);
         }
     });
 
@@ -5293,6 +5334,93 @@ fn App() -> impl IntoView {
                                         <div class="card">
                                             <h3 class="card-title">"Inputs & Actions"</h3>
                                             <pre class="pre">{GameKind::SpotXY.inputs_info()}</pre>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </Show>
+
+                        // Maze game with canvas
+                        <Show when=move || game_kind.get() == GameKind::Maze>
+                            <div class="game-page">
+                                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 20px; background: linear-gradient(135deg, rgba(34, 197, 94, 0.10), rgba(0,0,0,0.3)); border: 1px solid var(--border); border-radius: 16px;">
+                                    <div>
+                                        <h2 style="margin: 0; font-size: 1.2rem; font-weight: 900; color: var(--text); display: flex; align-items: center; gap: 8px;">
+                                            <span style="font-size: 1.5rem;">"🧭"</span>
+                                            "Maze Navigator"
+                                        </h2>
+                                        <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 0.85rem;">"Learn to reach the goal by trial-and-error"</p>
+                                    </div>
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                        <kbd style="padding: 4px 10px; background: rgba(255,255,255,0.1); border: 1px solid var(--border); border-radius: 6px; font-size: 0.75rem; color: var(--muted);">"↑ ↓ ← →"</kbd>
+                                    </div>
+                                </div>
+
+                                {training_health_bar_view()}
+
+                                <div class="game-grid">
+                                    <div class="game-primary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Canvas"</h3>
+                                            <div class="game-canvas-wrap" style="margin-top: 10px;">
+                                                <div class="game-canvas-frame" style="border: 1px solid var(--border); background: rgba(0,0,0,0.25);">
+                                                    <canvas
+                                                        node_ref=maze_canvas_ref
+                                                        width="420"
+                                                        height="420"
+                                                        class="game-canvas square"
+                                                        style="border-radius: 13px; background: #0a0f1a;"
+                                                    ></canvas>
+                                                </div>
+                                            </div>
+                                            <div class="subtle" style="margin-top: 10px; line-height: 1.5;">
+                                                {move || {
+                                                    if let Some(s) = maze_state.get() {
+                                                        format!(
+                                                            "difficulty={}  steps={}  event={}",
+                                                            s.difficulty, s.steps, s.last_event
+                                                        )
+                                                    } else {
+                                                        "waiting for maze snapshot...".to_string()
+                                                    }
+                                                }}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="game-secondary">
+                                        <div class="card">
+                                            <h3 class="card-title">"Difficulty Presets"</h3>
+                                            <div class="subtle">"Easy uses stronger shaping; Hard reduces shaping and increases maze size."</div>
+                                            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+                                                <button class="btn sm" on:click=move |_| { do_maze_set_difficulty(0.0); set_trial_period_ms.set(80); }>
+                                                    "Easy"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| { do_maze_set_difficulty(1.0); set_trial_period_ms.set(95); }>
+                                                    "Normal"
+                                                </button>
+                                                <button class="btn sm" on:click=move |_| { do_maze_set_difficulty(2.0); set_trial_period_ms.set(110); }>
+                                                    "Hard"
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Reward & Signals"</h3>
+                                            <pre class="codeblock">{GameKind::Maze.reward_info()}</pre>
+                                            <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
+                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                {move || format!(
+                                                    "Current: bias={}, scale={}",
+                                                    fmt_f32_signed_fixed(reward_bias.get(), 2),
+                                                    fmt_f32_fixed(reward_scale.get(), 2)
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div class="card">
+                                            <h3 class="card-title">"Inputs & Actions"</h3>
+                                            <pre class="pre">{GameKind::Maze.inputs_info()}</pre>
                                         </div>
                                     </div>
                                 </div>

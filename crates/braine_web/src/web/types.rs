@@ -4,6 +4,8 @@ use super::GameKind;
 pub(super) struct GameUiSnapshot {
     pub(super) spot_is_left: Option<bool>,
 
+    pub(super) maze_state: Option<MazeUiState>,
+
     pub(super) spotxy_pos: Option<(f32, f32)>,
     pub(super) spotxy_stimulus_key: String,
     pub(super) spotxy_eval: bool,
@@ -26,6 +28,20 @@ pub(super) struct GameUiSnapshot {
     pub(super) sequence_state: Option<SequenceUiState>,
     pub(super) text_state: Option<TextUiState>,
     pub(super) replay_state: Option<ReplayUiState>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct MazeUiState {
+    pub(super) w: u32,
+    pub(super) h: u32,
+    pub(super) seed: u64,
+    pub(super) player_x: u32,
+    pub(super) player_y: u32,
+    pub(super) goal_x: u32,
+    pub(super) goal_y: u32,
+    pub(super) steps: u32,
+    pub(super) difficulty: &'static str,
+    pub(super) last_event: &'static str,
 }
 
 #[derive(Clone)]

@@ -8,6 +8,7 @@ use braine_games::pong::{PongAction, PongEvent, PongSim};
 use std::time::{Duration, Instant};
 
 pub use braine_games::bandit::BanditGame;
+pub use braine_games::maze::MazeGame;
 pub use braine_games::replay::{ReplayDataset, ReplayGame};
 pub use braine_games::spot::SpotGame;
 pub use braine_games::spot_reversal::SpotReversalGame;

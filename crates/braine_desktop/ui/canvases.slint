@@ -362,3 +362,89 @@ export component SpotXYCanvas inherits Rectangle {
         opacity: game.response-made ? 0.9 : 0.0;
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Maze Canvas (navigation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component MazeCanvas inherits Rectangle {
+    in property <GameState> game;
+
+    background: Theme.bg-dark;
+    border-color: Theme.border;
+    border-width: 2px;
+
+    // Drawing bounds
+    field := Rectangle {
+        x: 12px;
+        y: 12px;
+        width: parent.width - 24px;
+        height: parent.height - 24px;
+        background: transparent;
+        border-color: Theme.border;
+        border-width: 1px;
+        border-radius: 8px;
+    }
+
+    // Goal (green square)
+    Rectangle {
+        property <float> mw: max(1, game.maze-w) * 1.0;
+        property <float> mh: max(1, game.maze-h) * 1.0;
+        width: 12px;
+        height: 12px;
+        border-radius: 2px;
+        background: Theme.accent-green;
+        x: field.x + ((game.maze-goal-x * 1.0 + 0.5) / mw) * field.width - self.width / 2;
+        y: field.y + ((game.maze-goal-y * 1.0 + 0.5) / mh) * field.height - self.height / 2;
+        opacity: 0.95;
+    }
+
+    // Player (yellow circle)
+    Rectangle {
+        property <float> mw: max(1, game.maze-w) * 1.0;
+        property <float> mh: max(1, game.maze-h) * 1.0;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: Theme.accent-yellow;
+        x: field.x + ((game.maze-player-x * 1.0 + 0.5) / mw) * field.width - self.width / 2;
+        y: field.y + ((game.maze-player-y * 1.0 + 0.5) / mh) * field.height - self.height / 2;
+        opacity: game.response-made ? 0.6 : 0.95;
+    }
+
+    // Overlay info
+    Rectangle {
+        x: field.x + 10px;
+        y: field.y + 10px;
+        width: 220px;
+        height: 22px;
+        background: #00000066;
+        border-radius: 6px;
+
+        Text {
+            x: 10px;
+            y: 3px;
+            text: "mode=" + game.maze-mode + " steps=" + game.maze-steps;
+            color: Theme.text-primary;
+            font-size: 12px;
+        }
+    }
+
+    if game.maze-event != "": Text {
+        x: field.x + 10px;
+        y: field.y + 36px;
+        text: "event=" + game.maze-event;
+        color: Theme.text-secondary;
+        font-size: 12px;
+    }
+
+    if !game.response-made: Text {
+        x: 0px;
+        y: parent.height - 40px;
+        width: parent.width;
+        text: "Use arrows / WASD to navigate";
+        color: Theme.text-primary;
+        font-size: 14px;
+        horizontal-alignment: center;
+    }
+}

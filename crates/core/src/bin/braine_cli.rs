@@ -351,6 +351,29 @@ enum GameState {
         #[serde(flatten)]
         common: GameCommon,
     },
+    #[serde(rename = "maze")]
+    Maze {
+        #[serde(flatten)]
+        common: GameCommon,
+        #[serde(default)]
+        maze_mode: String,
+        #[serde(default)]
+        maze_w: u32,
+        #[serde(default)]
+        maze_h: u32,
+        #[serde(default)]
+        maze_player_x: u32,
+        #[serde(default)]
+        maze_player_y: u32,
+        #[serde(default)]
+        maze_goal_x: u32,
+        #[serde(default)]
+        maze_goal_y: u32,
+        #[serde(default)]
+        maze_steps: u32,
+        #[serde(default)]
+        maze_event: String,
+    },
     #[serde(rename = "pong")]
     Pong {
         #[serde(flatten)]
@@ -385,6 +408,7 @@ impl GameState {
             Self::Bandit { .. } => "bandit",
             Self::SpotReversal { .. } => "spot_reversal",
             Self::SpotXY { .. } => "spotxy",
+            Self::Maze { .. } => "maze",
             Self::Pong { .. } => "pong",
             Self::Text { .. } => "text",
             Self::Unknown => "unknown",
@@ -397,6 +421,7 @@ impl GameState {
             | Self::Bandit { common }
             | Self::SpotReversal { common, .. }
             | Self::SpotXY { common }
+            | Self::Maze { common, .. }
             | Self::Pong { common }
             | Self::Text { common, .. } => Some(common),
             Self::Unknown => None,
@@ -445,6 +470,34 @@ impl GameState {
                 *text_outcomes,
                 *text_shift_every,
                 *text_vocab_size,
+            )),
+            _ => None,
+        }
+    }
+
+    fn maze_summary(&self) -> Option<(&str, u32, u32, u32, u32, u32, u32, u32, &str)> {
+        match self {
+            Self::Maze {
+                maze_mode,
+                maze_w,
+                maze_h,
+                maze_player_x,
+                maze_player_y,
+                maze_goal_x,
+                maze_goal_y,
+                maze_steps,
+                maze_event,
+                ..
+            } => Some((
+                maze_mode.as_str(),
+                *maze_w,
+                *maze_h,
+                *maze_player_x,
+                *maze_player_y,
+                *maze_goal_x,
+                *maze_goal_y,
+                *maze_steps,
+                maze_event.as_str(),
             )),
             _ => None,
         }
@@ -499,10 +552,10 @@ fn usage() -> ! {
     eprintln!("  status                      Show daemon state");
     eprintln!("  start | stop                Control run loop");
     eprintln!(
-        "  game <spot|bandit|spot_reversal|spotxy|pong|text|replay>  Switch task/game (stop first)"
+        "  game <spot|bandit|spot_reversal|spotxy|maze|pong|text|replay>  Switch task/game (stop first)"
     );
     eprintln!("  mode <braine|human>         Switch control mode");
-    eprintln!("  action <left|right>         Send human action");
+    eprintln!("  action <left|right|up|down|stay>  Send human action");
     eprintln!("  trigger <dream|burst|sync|imprint>  Fire learning helpers");
     eprintln!("  save | load | reset         Persistence controls");
     eprintln!("  shutdown                    Save and exit daemon");
@@ -697,6 +750,13 @@ fn print_state(s: StateSnapshot) {
         );
     }
 
+    if let Some((mode, w, h, px, py, gx, gy, steps, event)) = s.game.maze_summary() {
+        println!(
+            "maze: mode={} size={}x{} player=({}, {}) goal=({}, {}) steps={} event={}",
+            mode, w, h, px, py, gx, gy, steps, if event.is_empty() { "-" } else { event }
+        );
+    }
+
     if s.experts_enabled || s.experts.active_count > 0 {
         println!(
             "experts: enabled={} active={}/{} persist={} allow_nested={} max_depth={} last_spawn={} last_consolidation={}",
@@ -765,8 +825,13 @@ fn main() {
                 usage();
             }
             let action = args[1].clone();
-            if action != "left" && action != "right" {
-                make_error("action must be 'left' or 'right'");
+            if action != "left"
+                && action != "right"
+                && action != "up"
+                && action != "down"
+                && action != "stay"
+            {
+                make_error("action must be left|right|up|down|stay");
             }
             Request::HumanAction { action }
         }
