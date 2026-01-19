@@ -3,7 +3,7 @@
 
 import { VerticalBox, HorizontalBox, Button, Slider, CheckBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { HudData, LearningState, BrainStats, GameState } from "types.slint";
+import { HudData, LearningState, BrainStats, GameState, MeaningHistDot } from "types.slint";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Game header (title + short instructions)
@@ -295,6 +295,9 @@ export component LearningPanel inherits Rectangle {
 
 export component BrainPanel inherits Rectangle {
     in property <BrainStats> stats;
+    in property <[MeaningHistDot]> learning-eligibility-dots;
+    in property <[MeaningHistDot]> learning-plasticity-dots;
+    in property <[MeaningHistDot]> learning-homeostasis-bias-dots;
     in property <string> experts-status;
     in property <bool> experts-enabled;
     in-out property <bool> experts-allow-nested;
@@ -585,6 +588,92 @@ export component BrainPanel inherits Rectangle {
         Text { text: "Causal updates (last): " + stats.causal-last-directed-updates + " dir, " + stats.causal-last-cooccur-updates + " co"; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Avg amplitude: " + round(stats.avg-amp * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Avg weight: " + round(stats.avg-weight * 1000) / 1000; color: Theme.text-secondary; font-size: 12px; }
+
+        Rectangle { height: 1px; horizontal-stretch: 1; background: Theme.border; }
+
+        Text {
+            text: "Learning monitors";
+            color: Theme.text-primary;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        Text {
+            text: "elig L1=" + (round(stats.eligibility-l1 * 100) / 100) +
+                  "  |Δw| L1=" + (round(stats.plasticity-l1 * 100) / 100) +
+                  "  edges=" + stats.plasticity-edges +
+                  "  commit=" + (stats.plasticity-committed ? "yes" : "no");
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        if stats.plasticity-budget > 0.0: Text {
+            text: "budget=" + (round(stats.plasticity-budget * 100) / 100) +
+                  "  used=" + (round(stats.plasticity-budget-used * 100) / 100) +
+                  "  deadband=" + (round(stats.learning-deadband * 1000) / 1000);
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        if stats.homeostasis-rate > 0.0: Text {
+            text: "homeostasis rate=" + (round(stats.homeostasis-rate * 1000) / 1000) +
+                  "  bias L1=" + (round(stats.homeostasis-bias-l1 * 1000) / 1000);
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+
+        Rectangle {
+            height: 52px;
+            horizontal-stretch: 1;
+            background: Theme.bg-dark;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            // Plasticity sparkline (bars).
+            for d in learning-plasticity-dots: Rectangle {
+                width: 3px;
+                height: abs(d.v) * (parent.height - 6px);
+                x: d.x01 * (parent.width - self.width);
+                y: parent.height - self.height;
+                background: Theme.accent-blue;
+            }
+        }
+
+        Rectangle {
+            height: 52px;
+            horizontal-stretch: 1;
+            background: Theme.bg-dark;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            // Eligibility sparkline (bars).
+            for d in learning-eligibility-dots: Rectangle {
+                width: 3px;
+                height: abs(d.v) * (parent.height - 6px);
+                x: d.x01 * (parent.width - self.width);
+                y: parent.height - self.height;
+                background: Theme.accent-green;
+            }
+        }
+
+        if stats.homeostasis-rate > 0.0: Rectangle {
+            height: 52px;
+            horizontal-stretch: 1;
+            background: Theme.bg-dark;
+            border-width: 1px;
+            border-color: Theme.border;
+
+            // Homeostasis bias sparkline (dots around midline).
+            Rectangle { x: 0px; y: parent.height / 2; width: parent.width; height: 1px; background: Theme.border; }
+            for d in learning-homeostasis-bias-dots: Rectangle {
+                width: 5px;
+                height: 5px;
+                x: d.x01 * (parent.width - self.width);
+                y: (0.5 - 0.45 * d.v) * (parent.height - self.height);
+                background: d.positive ? Theme.accent-green : Theme.accent-red;
+            }
+        }
+
         Text { text: "Memory: " + stats.memory-bytes + " bytes"; color: Theme.text-secondary; font-size: 12px; }
         Text { text: "Age: " + stats.age-steps + " steps"; color: Theme.text-secondary; font-size: 12px; }
     }

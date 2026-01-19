@@ -192,32 +192,55 @@ Learning uses:
 - coactivity threshold $\theta$ = `coactive_threshold`
 - phase-lock threshold $\kappa$ = `phase_lock_threshold` (in $[0,1]$)
 - base learning rate $\eta$ = `hebb_rate`
-- neuromodulator $m(t)$ gates only **positive** values in the implementation
 
-Effective learning rate:
+In the current implementation, learning is split into two phases:
 
-$$
-\eta_\mathrm{eff}(t) = \eta\,\big(1 + \max(0, m(t))\big)
-$$
+1) **Eligibility trace update** (runs continuously; does not change weights)
 
-For each edge $i\to j$:
+2) **Neuromodulated commit** (changes weights only when neuromodulation is present)
 
-If $a_i(t) > \theta$ and $a_j(t) > \theta$:
+### 4.1 Eligibility trace update
 
-- compute alignment $\ell_{ij}(t) = \mathrm{align}(\phi_i(t),\phi_j(t))$
-- if $\ell_{ij}(t) > \kappa$:
+Let eligibility decay be $\rho_e$ = `eligibility_decay` and eligibility gain be $\gamma_e$ = `eligibility_gain`.
+
+Define a soft-thresholded co-activity magnitude:
 
 $$
-\Delta w_{ij}(t) = \eta_\mathrm{eff}(t)\,\ell_{ij}(t)
+c_{ij}(t) = \max(0, a_i(t) - \theta)\,\max(0, a_j(t) - \theta)
 $$
 
-- else (anti-aligned / weakly aligned):
+Compute phase alignment $\ell_{ij}(t) = \mathrm{align}(\phi_i(t),\phi_j(t))$ and define a correlation term:
 
 $$
-\Delta w_{ij}(t) = -0.05\,\eta_\mathrm{eff}(t)
+\mathrm{corr}_{ij}(t) = \begin{cases}
+\ell_{ij}(t) & \text{if } \ell_{ij}(t) > \kappa \\
+-0.05 & \text{otherwise}
+\end{cases}
 $$
 
-If either endpoint is not coactive, $\Delta w_{ij}(t)=0$.
+Eligibility updates (with per-step decay and bounded accumulation) are:
+
+$$
+e_{ij}(t+1) = \mathrm{clip}_{[-2,2]}\Big((1-\rho_e)\,e_{ij}(t) + \gamma_e\,c_{ij}(t)\,\mathrm{corr}_{ij}(t)\Big)
+$$
+
+### 4.2 Neuromodulated commit (deadband-gated)
+
+Let neuromodulator be $m(t)$ = `neuromod` and define a deadband $d$ = `learning_deadband`.
+
+Weights update only when:
+
+$$
+|m(t)| > d
+$$
+
+When committing, the signed neuromodulator scales the eligible change (negative values drive LTD):
+
+$$
+\Delta w_{ij}(t) = \mathrm{clip}_{[-0.25,0.25]}\big(\eta\,m(t)\,e_{ij}(t)\big)
+$$
+
+Optionally, a per-step plasticity budget can cap total committed change (approximately an L1 cap across all $|\Delta w|$).
 
 Weight update:
 
@@ -227,7 +250,8 @@ $$
 
 Notes / gaps:
 - This is “Hebbian-like” but does **not** multiply by $a_i a_j$ explicitly; it uses a hard threshold + phase alignment.
-- Negative $m(t)$ does not reduce $\eta$ below base; it only prevents the positive boost.
+- The deadband prevents constant drift when $m(t) \approx 0$.
+- Signed neuromodulation supports both potentiation and depression (LTP/LTD).
 
 ---
 
@@ -618,7 +642,9 @@ This list is intentionally literal: it names the functions that implement each p
 
 **Plasticity + structural forgetting**
 
-- `Brain::learn_hebbian_scalar` / `Brain::learn_hebbian_parallel` (Section 4)
+- `Brain::update_eligibility_scalar` (Section 4.1)
+- `Brain::apply_plasticity_scalar` (Section 4.2)
+- `Brain::homeostasis_step` (slow stability support; optional)
 - `Brain::forget_and_prune` (Section 5)
 - CSR maintenance: `Brain::add_or_bump_csr`, `Brain::append_connection`, `Brain::compact_connections`
 

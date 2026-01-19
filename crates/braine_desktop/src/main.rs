@@ -213,6 +213,31 @@ fn force_layout_step(
 
 slint::include_modules!();
 
+fn hist_to_dots(hist: &[f32]) -> Vec<MeaningHistDot> {
+    let n = hist.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let mut max_abs = 0.0f32;
+    for &v in hist {
+        max_abs = max_abs.max(v.abs());
+    }
+    let inv = if max_abs > 1e-6 { 1.0 / max_abs } else { 0.0 };
+    let denom = (n - 1).max(1) as f32;
+
+    let mut out = Vec::with_capacity(n);
+    for (i, &raw) in hist.iter().enumerate() {
+        let x01 = (i as f32 / denom).clamp(0.0, 1.0);
+        out.push(MeaningHistDot {
+            x01,
+            v: (raw * inv).clamp(-1.0, 1.0),
+            positive: raw >= 0.0,
+        });
+    }
+    out
+}
+
 fn exec_tier_pref_path() -> Option<PathBuf> {
     // Minimal XDG config support without extra deps.
     // ~/.config/braine_desktop/exec_tier.txt
@@ -1018,6 +1043,26 @@ struct DaemonBrainStats {
     #[serde(default)]
     causal_last_cooccur_edge_updates: usize,
     age_steps: u64,
+
+    // Learning monitors (optional; daemon may omit).
+    #[serde(default)]
+    plasticity_committed: bool,
+    #[serde(default)]
+    plasticity_l1: f32,
+    #[serde(default)]
+    plasticity_edges: u32,
+    #[serde(default)]
+    plasticity_budget: f32,
+    #[serde(default)]
+    plasticity_budget_used: f32,
+    #[serde(default)]
+    eligibility_l1: f32,
+    #[serde(default)]
+    learning_deadband: f32,
+    #[serde(default)]
+    homeostasis_rate: f32,
+    #[serde(default)]
+    homeostasis_bias_l1: f32,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1813,6 +1858,14 @@ fn main() -> Result<(), slint::PlatformError> {
     let osc_samples: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
     let osc_samples_poll = osc_samples.clone();
 
+    // Learning monitor rolling buffers (client-side).
+    let learning_eligibility_hist: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
+    let learning_plasticity_hist: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
+    let learning_homeostasis_bias_hist: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
+    let learning_eligibility_hist_poll = learning_eligibility_hist.clone();
+    let learning_plasticity_hist_poll = learning_plasticity_hist.clone();
+    let learning_homeostasis_bias_hist_poll = learning_homeostasis_bias_hist.clone();
+
     type PollFn = Rc<dyn Fn(Duration)>;
     let poll_fn: Rc<RefCell<Option<PollFn>>> = Rc::new(RefCell::new(None));
     let poll_fn_setter = poll_fn.clone();
@@ -1829,6 +1882,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let graph_pos_by_kind_poll = graph_pos_by_kind_poll.clone();
         let graph_temp_by_kind_poll = graph_temp_by_kind_poll.clone();
         let osc_samples_poll = osc_samples_poll.clone();
+        let learning_eligibility_hist_poll = learning_eligibility_hist_poll.clone();
+        let learning_plasticity_hist_poll = learning_plasticity_hist_poll.clone();
+        let learning_homeostasis_bias_hist_poll = learning_homeostasis_bias_hist_poll.clone();
 
         Timer::single_shot(delay, move || {
             let now = Instant::now();
@@ -1859,6 +1915,39 @@ fn main() -> Result<(), slint::PlatformError> {
                         buf.drain(0..drop);
                     }
                     ui.set_osc_samples(ModelRc::new(VecModel::from(buf.clone())));
+                }
+
+                // Update learning monitor series.
+                {
+                    fn push_rolling(buf: &mut Vec<f32>, v: f32, max: usize) {
+                        if v.is_finite() {
+                            buf.push(v);
+                        } else {
+                            buf.push(0.0);
+                        }
+                        if buf.len() > max {
+                            let drop = buf.len() - max;
+                            buf.drain(0..drop);
+                        }
+                    }
+
+                    let mut elig = learning_eligibility_hist_poll.borrow_mut();
+                    push_rolling(&mut elig, snap.brain_stats.eligibility_l1, 120);
+                    ui.set_learning_eligibility_dots(ModelRc::new(VecModel::from(hist_to_dots(
+                        &elig,
+                    ))));
+
+                    let mut plast = learning_plasticity_hist_poll.borrow_mut();
+                    push_rolling(&mut plast, snap.brain_stats.plasticity_l1, 120);
+                    ui.set_learning_plasticity_dots(ModelRc::new(VecModel::from(hist_to_dots(
+                        &plast,
+                    ))));
+
+                    let mut homeo = learning_homeostasis_bias_hist_poll.borrow_mut();
+                    push_rolling(&mut homeo, snap.brain_stats.homeostasis_bias_l1, 120);
+                    ui.set_learning_homeostasis_bias_dots(ModelRc::new(VecModel::from(
+                        hist_to_dots(&homeo),
+                    )));
                 }
 
                 let (spotxy_chosen_ix, spotxy_chosen_iy, spotxy_correct_ix, spotxy_correct_iy) = {
@@ -1984,6 +2073,16 @@ fn main() -> Result<(), slint::PlatformError> {
                     causal_last_cooccur_updates: snap.brain_stats.causal_last_cooccur_edge_updates
                         as i32,
                     age_steps: snap.brain_stats.age_steps as i32,
+
+                    plasticity_committed: snap.brain_stats.plasticity_committed,
+                    plasticity_l1: snap.brain_stats.plasticity_l1,
+                    plasticity_edges: snap.brain_stats.plasticity_edges as i32,
+                    plasticity_budget: snap.brain_stats.plasticity_budget,
+                    plasticity_budget_used: snap.brain_stats.plasticity_budget_used,
+                    eligibility_l1: snap.brain_stats.eligibility_l1,
+                    learning_deadband: snap.brain_stats.learning_deadband,
+                    homeostasis_rate: snap.brain_stats.homeostasis_rate,
+                    homeostasis_bias_l1: snap.brain_stats.homeostasis_bias_l1,
                 });
 
                 ui.set_storage_data_dir(snap.storage.data_dir.clone().into());
@@ -2074,31 +2173,6 @@ fn main() -> Result<(), slint::PlatformError> {
                     pair_gap: snap.meaning.pair_gap,
                     global_gap: snap.meaning.global_gap,
                 });
-
-                fn hist_to_dots(hist: &[f32]) -> Vec<MeaningHistDot> {
-                    let n = hist.len();
-                    if n == 0 {
-                        return Vec::new();
-                    }
-
-                    let mut max_abs = 0.0f32;
-                    for &v in hist {
-                        max_abs = max_abs.max(v.abs());
-                    }
-                    let inv = if max_abs > 1e-6 { 1.0 / max_abs } else { 0.0 };
-                    let denom = (n - 1).max(1) as f32;
-
-                    let mut out = Vec::with_capacity(n);
-                    for (i, &raw) in hist.iter().enumerate() {
-                        let x01 = (i as f32 / denom).clamp(0.0, 1.0);
-                        out.push(MeaningHistDot {
-                            x01,
-                            v: (raw * inv).clamp(-1.0, 1.0),
-                            positive: raw >= 0.0,
-                        });
-                    }
-                    out
-                }
 
                 ui.set_meaning_pair_gap_dots(ModelRc::new(VecModel::from(hist_to_dots(
                     &snap.meaning.pair_gap_history,

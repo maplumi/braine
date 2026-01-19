@@ -75,6 +75,11 @@ export component MainWindow inherits Window {
     in property <[MeaningHistDot]> meaning-pair-gap-dots;
     in property <[MeaningHistDot]> meaning-global-gap-dots;
 
+    // Learning monitor history (client-side rolling buffers).
+    in property <[MeaningHistDot]> learning-eligibility-dots;
+    in property <[MeaningHistDot]> learning-plasticity-dots;
+    in property <[MeaningHistDot]> learning-homeostasis-bias-dots;
+
     // Storage state from daemon
     in property <string> storage-data-dir: "";
     in property <string> storage-brain-file: "";
@@ -704,6 +709,9 @@ export component MainWindow inherits Window {
                             vertical-stretch: 1;
                             BrainPanel {
                                 stats: brain-stats;
+                                learning-eligibility-dots: learning-eligibility-dots;
+                                learning-plasticity-dots: learning-plasticity-dots;
+                                learning-homeostasis-bias-dots: learning-homeostasis-bias-dots;
                                 experts-status: root.experts-status;
                                 set-max-units(n) => { root.set-max-units(n); }
                                 experts-enabled: root.experts-enabled;

@@ -182,28 +182,34 @@ Braine uses **three-factor Hebbian learning**—a local rule that requires:
 ### The Learning Rule
 
 ```rust
+// 1) Always update eligibility traces (fast, does not change weights)
 if amp[A] > coactive_threshold && amp[B] > coactive_threshold {
-    // Check phase alignment
-    phase_diff = phase[A] - phase[B]
-    alignment = cos(phase_diff)  // 1.0 = in phase, -1.0 = out of phase
-    
-    if alignment > phase_lock_threshold {
-        // Strengthen: units are co-active and in-phase
-        Δweight = hebb_rate × neuromodulator × alignment
-    } else {
-        // Weaken slightly: anti-Hebbian for specialization
-        Δweight = -hebb_rate × 0.05
-    }
-    
-    weight[A→B] += Δweight
+    alignment = phase_alignment(phase[A], phase[B])
+    corr = if alignment > phase_lock_threshold { alignment } else { -0.05 }
+    co = max(0, amp[A] - coactive_threshold) * max(0, amp[B] - coactive_threshold)
+    eligibility[A→B] = clamp(
+        eligibility[A→B] * (1 - eligibility_decay)
+        + eligibility_gain * co * corr,
+        -2.0, 2.0
+    )
+} else {
+    eligibility[A→B] *= (1 - eligibility_decay)
+}
+
+// 2) Commit plasticity only when neuromodulation is present (deadband-gated)
+if abs(neuromodulator) > learning_deadband {
+    // Signed neuromodulator supports LTP and LTD
+    Δweight = clamp(hebb_rate * neuromodulator * eligibility[A→B], -0.25, 0.25)
+    weight[A→B] = clamp(weight[A→B] + Δweight, -1.5, 1.5)
 }
 ```
 
 **Key insights**:
 - Learning only happens when **both units are active** (local rule)
 - **Phase alignment** matters: in-phase connections strengthen, out-of-phase weaken
-- **Neuromodulator scales learning**: more reward = faster learning
-- Connections that don't contribute get weakened slightly (anti-Hebb)
+- **Eligibility traces** accumulate credit without weight drift
+- **Neuromodulator gates commit**: weights change only when `|neuromod| > learning_deadband`
+- **Signed neuromodulator** supports both strengthening and weakening (LTP/LTD)
 
 ### Forgetting and Pruning
 
@@ -714,7 +720,7 @@ for id in 32..40 {
 **Braine** is a cognitive substrate that:
 
 1. **Represents knowledge as structure**: Connection weights and oscillatory patterns
-2. **Learns locally and continuously**: Three-factor Hebbian rule applied every step
+2. **Learns locally and continuously**: Eligibility traces update every step; weights commit when neuromodulation is present
 3. **Grows when saturated**: Neurogenesis adds fresh capacity for new concepts
 4. **Prunes when idle**: Structural forgetting frees capacity and maintains relevance
 5. **Persists its state**: Can save/load the entire brain and continue learning
@@ -723,6 +729,7 @@ for id in 32..40 {
 - Detects saturation by monitoring average connection weight
 - Adds new units with random weak connections
 - New units integrate through normal learning (Hebbian + other mechanisms)
+- Plasticity commits are deadband-gated by neuromodulation (reduces drift during neutral periods)
 - Works in tandem with pruning to maintain bounded, relevant capacity
 - Enables continuous learning without catastrophic forgetting
 

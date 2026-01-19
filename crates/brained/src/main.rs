@@ -916,6 +916,26 @@ struct BrainStats {
     causal_last_directed_edge_updates: usize,
     causal_last_cooccur_edge_updates: usize,
     age_steps: u64,
+
+    // Lightweight learning monitors (optional for clients).
+    #[serde(default)]
+    plasticity_committed: bool,
+    #[serde(default)]
+    plasticity_l1: f32,
+    #[serde(default)]
+    plasticity_edges: u32,
+    #[serde(default)]
+    plasticity_budget: f32,
+    #[serde(default)]
+    plasticity_budget_used: f32,
+    #[serde(default)]
+    eligibility_l1: f32,
+    #[serde(default)]
+    learning_deadband: f32,
+    #[serde(default)]
+    homeostasis_rate: f32,
+    #[serde(default)]
+    homeostasis_bias_l1: f32,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1739,6 +1759,8 @@ impl DaemonState {
             brain_stats: {
                 let selected = view_brain.execution_tier();
                 let effective = view_brain.effective_execution_tier();
+                let learning = view_brain.learning_stats();
+                let cfg = view_brain.config();
 
                 BrainStats {
                     unit_count: diag.unit_count,
@@ -1779,6 +1801,16 @@ impl DaemonState {
                     causal_last_directed_edge_updates: causal.last_directed_edge_updates,
                     causal_last_cooccur_edge_updates: causal.last_cooccur_edge_updates,
                     age_steps: view_brain.age_steps(),
+
+                    plasticity_committed: learning.plasticity_committed,
+                    plasticity_l1: learning.plasticity_l1,
+                    plasticity_edges: learning.plasticity_edges,
+                    plasticity_budget: learning.plasticity_budget,
+                    plasticity_budget_used: learning.plasticity_budget_used,
+                    eligibility_l1: learning.eligibility_l1,
+                    learning_deadband: cfg.learning_deadband,
+                    homeostasis_rate: cfg.homeostasis_rate,
+                    homeostasis_bias_l1: learning.homeostasis_bias_l1,
                 }
             },
             unit_plot: view_brain.unit_plot_points(128),

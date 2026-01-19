@@ -105,7 +105,7 @@ Braine already has the key separation needed for a “slow-fast” architecture.
 - Core substrate: `Brain` in crates/core/src/core/substrate.rs
 - Always-running dynamics:
   - `Brain::step()` updates unit amplitudes/phases.
-  - learning + forgetting happen locally (`learn_hebbian_*`, `forget_and_prune`).
+  - learning + forgetting happen locally (eligibility update + deadband-gated plasticity commit, then `forget_and_prune`).
 - Inputs at the boundary (current contract):
   - `Stimulus { name, strength }` (sensor excitation)
   - `neuromodulator` scalar reward/salience via `Brain::set_neuromodulator()`

@@ -150,6 +150,33 @@ pub struct BrainConfig {
 
     // Causality/meaning memory decay (0..1). Higher means faster forgetting.
     pub causal_decay: f32,
+
+    // ---------------------------------------------------------------------
+    // Stability–Plasticity Control (learning governance)
+    // ---------------------------------------------------------------------
+    /// Neuromodulator deadband for committing plasticity.
+    ///
+    /// If `abs(neuromod) <= learning_deadband`, eligibility traces still update,
+    /// but weights are not changed.
+    pub learning_deadband: f32,
+
+    /// Eligibility trace decay per step in [0,1]. Higher decays faster.
+    pub eligibility_decay: f32,
+
+    /// Eligibility trace gain (accumulation rate). Higher accumulates faster.
+    pub eligibility_gain: f32,
+
+    /// Plasticity budget: maximum total `sum(|Δw|)` per step. 0 disables budgeting.
+    pub plasticity_budget: f32,
+
+    /// Target activity level for slow homeostasis (uses `abs(amp)`).
+    pub homeostasis_target_amp: f32,
+
+    /// Homeostasis rate (bias adaptation step size). 0 disables homeostasis.
+    pub homeostasis_rate: f32,
+
+    /// Run homeostasis every N `step()` calls.
+    pub homeostasis_every: u32,
 }
 
 impl Default for BrainConfig {
@@ -177,6 +204,16 @@ impl Default for BrainConfig {
             salience_gain: 0.1,    // Moderate gain when activated
             seed: None,
             causal_decay: 0.002,
+
+            // Control defaults: tuned for reward-pulse learning (daemon loop)
+            // while remaining conservative on edge devices.
+            learning_deadband: 0.05,
+            eligibility_decay: 0.02,
+            eligibility_gain: 0.35,
+            plasticity_budget: 0.0,
+            homeostasis_target_amp: 0.25,
+            homeostasis_rate: 0.0,
+            homeostasis_every: 50,
         }
     }
 }
@@ -246,6 +283,28 @@ impl BrainConfig {
         }
         if self.causal_decay < 0.0 || self.causal_decay > 1.0 {
             return Err("causal_decay must be in [0, 1]");
+        }
+
+        if self.learning_deadband < 0.0 || self.learning_deadband > 1.0 {
+            return Err("learning_deadband must be in [0, 1]");
+        }
+        if self.eligibility_decay < 0.0 || self.eligibility_decay > 1.0 {
+            return Err("eligibility_decay must be in [0, 1]");
+        }
+        if !self.eligibility_gain.is_finite() || self.eligibility_gain < 0.0 {
+            return Err("eligibility_gain must be finite and >= 0");
+        }
+        if !self.plasticity_budget.is_finite() || self.plasticity_budget < 0.0 {
+            return Err("plasticity_budget must be finite and >= 0");
+        }
+        if !self.homeostasis_target_amp.is_finite() || self.homeostasis_target_amp < 0.0 {
+            return Err("homeostasis_target_amp must be finite and >= 0");
+        }
+        if !self.homeostasis_rate.is_finite() || self.homeostasis_rate < 0.0 {
+            return Err("homeostasis_rate must be finite and >= 0");
+        }
+        if self.homeostasis_every == 0 {
+            return Err("homeostasis_every must be >= 1");
         }
         Ok(())
     }
@@ -419,6 +478,39 @@ pub struct Diagnostics {
     pub execution_tier: ExecutionTier,
 }
 
+/// Lightweight monitors for learning/stability.
+///
+/// These are intended for dashboards and debugging: they summarize the most
+/// recent step's learning-related activity without exposing internal buffers.
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LearningStats {
+    /// Whether plasticity was eligible to be committed this step (neuromod outside deadband).
+    pub plasticity_committed: bool,
+    /// Sum of absolute weight changes applied this step.
+    pub plasticity_l1: f32,
+    /// Number of edges updated this step.
+    pub plasticity_edges: u32,
+    /// Plasticity budget configured (0 means disabled).
+    pub plasticity_budget: f32,
+    /// Plasticity budget consumed this step (L1).
+    pub plasticity_budget_used: f32,
+    /// Sum of absolute eligibility values after update.
+    pub eligibility_l1: f32,
+    /// Sum of absolute bias changes applied by homeostasis this step (0 if not run).
+    pub homeostasis_bias_l1: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LearningMonitors {
+    plasticity_committed: bool,
+    plasticity_l1: f32,
+    plasticity_edges: u32,
+    plasticity_budget_used: f32,
+    eligibility_l1: f32,
+    homeostasis_bias_l1: f32,
+}
+
 #[derive(Debug, Clone)]
 struct NamedGroup {
     name: String,
@@ -457,6 +549,11 @@ pub struct Brain {
 
     /// CSR-format connection storage for cache-friendly iteration.
     connections: CsrConnections,
+
+    /// Eligibility trace per CSR edge (ephemeral; not persisted).
+    ///
+    /// Length always matches `connections.weights.len()`.
+    eligibility: Vec<f32>,
 
     /// Execution tier for step/learning (Scalar, Simd, or Parallel).
     tier: ExecutionTier,
@@ -508,6 +605,8 @@ pub struct Brain {
     age_steps: u64,
 
     telemetry: Telemetry,
+
+    learning_monitors: LearningMonitors,
 }
 
 /// A bounded, sparse representation of structural changes between two brains.
@@ -674,6 +773,8 @@ impl Brain {
             offsets: conn_offsets,
         };
 
+        let eligibility = vec![0.0; connections.weights.len()];
+
         let pending_input = vec![0.0; cfg.unit_count];
         let reserved = vec![false; cfg.unit_count];
         let learning_enabled = vec![true; cfg.unit_count];
@@ -694,6 +795,7 @@ impl Brain {
             cfg,
             units,
             connections,
+            eligibility,
             tier: ExecutionTier::default(),
             sensor_groups: Vec::new(),
             action_groups: Vec::new(),
@@ -719,6 +821,7 @@ impl Brain {
 
             age_steps: 0,
             telemetry: Telemetry::default(),
+            learning_monitors: LearningMonitors::default(),
         }
     }
 
@@ -905,6 +1008,9 @@ impl Brain {
             if self.connections.targets[idx] == INVALID_UNIT {
                 self.connections.targets[idx] = target;
                 self.connections.weights[idx] = bump.clamp(-1.5, 1.5);
+                if idx < self.eligibility.len() {
+                    self.eligibility[idx] = 0.0;
+                }
                 self.csr_tombstones = self.csr_tombstones.saturating_sub(1);
                 return;
             }
@@ -922,6 +1028,7 @@ impl Brain {
 
         self.connections.targets.insert(insert_pos, target);
         self.connections.weights.insert(insert_pos, weight);
+        self.eligibility.insert(insert_pos, 0.0);
 
         // Update offsets for all units after `from`.
         for i in (from + 1)..self.connections.offsets.len() {
@@ -934,6 +1041,7 @@ impl Brain {
         let unit_count = self.units.len();
         let mut new_targets = Vec::with_capacity(self.connections.targets.len());
         let mut new_weights = Vec::with_capacity(self.connections.weights.len());
+        let mut new_eligibility = Vec::with_capacity(self.eligibility.len());
         let mut new_offsets = Vec::with_capacity(unit_count + 1);
 
         for i in 0..unit_count {
@@ -944,6 +1052,7 @@ impl Brain {
                 if t != INVALID_UNIT {
                     new_targets.push(t);
                     new_weights.push(self.connections.weights[idx]);
+                    new_eligibility.push(self.eligibility.get(idx).copied().unwrap_or(0.0));
                 }
             }
         }
@@ -952,6 +1061,7 @@ impl Brain {
         self.connections.targets = new_targets;
         self.connections.weights = new_weights;
         self.connections.offsets = new_offsets;
+        self.eligibility = new_eligibility;
 
         // All tombstones are removed by compaction.
         self.csr_tombstones = 0;
@@ -1318,10 +1428,13 @@ impl Brain {
             }
         }
 
+        let eligibility_len = connections.weights.len();
+
         let mut brain = Self {
             cfg,
             units,
             connections,
+            eligibility: vec![0.0; eligibility_len],
             tier: ExecutionTier::default(),
             rng: Prng::from_state(rng_state),
             reserved,
@@ -1344,6 +1457,7 @@ impl Brain {
             csr_tombstones: 0,
             age_steps,
             telemetry: Telemetry::default(),
+            learning_monitors: LearningMonitors::default(),
         };
 
         brain.rebuild_group_membership();
@@ -1426,7 +1540,14 @@ impl Brain {
             + 4  // salience_gain
             + 4  // seed_present
             + 8  // seed
-            + 4 // causal_decay
+                + 4 // causal_decay
+                + 4 // learning_deadband
+                + 4 // eligibility_decay
+                + 4 // eligibility_gain
+                + 4 // plasticity_budget
+                + 4 // homeostasis_target_amp
+                + 4 // homeostasis_rate
+                + 4 // homeostasis_every
     }
 
     #[cfg(feature = "std")]
@@ -1449,6 +1570,15 @@ impl Brain {
         storage::write_u32_le(w, if self.cfg.seed.is_some() { 1 } else { 0 })?;
         storage::write_u64_le(w, self.cfg.seed.unwrap_or(0))?;
         storage::write_f32_le(w, self.cfg.causal_decay)?;
+
+        // Control-loop tuning parameters (appended; backwards compatible on load).
+        storage::write_f32_le(w, self.cfg.learning_deadband)?;
+        storage::write_f32_le(w, self.cfg.eligibility_decay)?;
+        storage::write_f32_le(w, self.cfg.eligibility_gain)?;
+        storage::write_f32_le(w, self.cfg.plasticity_budget)?;
+        storage::write_f32_le(w, self.cfg.homeostasis_target_amp)?;
+        storage::write_f32_le(w, self.cfg.homeostasis_rate)?;
+        storage::write_u32_le(w, self.cfg.homeostasis_every)?;
         Ok(())
     }
 
@@ -1478,6 +1608,15 @@ impl Brain {
         let seed = storage::read_u64_le(r)?;
         let causal_decay = storage::read_f32_le(r)?;
 
+        // New fields (control-loop tuning). For backwards compatibility, read with defaults.
+        let learning_deadband = storage::read_f32_le(r).unwrap_or(0.05);
+        let eligibility_decay = storage::read_f32_le(r).unwrap_or(0.02);
+        let eligibility_gain = storage::read_f32_le(r).unwrap_or(0.35);
+        let plasticity_budget = storage::read_f32_le(r).unwrap_or(0.0);
+        let homeostasis_target_amp = storage::read_f32_le(r).unwrap_or(0.25);
+        let homeostasis_rate = storage::read_f32_le(r).unwrap_or(0.0);
+        let homeostasis_every = storage::read_u32_le(r).unwrap_or(50);
+
         Ok(BrainConfig {
             unit_count,
             connectivity_per_unit,
@@ -1496,6 +1635,13 @@ impl Brain {
             salience_gain,
             seed: if seed_present != 0 { Some(seed) } else { None },
             causal_decay,
+            learning_deadband,
+            eligibility_decay,
+            eligibility_gain,
+            plasticity_budget,
+            homeostasis_target_amp,
+            homeostasis_rate,
+            homeostasis_every,
         })
     }
 
@@ -2240,6 +2386,7 @@ impl Brain {
         // Copy substrate state.
         child.units = self.units.clone();
         child.connections = self.connections.clone();
+        child.eligibility = vec![0.0; child.connections.weights.len()];
         child.sensor_groups = self.sensor_groups.clone();
         child.action_groups = self.action_groups.clone();
         child.reserved = self.reserved.clone();
@@ -3066,6 +3213,9 @@ impl Brain {
     pub fn step(&mut self) {
         self.pruned_last_step = 0;
 
+        // Reset per-step monitors.
+        self.learning_monitors = LearningMonitors::default();
+
         self.age_steps = self.age_steps.wrapping_add(1);
         if self.telemetry.enabled {
             self.telemetry.last_stimuli.clear();
@@ -3087,18 +3237,15 @@ impl Brain {
             *x = 0.0;
         }
 
-        // Learning dispatch.
-        // Note: SIMD/GPU learning uses scalar path as Hebbian update operates on sparse
-        // graph structure with irregular memory access. The SIMD/GPU gains come from
-        // the vectorized dynamics update phase.
-        match self.effective_execution_tier() {
-            ExecutionTier::Scalar | ExecutionTier::Simd | ExecutionTier::Gpu => {
-                self.learn_hebbian_scalar()
-            }
-            ExecutionTier::Parallel => self.learn_hebbian_parallel(),
-        }
+        // Eligibility traces always update (local and cheap).
+        self.update_eligibility_scalar();
+
+        // Plasticity is committed only when neuromodulation is present.
+        self.apply_plasticity_scalar();
 
         self.forget_and_prune();
+
+        self.homeostasis_step();
     }
 
     /// Advance the simulation by one timestep, **without learning**.
@@ -3541,6 +3688,7 @@ impl Brain {
                 Some(Ok(gpu_units)) => {
                     self.pruned_last_step = 0;
                     self.age_steps = self.age_steps.wrapping_add(1);
+                    self.learning_monitors = LearningMonitors::default();
                     if self.telemetry.enabled {
                         self.telemetry.last_stimuli.clear();
                         self.telemetry.last_actions.clear();
@@ -3565,8 +3713,10 @@ impl Brain {
                     }
 
                     // Learning stays on CPU.
-                    self.learn_hebbian_scalar();
+                    self.update_eligibility_scalar();
+                    self.apply_plasticity_scalar();
                     self.forget_and_prune();
+                    self.homeostasis_step();
                     return true;
                 }
             }
@@ -3720,6 +3870,20 @@ impl Brain {
             avg_weight,
             memory_bytes,
             execution_tier: self.effective_execution_tier(),
+        }
+    }
+
+    /// Returns lightweight learning/stability monitors for the most recent step.
+    #[must_use]
+    pub fn learning_stats(&self) -> LearningStats {
+        LearningStats {
+            plasticity_committed: self.learning_monitors.plasticity_committed,
+            plasticity_l1: self.learning_monitors.plasticity_l1,
+            plasticity_edges: self.learning_monitors.plasticity_edges,
+            plasticity_budget: self.cfg.plasticity_budget,
+            plasticity_budget_used: self.learning_monitors.plasticity_budget_used,
+            eligibility_l1: self.learning_monitors.eligibility_l1,
+            homeostasis_bias_l1: self.learning_monitors.homeostasis_bias_l1,
         }
     }
 
@@ -3962,6 +4126,7 @@ impl Brain {
             self.connections
                 .weights
                 .push(self.rng.gen_range_f32(-0.1, 0.1));
+            self.eligibility.push(0.0);
         }
 
         // Also create some INCOMING connections (from random existing units TO new unit).
@@ -4002,6 +4167,7 @@ impl Brain {
         self.connections.offsets.reserve(count);
         self.connections.targets.reserve(count * connectivity);
         self.connections.weights.reserve(count * connectivity);
+        self.eligibility.reserve(count * connectivity);
 
         for _ in 0..count {
             self.grow_unit(connectivity);
@@ -4121,6 +4287,8 @@ impl Brain {
             self.connections.offsets.push(old_end + outgoing.len());
             self.connections.targets.extend(&outgoing);
             self.connections.weights.extend(&weights);
+            self.eligibility
+                .resize(self.eligibility.len() + outgoing.len(), 0.0);
 
             // Wire FROM group units TO new unit (group can activate new unit).
             for &source in &group_units {
@@ -4187,9 +4355,15 @@ impl Brain {
                 if self.connections.targets[idx] != INVALID_UNIT {
                     self.connections.targets[idx] = INVALID_UNIT;
                     self.connections.weights[idx] = 0.0;
+                    if idx < self.eligibility.len() {
+                        self.eligibility[idx] = 0.0;
+                    }
                     self.csr_tombstones += 1;
                 } else {
                     self.connections.weights[idx] = 0.0;
+                    if idx < self.eligibility.len() {
+                        self.eligibility[idx] = 0.0;
+                    }
                 }
             }
             // Zero the unit's state.
@@ -4493,27 +4667,46 @@ impl Brain {
         true
     }
 
-    /// Scalar Hebbian learning (baseline).
-    fn learn_hebbian_scalar(&mut self) {
+    /// Update eligibility traces for all active, learn-enabled outgoing edges.
+    ///
+    /// This is the "fast" factor that can run continuously without causing drift.
+    fn update_eligibility_scalar(&mut self) {
+        if self.eligibility.len() != self.connections.weights.len() {
+            self.eligibility.resize(self.connections.weights.len(), 0.0);
+        }
+
         let thr = self.cfg.coactive_threshold;
-        let lr = self.cfg.hebb_rate * (1.0 + self.neuromod.max(0.0));
         let phase_thr = self.cfg.phase_lock_threshold;
 
-        // Phase 1: Compute weight deltas.
-        let total_conns = self.connections.weights.len();
-        let mut deltas = vec![0.0f32; total_conns];
+        let decay = (1.0 - self.cfg.eligibility_decay).clamp(0.0, 1.0);
+        let gain = self.cfg.eligibility_gain;
+        if gain <= 0.0 {
+            // Still apply decay to clear old traces.
+            for e in &mut self.eligibility {
+                *e *= decay;
+            }
+            return;
+        }
 
-        for i in 0..self.units.len() {
-            if !self.learning_enabled[i] {
+        // Decay all traces first (cheap, linear) and accumulate magnitude.
+        let mut l1 = 0.0f32;
+        for e in &mut self.eligibility {
+            *e *= decay;
+            l1 += e.abs();
+        }
+
+        for owner in 0..self.units.len() {
+            if !self.learning_enabled[owner] {
                 continue;
             }
-            let a_amp = self.units[i].amp;
+
+            let a_amp = self.units[owner].amp;
             if a_amp <= thr {
                 continue;
             }
 
-            let a_phase = self.units[i].phase;
-            let range = self.conn_range(i);
+            let a_phase = self.units[owner].phase;
+            let range = self.conn_range(owner);
 
             for idx in range {
                 let target = self.connections.targets[idx];
@@ -4522,90 +4715,132 @@ impl Brain {
                 }
 
                 let b_amp = self.units[target].amp;
-                let b_phase = self.units[target].phase;
-
-                if b_amp > thr {
-                    let align = phase_alignment(a_phase, b_phase);
-                    if align > phase_thr {
-                        deltas[idx] = lr * align;
-                    } else {
-                        deltas[idx] = -lr * 0.05;
-                    }
+                if b_amp <= thr {
+                    continue;
                 }
+
+                let align = phase_alignment(a_phase, self.units[target].phase);
+
+                // A tiny anti-alignment term helps maintain sparsity by weakening
+                // consistently misaligned co-activity.
+                let corr = if align > phase_thr { align } else { -0.05 };
+
+                // Co-activity magnitude (soft-thresholded).
+                let co = (a_amp - thr).max(0.0) * (b_amp - thr).max(0.0);
+
+                let de = gain * co * corr;
+                let e = &mut self.eligibility[idx];
+                let prev = *e;
+                let next = (prev + de).clamp(-2.0, 2.0);
+                *e = next;
+                l1 += next.abs() - prev.abs();
             }
         }
 
-        // Phase 2: Apply deltas.
-        for (w, d) in self.connections.weights.iter_mut().zip(deltas) {
-            *w = (*w + d).clamp(-1.5, 1.5);
-        }
+        // Summarize eligibility magnitude for dashboards/debugging.
+        self.learning_monitors.eligibility_l1 = l1;
     }
 
-    /// Parallel Hebbian learning using rayon.
-    #[cfg(feature = "parallel")]
-    fn learn_hebbian_parallel(&mut self) {
-        let thr = self.cfg.coactive_threshold;
-        let lr = self.cfg.hebb_rate * (1.0 + self.neuromod.max(0.0));
-        let phase_thr = self.cfg.phase_lock_threshold;
+    /// Apply a gated plasticity commit from eligibility traces.
+    ///
+    /// Weight update is proportional to `hebb_rate * neuromod * eligibility`.
+    /// The `learning_deadband` prevents constant drift when neuromod ≈ 0.
+    fn apply_plasticity_scalar(&mut self) {
+        if self.cfg.hebb_rate <= 0.0 {
+            return;
+        }
+        if self.eligibility.len() != self.connections.weights.len() {
+            self.eligibility.resize(self.connections.weights.len(), 0.0);
+        }
 
-        let total_conns = self.connections.weights.len();
+        let neuromod = self.neuromod;
+        if neuromod.abs() <= self.cfg.learning_deadband {
+            self.learning_monitors.plasticity_committed = false;
+            return;
+        }
+        self.learning_monitors.plasticity_committed = true;
 
-        // Phase 1: Parallel delta computation.
-        let units = &self.units;
-        let connections = &self.connections;
-        let learning_enabled = &self.learning_enabled;
+        // Sign-correct: negative neuromod reduces/undoes recent eligibility.
+        let lr = self.cfg.hebb_rate * neuromod;
 
-        let deltas: Vec<f32> = (0..total_conns)
-            .into_par_iter()
-            .map(|idx| {
-                let target = connections.targets[idx];
-                if target == INVALID_UNIT {
-                    return 0.0;
+        // Optional per-step plasticity budget.
+        let budget = self.cfg.plasticity_budget;
+        let mut remaining_budget = if budget > 0.0 {
+            self.cfg.plasticity_budget
+        } else {
+            f32::INFINITY
+        };
+
+        let mut l1 = 0.0f32;
+        let mut edges = 0u32;
+
+        for (idx, w) in self.connections.weights.iter_mut().enumerate() {
+            if self.connections.targets[idx] == INVALID_UNIT {
+                continue;
+            }
+            let e = self.eligibility[idx];
+            if e == 0.0 {
+                continue;
+            }
+
+            let mut dw = lr * e;
+            // Keep single-step changes bounded even under large eligibility.
+            dw = dw.clamp(-0.25, 0.25);
+
+            let cost = dw.abs();
+            if remaining_budget.is_finite() {
+                if remaining_budget <= 0.0 {
+                    break;
                 }
-
-                // Find which unit owns this connection.
-                let owner = connections
-                    .offsets
-                    .iter()
-                    .position(|&off| off > idx)
-                    .unwrap_or(1)
-                    .saturating_sub(1);
-
-                if !learning_enabled[owner] {
-                    return 0.0;
-                }
-
-                let a_amp = units[owner].amp;
-                if a_amp <= thr {
-                    return 0.0;
-                }
-
-                let b_amp = units[target].amp;
-                if b_amp <= thr {
-                    return 0.0;
-                }
-
-                let a_phase = units[owner].phase;
-                let b_phase = units[target].phase;
-                let align = phase_alignment(a_phase, b_phase);
-
-                if align > phase_thr {
-                    lr * align
+                if cost > remaining_budget {
+                    dw = dw.signum() * remaining_budget;
+                    remaining_budget = 0.0;
                 } else {
-                    -lr * 0.05
+                    remaining_budget -= cost;
                 }
-            })
-            .collect();
+            }
 
-        // Phase 2: Apply deltas (sequential, fast).
-        for (w, d) in self.connections.weights.iter_mut().zip(deltas) {
-            *w = (*w + d).clamp(-1.5, 1.5);
+            *w = (*w + dw).clamp(-1.5, 1.5);
+
+            l1 += dw.abs();
+            edges = edges.saturating_add(1);
+        }
+
+        self.learning_monitors.plasticity_l1 = l1;
+        self.learning_monitors.plasticity_edges = edges;
+        if budget > 0.0 {
+            self.learning_monitors.plasticity_budget_used = l1;
+        } else {
+            self.learning_monitors.plasticity_budget_used = 0.0;
         }
     }
 
-    #[cfg(not(feature = "parallel"))]
-    fn learn_hebbian_parallel(&mut self) {
-        self.learn_hebbian_scalar();
+    /// Slow homeostasis: nudges unit biases to keep activity near a target.
+    fn homeostasis_step(&mut self) {
+        let rate = self.cfg.homeostasis_rate;
+        if rate <= 0.0 {
+            return;
+        }
+
+        let every = self.cfg.homeostasis_every as u64;
+        if every == 0 || !self.age_steps.is_multiple_of(every) {
+            return;
+        }
+
+        let target = self.cfg.homeostasis_target_amp;
+        let mut l1 = 0.0f32;
+        for i in 0..self.units.len() {
+            if self.reserved[i] {
+                continue;
+            }
+            let amp = self.units[i].amp.abs();
+            let err = target - amp;
+            let prev = self.units[i].bias;
+            self.units[i].bias = (prev + rate * err).clamp(-0.5, 0.5);
+            l1 += (self.units[i].bias - prev).abs();
+        }
+
+        self.learning_monitors.homeostasis_bias_l1 = l1;
     }
 
     fn forget_and_prune(&mut self) {
@@ -4654,6 +4889,9 @@ impl Brain {
                 if abs < prune_below {
                     self.connections.targets[idx] = INVALID_UNIT;
                     self.connections.weights[idx] = 0.0;
+                    if idx < self.eligibility.len() {
+                        self.eligibility[idx] = 0.0;
+                    }
                     self.pruned_last_step += 1;
                     self.csr_tombstones += 1;
                 }
@@ -4814,7 +5052,8 @@ impl Brain {
         // We can use neuromodulator as a proxy since it already multiplies learning.
         if enabled {
             // Boost the neuromodulator to increase learning.
-            self.neuromod = (self.neuromod + rate_multiplier * 0.3).min(1.5);
+            let boosted = self.neuromod + rate_multiplier * 0.3;
+            self.set_neuromodulator(boosted);
         }
         // Note: This is a simplified implementation. A more sophisticated version
         // would track burst state explicitly and modify hebb_rate directly.
@@ -5096,6 +5335,92 @@ fn phase_alignment(a: f32, b: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neuromodulator_sign_controls_plasticity_direction() {
+        let cfg = BrainConfig {
+            unit_count: 4,
+            connectivity_per_unit: 1,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.1,
+            coactive_threshold: 0.1,
+            phase_lock_threshold: 0.5,
+            eligibility_decay: 0.0,
+            eligibility_gain: 1.0,
+            learning_deadband: 0.0,
+            seed: Some(1),
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+
+        // Force a known single edge: 0 -> 1 at index 0.
+        brain.connections.targets[0] = 1;
+        brain.connections.weights[0] = 0.0;
+        brain
+            .eligibility
+            .resize(brain.connections.weights.len(), 0.0);
+
+        // Activate both units and align phases.
+        brain.units[0].amp = 1.0;
+        brain.units[1].amp = 1.0;
+        brain.units[0].phase = 0.0;
+        brain.units[1].phase = 0.0;
+
+        brain.update_eligibility_scalar();
+        assert!(brain.eligibility[0] > 0.0);
+
+        brain.set_neuromodulator(1.0);
+        brain.apply_plasticity_scalar();
+        assert!(brain.connections.weights[0] > 0.0);
+
+        // Reset weight; apply negative neuromod and confirm weight decreases.
+        brain.connections.weights[0] = 0.0;
+        brain.set_neuromodulator(-1.0);
+        brain.apply_plasticity_scalar();
+        assert!(brain.connections.weights[0] < 0.0);
+    }
+
+    #[test]
+    fn learning_deadband_prevents_weight_drift_near_zero_neuromod() {
+        let cfg = BrainConfig {
+            unit_count: 4,
+            connectivity_per_unit: 1,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.2,
+            coactive_threshold: 0.1,
+            phase_lock_threshold: 0.5,
+            eligibility_decay: 0.0,
+            eligibility_gain: 1.0,
+            learning_deadband: 0.25,
+            seed: Some(2),
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+        brain.connections.targets[0] = 1;
+        brain.connections.weights[0] = 0.0;
+        brain
+            .eligibility
+            .resize(brain.connections.weights.len(), 0.0);
+
+        brain.units[0].amp = 1.0;
+        brain.units[1].amp = 1.0;
+        brain.units[0].phase = 0.0;
+        brain.units[1].phase = 0.0;
+
+        brain.update_eligibility_scalar();
+        assert!(brain.eligibility[0] > 0.0);
+
+        // Below deadband: no weight updates.
+        brain.set_neuromodulator(0.1);
+        brain.apply_plasticity_scalar();
+        assert_eq!(brain.connections.weights[0], 0.0);
+    }
 
     #[test]
     fn brain_image_roundtrip_basic() {

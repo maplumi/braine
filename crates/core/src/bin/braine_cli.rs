@@ -471,6 +471,25 @@ struct BrainStats {
     memory_bytes: usize,
     causal_edges: usize,
     age_steps: u64,
+
+    #[serde(default)]
+    plasticity_committed: bool,
+    #[serde(default)]
+    plasticity_l1: f32,
+    #[serde(default)]
+    plasticity_edges: u32,
+    #[serde(default)]
+    plasticity_budget: f32,
+    #[serde(default)]
+    plasticity_budget_used: f32,
+    #[serde(default)]
+    eligibility_l1: f32,
+    #[serde(default)]
+    learning_deadband: f32,
+    #[serde(default)]
+    homeostasis_rate: f32,
+    #[serde(default)]
+    homeostasis_bias_l1: f32,
 }
 
 fn usage() -> ! {
@@ -632,6 +651,29 @@ fn print_state(s: StateSnapshot) {
         s.brain_stats.causal_edges,
         s.brain_stats.age_steps,
     );
+
+    // Optional learning/stability monitors (newer daemons).
+    if s.brain_stats.plasticity_committed
+        || s.brain_stats.plasticity_l1 != 0.0
+        || s.brain_stats.eligibility_l1 != 0.0
+        || s.brain_stats.homeostasis_bias_l1 != 0.0
+        || s.brain_stats.plasticity_budget != 0.0
+        || s.brain_stats.learning_deadband != 0.0
+        || s.brain_stats.homeostasis_rate != 0.0
+    {
+        println!(
+            "learn: committed={} elig_l1={:.3} dw_l1={:.3} edges={} budget={:.3} used={:.3} deadband={:.3} homeo_rate={:.3} homeo_dbias_l1={:.3}",
+            s.brain_stats.plasticity_committed,
+            s.brain_stats.eligibility_l1,
+            s.brain_stats.plasticity_l1,
+            s.brain_stats.plasticity_edges,
+            s.brain_stats.plasticity_budget,
+            s.brain_stats.plasticity_budget_used,
+            s.brain_stats.learning_deadband,
+            s.brain_stats.homeostasis_rate,
+            s.brain_stats.homeostasis_bias_l1,
+        );
+    }
     let spot_is_left = s
         .game
         .spot_is_left()

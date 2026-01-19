@@ -879,6 +879,13 @@ fn App() -> impl IntoView {
     let neuromod_history = StoredValue::new(RollingHistory::new(50));
     let (neuromod_version, set_neuromod_version) = signal(0u32);
 
+    // Learning monitor history (cheap; sampled on the same heavy cadence as diagnostics).
+    let (learn_stats, set_learn_stats) = signal(runtime.with_value(|r| r.brain.learning_stats()));
+    let learn_elig_history = StoredValue::new(RollingHistory::new(120));
+    let learn_plasticity_history = StoredValue::new(RollingHistory::new(120));
+    let learn_homeostasis_history = StoredValue::new(RollingHistory::new(120));
+    let (learn_version, set_learn_version) = signal(0u32);
+
     // Action choice history (for choices-over-time chart)
     let choice_events = StoredValue::new(Vec::<String>::new());
     let (choice_window, set_choice_window) = signal(30u32);
@@ -1375,6 +1382,13 @@ fn App() -> impl IntoView {
 
                 set_diag.set(runtime.with_value(|r| r.brain.diagnostics()));
                 set_brain_age.set(runtime.with_value(|r| r.brain.age_steps()));
+
+                let ls = runtime.with_value(|r| r.brain.learning_stats());
+                set_learn_stats.set(ls);
+                learn_elig_history.update_value(|h| h.push(ls.eligibility_l1));
+                learn_plasticity_history.update_value(|h| h.push(ls.plasticity_l1));
+                learn_homeostasis_history.update_value(|h| h.push(ls.homeostasis_bias_l1));
+                set_learn_version.update(|v| *v = v.wrapping_add(1));
 
                 let cstats = runtime.with_value(|r| r.brain.causal_stats());
                 set_causal_symbols.set(cstats.base_symbols);
@@ -2804,6 +2818,9 @@ fn App() -> impl IntoView {
     // Inspect: lightweight sparklines (only draw when Inspect tab is open).
     let inspect_perf_spark_ref = NodeRef::<leptos::html::Canvas>::new();
     let inspect_reward_spark_ref = NodeRef::<leptos::html::Canvas>::new();
+    let inspect_learn_elig_spark_ref = NodeRef::<leptos::html::Canvas>::new();
+    let inspect_learn_plasticity_spark_ref = NodeRef::<leptos::html::Canvas>::new();
+    let inspect_learn_homeostasis_spark_ref = NodeRef::<leptos::html::Canvas>::new();
     let (inspect_neighbor_unit_id, set_inspect_neighbor_unit_id) = signal(0u32);
     let (inspect_neighbors_text, set_inspect_neighbors_text) = signal(String::new());
 
@@ -2835,6 +2852,40 @@ fn App() -> impl IntoView {
         };
         let data: Vec<f32> = neuromod_history.with_value(|h| h.data().to_vec());
         let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#fbbf24", "#1a2540");
+    });
+
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = learn_version.get();
+        let Some(canvas) = inspect_learn_plasticity_spark_ref.get() else {
+            return;
+        };
+        let data: Vec<f32> = learn_plasticity_history.with_value(|h| h.data().to_vec());
+        let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#7aa2ff", "#1a2540");
+    });
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = learn_version.get();
+        let Some(canvas) = inspect_learn_elig_spark_ref.get() else {
+            return;
+        };
+        let data: Vec<f32> = learn_elig_history.with_value(|h| h.data().to_vec());
+        let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#4ade80", "#1a2540");
+    });
+    Effect::new(move |_| {
+        if dashboard_tab.get() != DashboardTab::Inspect {
+            return;
+        }
+        let _ = learn_version.get();
+        let Some(canvas) = inspect_learn_homeostasis_spark_ref.get() else {
+            return;
+        };
+        let data: Vec<f32> = learn_homeostasis_history.with_value(|h| h.data().to_vec());
+        let _ = charts::draw_sparkline(&canvas, &data, "#0a0f1a", "#a78bfa", "#1a2540");
     });
 
     // Inspect: oscilloscope sampling (only when Inspect is open).
@@ -6907,6 +6958,32 @@ fn App() -> impl IntoView {
                                             <div class="subtle" style="margin-top: 6px; font-weight: 800;">
                                                 {move || learning_milestone.get()}
                                             </div>
+
+                                            <div class="subtle" style="margin-top: 8px; font-family: var(--mono);">
+                                                {move || {
+                                                    let ls = learn_stats.get();
+                                                    let commit = if ls.plasticity_committed { "y" } else { "n" };
+                                                    if ls.plasticity_budget > 0.0 {
+                                                        format!(
+                                                            "learn: elig_l1={} dw_l1={} edges={} commit={} budget={}/{}",
+                                                            fmt_f32_fixed(ls.eligibility_l1, 2),
+                                                            fmt_f32_fixed(ls.plasticity_l1, 2),
+                                                            ls.plasticity_edges,
+                                                            commit,
+                                                            fmt_f32_fixed(ls.plasticity_budget_used, 2),
+                                                            fmt_f32_fixed(ls.plasticity_budget, 2)
+                                                        )
+                                                    } else {
+                                                        format!(
+                                                            "learn: elig_l1={} dw_l1={} edges={} commit={}",
+                                                            fmt_f32_fixed(ls.eligibility_l1, 2),
+                                                            fmt_f32_fixed(ls.plasticity_l1, 2),
+                                                            ls.plasticity_edges,
+                                                            commit
+                                                        )
+                                                    }
+                                                }}
+                                            </div>
                                         </div>
 
                                         <div style="min-width: 280px;">
@@ -6924,6 +7001,39 @@ fn App() -> impl IntoView {
                                             <div class="subtle" style="margin-bottom: 6px;">"Reward"</div>
                                             <canvas
                                                 node_ref=inspect_reward_spark_ref
+                                                width="280"
+                                                height="60"
+                                                class="canvas"
+                                                style="border: 1px solid var(--border); border-radius: 10px;"
+                                            ></canvas>
+                                        </div>
+
+                                        <div style="min-width: 280px;">
+                                            <div class="subtle" style="margin-bottom: 6px;">"|Δw| (plasticity L1)"</div>
+                                            <canvas
+                                                node_ref=inspect_learn_plasticity_spark_ref
+                                                width="280"
+                                                height="60"
+                                                class="canvas"
+                                                style="border: 1px solid var(--border); border-radius: 10px;"
+                                            ></canvas>
+                                        </div>
+
+                                        <div style="min-width: 280px;">
+                                            <div class="subtle" style="margin-bottom: 6px;">"Eligibility L1"</div>
+                                            <canvas
+                                                node_ref=inspect_learn_elig_spark_ref
+                                                width="280"
+                                                height="60"
+                                                class="canvas"
+                                                style="border: 1px solid var(--border); border-radius: 10px;"
+                                            ></canvas>
+                                        </div>
+
+                                        <div style="min-width: 280px;">
+                                            <div class="subtle" style="margin-bottom: 6px;">"Homeostasis bias L1"</div>
+                                            <canvas
+                                                node_ref=inspect_learn_homeostasis_spark_ref
                                                 width="280"
                                                 height="60"
                                                 class="canvas"

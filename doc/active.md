@@ -15,6 +15,9 @@ pub fn active_unit_count(&self, threshold: f32) -> usize;
 pub fn is_learning_mode(&self) -> bool;  // neuromod > 0.3
 pub fn is_inference_mode(&self) -> bool; // neuromod <= 0.3
 
+// Note: synaptic plasticity commits use a separate deadband gate
+// (`learning_deadband`): weights only change when |neuromod| > learning_deadband.
+
 // Idle operations
 pub fn idle_dream(&mut self, steps: usize, activity_threshold: f32) -> usize;
 pub fn global_sync(&mut self) -> usize;
@@ -27,6 +30,7 @@ pub fn idle_maintenance(&mut self, force: bool) -> Option<usize>;
 - Aligns all unit phases to a common reference (phase = 0)
 - Only runs once per idle period
 - Skipped if brain is in high-learning mode (neuromod > 0.3)
+- Skipped if brain is in high-learning mode (neuromod > 0.3)
 - Creates coherent oscillation for clean restart
 
 **Idle Dreaming** (periodic while idle):
@@ -35,6 +39,7 @@ pub fn idle_maintenance(&mut self, force: bool) -> Option<usize>;
 - Gentle learning boost (1.5x) with moderate neuromodulator (0.5)
 - Injects small noise to trigger memory reactivation
 - Consolidates synaptic weights in unused areas
+- Skipped if learning mode is enabled
 - Skipped if learning mode is enabled
 
 ### Web App Integration (`crates/braine_web/src/web.rs`)
@@ -60,7 +65,8 @@ let (idle_status, set_idle_status) = signal("".to_string());
 - **Sync once**: Prevents phase drift during idle, but too-frequent sync would erase learned phase relationships
 - **Dream continuously**: Inactive clusters benefit from ongoing consolidation; active learning areas are protected
 - **Learning mode gate**: High neuromodulator indicates active learning in progress; dreaming would interfere
-- **Inference mode safe**: Low neuromodulator means read-only behavior; safe to consolidate inactive regions
+- **Learning mode gate**: High neuromodulator indicates active learning in progress; dreaming would interfere
+- **Low-neuromod safe**: When neuromod is low, plasticity commits are typically suppressed by the synaptic deadband, so consolidation is less likely to fight active learning
 
 ---
 

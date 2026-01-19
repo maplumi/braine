@@ -4,13 +4,15 @@
 
 ### 1. Edge-Based Memory (Current Implementation)
 
-**Hebbian Learning** (`learn_hebbian_scalar`):
-- When two units are co-active (`amp > coactive_threshold`) and phase-aligned (`align > phase_lock_threshold`):
-  - `Δw = lr * align` (strengthen)
-- When co-active but not phase-aligned:
-  - `Δw = -lr * 0.05` (weaken)
-- Learning rate modulated by neuromodulator: `lr = hebb_rate * (1 + max(0, neuromod))`
-- Weights clamped to `[-1.5, 1.5]`
+**Plasticity (Eligibility + Neuromodulated Commit)**:
+- Each step updates an **eligibility trace** per connection based on recent co-activity/alignment (this accumulates “credit” but does not change weights yet).
+- Weight updates are **committed only when** neuromodulator magnitude exceeds a **deadband**: `|neuromod| > learning_deadband`.
+- When committing, the update uses the eligibility trace and the **signed** neuromodulator (negative values drive LTD):
+   - `Δw ∝ hebb_rate * neuromod * eligibility`
+- Optional governance knobs:
+   - **Plasticity budget** caps total per-step weight change (approximately an L1 cap on committed updates).
+   - **Homeostasis** can periodically nudge unit biases toward a target amplitude (stability support, separate from synaptic learning).
+- Weights remain clamped to `[-1.5, 1.5]`.
 
 **Forgetting & Pruning** (`forget_and_prune`):
 - All weights decay: `w *= (1 - forget_rate)` 

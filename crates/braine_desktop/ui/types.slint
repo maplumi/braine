@@ -44,6 +44,17 @@ export struct BrainStats {
     causal-last-directed-updates: int,
     causal-last-cooccur-updates: int,
     age-steps: int,
+
+    // Learning/stability monitors (optional; 0/false when not provided).
+    plasticity-committed: bool,
+    plasticity-l1: float,
+    plasticity-edges: int,
+    plasticity-budget: float,
+    plasticity-budget-used: float,
+    eligibility-l1: float,
+    learning-deadband: float,
+    homeostasis-rate: float,
+    homeostasis-bias-l1: float,
 }
 
 export struct UnitPoint {
