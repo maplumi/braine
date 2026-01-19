@@ -33,6 +33,14 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 
+// NOTE: Some pinned WASM toolchains treat `u32::is_multiple_of` as unstable.
+// Keep builds compatible by using a `%` check, and silence the corresponding
+// clippy suggestion.
+#[allow(clippy::manual_is_multiple_of)]
+fn is_multiple_u32(x: u32, m: u32) -> bool {
+    m != 0 && (x % m) == 0
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
 struct BrainvizNodeTag {
     color: String, // "#RRGGBB"
@@ -652,9 +660,9 @@ fn App() -> impl IntoView {
     // Note: when GPU is active, the runtime may briefly report "pending" between
     // polls; debounce this so the topbar doesn't flicker.
     let (gpu_step_pending, set_gpu_step_pending) = signal(false);
-    let gpu_pending_requested = StoredValue::new(std::cell::Cell::new(false));
-    let gpu_pending_show_timeout = StoredValue::new(std::cell::Cell::new(None::<i32>));
-    let gpu_pending_hide_timeout = StoredValue::new(std::cell::Cell::new(None::<i32>));
+    let gpu_pending_requested = StoredValue::new(false);
+    let gpu_pending_show_timeout = StoredValue::new(None::<i32>);
+    let gpu_pending_hide_timeout = StoredValue::new(None::<i32>);
 
     let set_gpu_step_pending_debounced = {
         let set_gpu_step_pending = set_gpu_step_pending.clone();
@@ -668,11 +676,13 @@ fn App() -> impl IntoView {
 
             // Cancel any pending opposite-direction transition.
             if pending {
-                if let Some(id) = gpu_pending_hide_timeout.get_value().take() {
+                if let Some(id) = gpu_pending_hide_timeout.get_value() {
                     win.clear_timeout_with_handle(id);
+                    gpu_pending_hide_timeout.set_value(None);
                 }
-            } else if let Some(id) = gpu_pending_show_timeout.get_value().take() {
+            } else if let Some(id) = gpu_pending_show_timeout.get_value() {
                 win.clear_timeout_with_handle(id);
+                gpu_pending_show_timeout.set_value(None);
             }
 
             // Debounce show/hide with hysteresis.
@@ -1767,7 +1777,7 @@ fn App() -> impl IntoView {
                                 brainviz_record_edges_every_trials.get_untracked().max(1);
                             let trial_idx = steps.get_untracked() as u32;
 
-                            if !trial_idx.is_multiple_of(record_every) {
+                            if !is_multiple_u32(trial_idx, record_every) {
                                 return;
                             }
 
@@ -1924,7 +1934,7 @@ fn App() -> impl IntoView {
                                         // Edge deltas (optional + decimated).
                                         if record_edges
                                             && !rec.edge_pairs.is_empty()
-                                            && trial_idx.is_multiple_of(record_edges_every)
+                                            && is_multiple_u32(trial_idx, record_edges_every)
                                         {
                                             // Scan neighbors once per source.
                                             let mut by_src: std::collections::HashMap<

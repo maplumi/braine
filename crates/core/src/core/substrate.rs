@@ -6268,6 +6268,7 @@ impl Brain {
     }
 
     /// Slow homeostasis: nudges unit biases to keep activity near a target.
+    #[allow(clippy::manual_is_multiple_of)]
     fn homeostasis_step(&mut self) {
         let rate = self.cfg.homeostasis_rate;
         if rate <= 0.0 {
@@ -6275,7 +6276,9 @@ impl Brain {
         }
 
         let every = self.cfg.homeostasis_every as u64;
-        if every == 0 || !self.age_steps.is_multiple_of(every) {
+        // Prefer `%` over `.is_multiple_of()` to keep compatibility with the
+        // pinned WASM toolchain used by `braine_web`.
+        if every == 0 || (self.age_steps % every) != 0 {
             return;
         }
 
