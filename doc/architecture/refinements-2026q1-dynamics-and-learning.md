@@ -142,15 +142,19 @@ Mean |w| is too blunt as a saturation proxy.
 
 ### Proposed change
 Add additional triggers that reflect “unmet demand / novelty”:
-- sustained high CSR fill and low pruning recovery
-- persistent high eligibility magnitude + frequent commit but flat reward trend
-- novelty signal from new symbols/pairs rate
+- persistent high eligibility magnitude (EMA) + frequent commit (EMA)
+- low pruning relief (EMA of prune rate stays below a cap)
+- cooldown between growth events to prevent bursty neurogenesis
 
 Keep old trigger as a fallback until new signals prove stable.
 
 ### Config knobs
 - `growth_policy_mode: u8` (0=legacy, 1=hybrid)
-- thresholds for eligibility/commit frequency window sizes
+- `growth_cooldown_steps: u32`
+- `growth_signal_alpha: f32` (EMA update rate)
+- `growth_commit_ema_threshold: f32`
+- `growth_eligibility_norm_ema_threshold: f32`
+- `growth_prune_norm_ema_max: f32`
 
 Defaults:
 - `growth_policy_mode = 0` (legacy)
@@ -177,6 +181,7 @@ Maintain a short ring buffer of symbol sets for the last N ticks and add lagged 
 ### Config knobs
 - `causal_lag_steps: u8` (1..=16 recommended)
 - `causal_lag_decay: f32` in (0,1)
+- `causal_symbol_cap: u8`
 
 Defaults:
 - `causal_lag_steps = 1` (current behavior)

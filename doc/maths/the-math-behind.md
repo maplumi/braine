@@ -50,7 +50,7 @@ For unit $i \in \{0,\dots,N-1\}$ at discrete step $t$:
 
 Derived (non-persisted) state:
 
-- activity trace: $\tilde{a}_i(t) \in [0,2]$ (slow, nonnegative; used for salience/learning gates)
+- activity trace: $a_i^{tr}(t) \in [0,2]$ (slow, nonnegative; used for salience/learning gates)
 
 Sparse directed couplings are stored as CSR edges:
 
@@ -139,7 +139,7 @@ Let $\delta_{ij}(t) = \Delta(\phi_j(t),\phi_i(t))$.
 The phase coupling uses a mode and gain (`phase_coupling_mode`, `phase_coupling_k`):
 
 - legacy linear (mode 0): $f(\delta) = \delta$
-- sinusoidal (mode 1): $f(\delta) = \sin(k\,\delta)$
+- sinusoidal (mode 1): $f(\delta) = \sin(\delta)$
 - saturating tanh (mode 2): $f(\delta) = \tanh(k\,\delta)$
 
 Then:
@@ -188,7 +188,7 @@ Salience uses the coactivity threshold $\theta$ = `coactive_threshold`.
 First, define a slow activity trace (EMA) with decay $d$ = `activity_trace_decay`:
 
 $$
-	ilde{a}_i(t+1) = (1-d)\,\tilde{a}_i(t) + d\,\max(0, a_i(t+1))
+ a_i^{tr}(t+1) = (1-d)\,a_i^{tr}(t) + d\,\max(0, a_i(t+1))
 $$
 
 If $d = 0$, the implementation effectively uses instantaneous $\max(0,a_i)$.
@@ -196,7 +196,7 @@ If $d = 0$, the implementation effectively uses instantaneous $\max(0,a_i)$.
 Let activation for salience be:
 
 $$
-\alpha_i(t+1) = \max(0, \tilde{a}_i(t+1) - \theta)
+\alpha_i(t+1) = \max(0, a_i^{tr}(t+1) - \theta)
 $$
 
 With decay $\rho$ = `salience_decay` and gain $\gamma$ = `salience_gain`:
@@ -228,7 +228,7 @@ Let eligibility decay be $\rho_e$ = `eligibility_decay` and eligibility gain be 
 Define a soft-thresholded co-activity magnitude (using the activity trace when enabled):
 
 $$
-c_{ij}(t) = \max(0, \tilde{a}_i(t) - \theta)\,\max(0, \tilde{a}_j(t) - \theta)
+c_{ij}(t) = \max(0, a_i^{tr}(t) - \theta)\,\max(0, a_j^{tr}(t) - \theta)
 $$
 
 Compute phase alignment $\ell_{ij}(t) = \mathrm{align}(\phi_i(t),\phi_j(t))$ and define a correlation term:

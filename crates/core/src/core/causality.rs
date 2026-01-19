@@ -142,6 +142,97 @@ impl CausalMemory {
         self.prev_symbols.extend_from_slice(current_symbols);
     }
 
+    #[must_use]
+    pub fn prev_symbols(&self) -> &[SymbolId] {
+        &self.prev_symbols
+    }
+
+    /// Observe current symbols with lagged directed edges.
+    ///
+    /// - lag 1 uses the internal `prev_symbols` (persisted in brain images)
+    /// - lag >=2 are provided via `lag2_plus_history[0]=lag2`, `[1]=lag3`, ...
+    /// - contributions decay geometrically by `lag_decay` (0<lag_decay<1)
+    pub fn observe_lagged(
+        &mut self,
+        current_symbols: &[SymbolId],
+        lag2_plus_history: &[Vec<SymbolId>],
+        lag_decay: f32,
+    ) {
+        self.last_directed_edge_updates = 0;
+        self.last_cooccur_edge_updates = 0;
+
+        self.observe_count = self.observe_count.wrapping_add(1);
+
+        // Apply decay.
+        self.base_total *= 1.0 - self.decay;
+        for v in self.base.values_mut() {
+            *v *= 1.0 - self.decay;
+        }
+        for e in self.edges.values_mut() {
+            e.count *= 1.0 - self.decay;
+        }
+
+        if (self.observe_count & 0xFF) == 0 {
+            let thr = 0.001;
+            self.prune_near_zero(thr);
+        }
+
+        // Update base counts.
+        for &s in current_symbols {
+            *self.base.entry(s).or_default() += 1.0;
+            self.base_total += 1.0;
+        }
+
+        // Directed edges: lag 1 from persisted prev_symbols.
+        for &a in &self.prev_symbols {
+            for &b in current_symbols {
+                let key = pack(a, b);
+                self.edges.entry(key).or_default().count += 1.0;
+                self.last_directed_edge_updates += 1;
+            }
+        }
+
+        // Directed edges: lag >=2 from provided history.
+        let mut w = lag_decay;
+        if w.is_finite() {
+            for prev in lag2_plus_history {
+                if prev.is_empty() {
+                    w *= lag_decay;
+                    continue;
+                }
+                let weight = w;
+                if weight <= 0.0 {
+                    break;
+                }
+                for &a in prev {
+                    for &b in current_symbols {
+                        let key = pack(a, b);
+                        self.edges.entry(key).or_default().count += weight;
+                        self.last_directed_edge_updates += 1;
+                    }
+                }
+                w *= lag_decay;
+            }
+        }
+
+        // Same-tick co-occurrence as a cheap proxy for immediate meaning links.
+        for (i, &a) in current_symbols.iter().enumerate() {
+            for &b in current_symbols.iter().skip(i + 1) {
+                if a == b {
+                    continue;
+                }
+                let k1 = pack(a, b);
+                let k2 = pack(b, a);
+                self.edges.entry(k1).or_default().count += 0.5;
+                self.edges.entry(k2).or_default().count += 0.5;
+                self.last_cooccur_edge_updates += 2;
+            }
+        }
+
+        self.prev_symbols.clear();
+        self.prev_symbols.extend_from_slice(current_symbols);
+    }
+
     fn prune_near_zero(&mut self, threshold: f32) {
         let mut new_total = 0.0;
         self.base.retain(|_, v| {
@@ -463,6 +554,34 @@ mod tests {
             strength > 0.0,
             "Expected positive causal strength, got {}",
             strength
+        );
+    }
+
+    #[test]
+    fn causal_memory_lagged_directed_edges_decay_with_lag() {
+        let mut mem = CausalMemory::new(0.0);
+
+        // Establish base counts for lag symbols.
+        mem.observe(&[30]);
+        mem.observe(&[10]);
+
+        // Now observe 20 with lag 1 = [10] (internal prev_symbols)
+        // and lag 2 = [30] (provided history) with decay 0.5.
+        mem.observe_lagged(&[20], &[vec![30]], 0.5);
+
+        let stats = mem.stats();
+        assert_eq!(
+            stats.last_directed_edge_updates, 2,
+            "Expected 2 directed updates (lag1 + lag2)"
+        );
+
+        let s_lag1 = mem.causal_strength(10, 20);
+        let s_lag2 = mem.causal_strength(30, 20);
+        assert!(s_lag1 > 0.0, "Expected positive lag1 strength");
+        assert!(s_lag2 > 0.0, "Expected positive lag2 strength");
+        assert!(
+            s_lag1 > s_lag2,
+            "Expected lag1 strength > lag2 strength (decayed)"
         );
     }
 

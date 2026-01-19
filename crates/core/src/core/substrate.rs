@@ -162,6 +162,32 @@ pub struct BrainConfig {
     /// - Higher values track activation more quickly.
     pub activity_trace_decay: f32,
 
+    // ---------------------------------------------------------------------
+    // Neurogenesis / Growth policy (refinement item 5)
+    // ---------------------------------------------------------------------
+    /// 0 = legacy (avg |w| saturation only), 1 = hybrid (includes learning-pressure signals).
+    pub growth_policy_mode: u8,
+    /// Cooldown in steps between growth events.
+    pub growth_cooldown_steps: u32,
+    /// EMA smoothing factor for growth signals in [0,1].
+    pub growth_signal_alpha: f32,
+    /// Minimum EMA of plasticity commits (0..1) to consider "learning pressure" high.
+    pub growth_commit_ema_threshold: f32,
+    /// Minimum normalized eligibility L1 EMA to consider "learning pressure" high.
+    pub growth_eligibility_norm_ema_threshold: f32,
+    /// Maximum normalized prune-rate EMA to consider pruning "not relieving saturation".
+    pub growth_prune_norm_ema_max: f32,
+
+    // ---------------------------------------------------------------------
+    // Meaning/causal temporal structure (refinement item 6)
+    // ---------------------------------------------------------------------
+    /// Number of lag steps (1 = current behavior). Recommended 1..=16.
+    pub causal_lag_steps: u8,
+    /// Geometric decay per lag (>0 and <1). lag 2 gets weight=decay, lag 3=decay^2, etc.
+    pub causal_lag_decay: f32,
+    /// Cap how many symbols per tick participate in lagged updates (keeps bounded work).
+    pub causal_symbol_cap: u8,
+
     // If set, makes behavior reproducible for evaluation.
     pub seed: Option<u64>,
 
@@ -234,6 +260,17 @@ impl Default for BrainConfig {
             salience_decay: 0.001, // Slow decay to preserve importance history
             salience_gain: 0.1,    // Moderate gain when activated
             activity_trace_decay: 0.05,
+
+            growth_policy_mode: 0,
+            growth_cooldown_steps: 250,
+            growth_signal_alpha: 0.05,
+            growth_commit_ema_threshold: 0.2,
+            growth_eligibility_norm_ema_threshold: 0.02,
+            growth_prune_norm_ema_max: 0.0005,
+
+            causal_lag_steps: 1,
+            causal_lag_decay: 0.7,
+            causal_symbol_cap: 32,
             seed: None,
             causal_decay: 0.002,
 
@@ -327,6 +364,46 @@ impl BrainConfig {
 
         if !self.activity_trace_decay.is_finite() || self.activity_trace_decay < 0.0 {
             return Err("activity_trace_decay must be finite and >= 0");
+        }
+
+        if self.growth_policy_mode > 1 {
+            return Err("growth_policy_mode must be in [0, 1]");
+        }
+        if !self.growth_signal_alpha.is_finite()
+            || self.growth_signal_alpha < 0.0
+            || self.growth_signal_alpha > 1.0
+        {
+            return Err("growth_signal_alpha must be in [0, 1]");
+        }
+        if !self.growth_commit_ema_threshold.is_finite()
+            || self.growth_commit_ema_threshold < 0.0
+            || self.growth_commit_ema_threshold > 1.0
+        {
+            return Err("growth_commit_ema_threshold must be in [0, 1]");
+        }
+        if !self.growth_eligibility_norm_ema_threshold.is_finite()
+            || self.growth_eligibility_norm_ema_threshold < 0.0
+        {
+            return Err("growth_eligibility_norm_ema_threshold must be finite and >= 0");
+        }
+        if !self.growth_prune_norm_ema_max.is_finite() || self.growth_prune_norm_ema_max < 0.0 {
+            return Err("growth_prune_norm_ema_max must be finite and >= 0");
+        }
+
+        if self.causal_lag_steps == 0 {
+            return Err("causal_lag_steps must be >= 1");
+        }
+        if self.causal_lag_steps > 32 {
+            return Err("causal_lag_steps must be <= 32");
+        }
+        if !(self.causal_lag_decay.is_finite()
+            && 0.0 < self.causal_lag_decay
+            && self.causal_lag_decay < 1.0)
+        {
+            return Err("causal_lag_decay must be finite and in (0, 1)");
+        }
+        if self.causal_symbol_cap == 0 {
+            return Err("causal_symbol_cap must be >= 1");
         }
 
         if self.learning_deadband < 0.0 || self.learning_deadband > 1.0 {
@@ -602,6 +679,15 @@ pub struct Brain {
     /// Used to decouple fast `amp` from learning/salience gating.
     activity_trace: Vec<f32>,
 
+    // Growth policy signals (ephemeral; not persisted).
+    growth_eligibility_norm_ema: f32,
+    growth_commit_ema: f32,
+    growth_prune_norm_ema: f32,
+    growth_last_birth_step: u64,
+
+    // Lagged causal meaning history (ephemeral; not persisted). Stores lag>=2 symbol sets.
+    causal_lag_history: Vec<Vec<SymbolId>>,
+
     /// CSR-format connection storage for cache-friendly iteration.
     connections: CsrConnections,
 
@@ -852,6 +938,11 @@ impl Brain {
             cfg,
             units,
             activity_trace,
+            growth_eligibility_norm_ema: 0.0,
+            growth_commit_ema: 0.0,
+            growth_prune_norm_ema: 0.0,
+            growth_last_birth_step: 0,
+            causal_lag_history: Vec::new(),
             connections,
             eligibility,
             tier: ExecutionTier::default(),
@@ -996,17 +1087,20 @@ impl Brain {
         #[cfg(feature = "parallel")]
         {
             self.tier = ExecutionTier::Parallel;
-            return ExecutionTier::Parallel;
+            ExecutionTier::Parallel
         }
 
         #[cfg(all(not(feature = "parallel"), feature = "simd"))]
         {
             self.tier = ExecutionTier::Simd;
-            return ExecutionTier::Simd;
+            ExecutionTier::Simd
         }
 
-        self.tier = ExecutionTier::Scalar;
-        ExecutionTier::Scalar
+        #[cfg(all(not(feature = "parallel"), not(feature = "simd")))]
+        {
+            self.tier = ExecutionTier::Scalar;
+            ExecutionTier::Scalar
+        }
     }
 
     // =========================================================================
@@ -1495,6 +1589,11 @@ impl Brain {
             cfg,
             units,
             activity_trace,
+            growth_eligibility_norm_ema: 0.0,
+            growth_commit_ema: 0.0,
+            growth_prune_norm_ema: 0.0,
+            growth_last_birth_step: 0,
+            causal_lag_history: Vec::new(),
             connections,
             eligibility: vec![0.0; eligibility_len],
             tier: ExecutionTier::default(),
@@ -1615,6 +1714,15 @@ impl Brain {
                 + 4 // homeostasis_rate
                 + 4 // homeostasis_every
                 + 4 // activity_trace_decay
+                + 4 // growth_policy_mode
+                + 4 // growth_cooldown_steps
+                + 4 // growth_signal_alpha
+                + 4 // growth_commit_ema_threshold
+                + 4 // growth_eligibility_norm_ema_threshold
+                + 4 // growth_prune_norm_ema_max
+                + 4 // causal_lag_steps
+                + 4 // causal_lag_decay
+                + 4 // causal_symbol_cap
     }
 
     #[cfg(feature = "std")]
@@ -1651,6 +1759,17 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.homeostasis_rate)?;
         storage::write_u32_le(w, self.cfg.homeostasis_every)?;
         storage::write_f32_le(w, self.cfg.activity_trace_decay)?;
+
+        // Refinement knobs (appended; backwards compatible on load).
+        storage::write_u32_le(w, self.cfg.growth_policy_mode as u32)?;
+        storage::write_u32_le(w, self.cfg.growth_cooldown_steps)?;
+        storage::write_f32_le(w, self.cfg.growth_signal_alpha)?;
+        storage::write_f32_le(w, self.cfg.growth_commit_ema_threshold)?;
+        storage::write_f32_le(w, self.cfg.growth_eligibility_norm_ema_threshold)?;
+        storage::write_f32_le(w, self.cfg.growth_prune_norm_ema_max)?;
+        storage::write_u32_le(w, self.cfg.causal_lag_steps as u32)?;
+        storage::write_f32_le(w, self.cfg.causal_lag_decay)?;
+        storage::write_u32_le(w, self.cfg.causal_symbol_cap as u32)?;
         Ok(())
     }
 
@@ -1750,6 +1869,17 @@ impl Brain {
             // Activity-trace field is appended at the end; optional.
             let activity_trace_decay = read_f32_default(&mut c, 0.0);
 
+            // Optional appended refinement knobs (safe defaults).
+            let growth_policy_mode = read_u32_default(&mut c, 0) as u8;
+            let growth_cooldown_steps = read_u32_default(&mut c, 250);
+            let growth_signal_alpha = read_f32_default(&mut c, 0.05);
+            let growth_commit_ema_threshold = read_f32_default(&mut c, 0.2);
+            let growth_eligibility_norm_ema_threshold = read_f32_default(&mut c, 0.02);
+            let growth_prune_norm_ema_max = read_f32_default(&mut c, 0.0005);
+            let causal_lag_steps = read_u32_default(&mut c, 1) as u8;
+            let causal_lag_decay = read_f32_default(&mut c, 0.7);
+            let causal_symbol_cap = read_u32_default(&mut c, 32) as u8;
+
             let cfg = BrainConfig {
                 unit_count,
                 connectivity_per_unit,
@@ -1769,6 +1899,17 @@ impl Brain {
                 salience_decay,
                 salience_gain,
                 activity_trace_decay,
+
+                growth_policy_mode,
+                growth_cooldown_steps,
+                growth_signal_alpha,
+                growth_commit_ema_threshold,
+                growth_eligibility_norm_ema_threshold,
+                growth_prune_norm_ema_max,
+
+                causal_lag_steps,
+                causal_lag_decay,
+                causal_symbol_cap,
                 seed: if seed_present != 0 { Some(seed) } else { None },
                 causal_decay,
                 learning_deadband,
@@ -3061,6 +3202,12 @@ impl Brain {
         self.active_symbols.sort_unstable();
         self.active_symbols.dedup();
 
+        // Keep bounded work for causal updates.
+        let cap = self.cfg.causal_symbol_cap as usize;
+        if self.active_symbols.len() > cap {
+            self.active_symbols.truncate(cap);
+        }
+
         if self.telemetry.enabled {
             self.telemetry.last_committed_symbols.clear();
             self.telemetry
@@ -3068,7 +3215,31 @@ impl Brain {
                 .extend_from_slice(&self.active_symbols);
         }
 
-        self.causal.observe(&self.active_symbols);
+        // Lagged causal update:
+        // - lag 1 is stored inside `CausalMemory.prev_symbols`
+        // - we keep lag>=2 history in `self.causal_lag_history`
+        let lag_steps = self.cfg.causal_lag_steps.clamp(1, 32) as usize;
+        let max_hist = lag_steps.saturating_sub(2);
+        if max_hist == 0 {
+            self.causal_lag_history.clear();
+        } else if self.causal_lag_history.len() > max_hist {
+            self.causal_lag_history.truncate(max_hist);
+        }
+
+        let prev_lag1: Vec<SymbolId> = self.causal.prev_symbols().to_vec();
+        self.causal.observe_lagged(
+            &self.active_symbols,
+            &self.causal_lag_history,
+            self.cfg.causal_lag_decay,
+        );
+
+        // Shift history: previous lag1 becomes lag2 for the next tick.
+        if max_hist > 0 && !prev_lag1.is_empty() {
+            self.causal_lag_history.insert(0, prev_lag1);
+            if self.causal_lag_history.len() > max_hist {
+                self.causal_lag_history.truncate(max_hist);
+            }
+        }
         self.active_symbols.clear();
     }
 
@@ -3403,7 +3574,31 @@ impl Brain {
 
         self.forget_and_prune();
 
+        self.update_growth_signals();
+
         self.homeostasis_step();
+    }
+
+    fn update_growth_signals(&mut self) {
+        let alpha = self.cfg.growth_signal_alpha;
+        if alpha <= 0.0 {
+            return;
+        }
+
+        let edge_n = self.connections.weights.len().max(1) as f32;
+        let eligibility_norm = (self.learning_monitors.eligibility_l1 / edge_n).clamp(0.0, 10.0);
+        let commit = if self.learning_monitors.plasticity_committed {
+            1.0
+        } else {
+            0.0
+        };
+        let prune_norm = (self.pruned_last_step as f32 / edge_n).clamp(0.0, 1.0);
+
+        self.growth_eligibility_norm_ema =
+            (1.0 - alpha) * self.growth_eligibility_norm_ema + alpha * eligibility_norm;
+        self.growth_commit_ema = (1.0 - alpha) * self.growth_commit_ema + alpha * commit;
+        self.growth_prune_norm_ema =
+            (1.0 - alpha) * self.growth_prune_norm_ema + alpha * prune_norm;
     }
 
     /// Advance the simulation by one timestep, **without learning**.
@@ -3600,10 +3795,8 @@ impl Brain {
 
             let new_amp_arr = new_amp.to_array();
             let new_phase_arr = new_phase.to_array();
-            for j in 0..4 {
-                amps[i + j] = new_amp_arr[j];
-                phases[i + j] = new_phase_arr[j];
-            }
+            amps[i..(i + 4)].copy_from_slice(&new_amp_arr);
+            phases[i..(i + 4)].copy_from_slice(&new_phase_arr);
         }
 
         // Handle remainder (tail elements).
@@ -4300,7 +4493,24 @@ impl Brain {
             .sum::<f32>()
             / valid_count as f32;
 
-        avg_weight > saturation_threshold
+        let legacy = avg_weight > saturation_threshold;
+        if self.cfg.growth_policy_mode == 0 {
+            return legacy;
+        }
+
+        // Enforce a simple cooldown between growth events (hybrid mode only).
+        let since_birth = self.age_steps.wrapping_sub(self.growth_last_birth_step);
+        if since_birth < self.cfg.growth_cooldown_steps as u64 {
+            return false;
+        }
+
+        // Hybrid: allow growth when learning pressure stays high and pruning isn't relieving it.
+        let learning_pressure = self.growth_commit_ema >= self.cfg.growth_commit_ema_threshold
+            && self.growth_eligibility_norm_ema >= self.cfg.growth_eligibility_norm_ema_threshold;
+
+        let pruning_low = self.growth_prune_norm_ema <= self.cfg.growth_prune_norm_ema_max;
+
+        legacy || (learning_pressure && pruning_low)
     }
 
     /// Grow a single new unit with random wiring to existing units.
@@ -4370,6 +4580,7 @@ impl Brain {
         }
 
         self.births_last_step += 1;
+        self.growth_last_birth_step = self.age_steps;
         self.cfg.unit_count = self.units.len();
         new_id
     }
@@ -4528,6 +4739,7 @@ impl Brain {
 
             new_ids.push(new_id);
             self.births_last_step += 1;
+            self.growth_last_birth_step = self.age_steps;
         }
 
         new_ids
@@ -5774,6 +5986,15 @@ mod tests {
             imprint_rate: 0.3,
             seed: Some(123),
             causal_decay: 0.01,
+            growth_policy_mode: 1,
+            growth_cooldown_steps: 17,
+            growth_signal_alpha: 0.12,
+            growth_commit_ema_threshold: 0.33,
+            growth_eligibility_norm_ema_threshold: 0.044,
+            growth_prune_norm_ema_max: 0.0009,
+            causal_lag_steps: 5,
+            causal_lag_decay: 0.62,
+            causal_symbol_cap: 21,
             ..Default::default()
         };
 
@@ -5789,6 +6010,29 @@ mod tests {
             loaded.cfg.connectivity_per_unit,
             brain.cfg.connectivity_per_unit
         );
+        assert_eq!(loaded.cfg.growth_policy_mode, brain.cfg.growth_policy_mode);
+        assert_eq!(
+            loaded.cfg.growth_cooldown_steps,
+            brain.cfg.growth_cooldown_steps
+        );
+        assert!((loaded.cfg.growth_signal_alpha - brain.cfg.growth_signal_alpha).abs() < 1e-6);
+        assert!(
+            (loaded.cfg.growth_commit_ema_threshold - brain.cfg.growth_commit_ema_threshold).abs()
+                < 1e-6
+        );
+        assert!(
+            (loaded.cfg.growth_eligibility_norm_ema_threshold
+                - brain.cfg.growth_eligibility_norm_ema_threshold)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (loaded.cfg.growth_prune_norm_ema_max - brain.cfg.growth_prune_norm_ema_max).abs()
+                < 1e-6
+        );
+        assert_eq!(loaded.cfg.causal_lag_steps, brain.cfg.causal_lag_steps);
+        assert!((loaded.cfg.causal_lag_decay - brain.cfg.causal_lag_decay).abs() < 1e-6);
+        assert_eq!(loaded.cfg.causal_symbol_cap, brain.cfg.causal_symbol_cap);
         assert_eq!(loaded.units.len(), brain.units.len());
         assert_eq!(loaded.reserved.len(), brain.reserved.len());
         assert_eq!(loaded.learning_enabled.len(), brain.learning_enabled.len());
@@ -6187,6 +6431,39 @@ mod tests {
         // At max, should not grow further
         let grown = brain.maybe_neurogenesis(0.5, 100, 20);
         assert_eq!(grown, 0, "Should not grow beyond max_units");
+    }
+
+    #[test]
+    fn neurogenesis_hybrid_policy_respects_cooldown() {
+        let mut cfg = BrainConfig::with_size(16, 4).with_seed(42);
+        cfg.growth_policy_mode = 1;
+        cfg.growth_cooldown_steps = 10;
+        cfg.growth_signal_alpha = 1.0; // make EMA updates effectively immediate
+        cfg.growth_commit_ema_threshold = 0.5;
+        cfg.growth_eligibility_norm_ema_threshold = 0.5;
+        cfg.growth_prune_norm_ema_max = 0.5;
+
+        let mut brain = Brain::new(cfg);
+
+        // Avoid legacy saturation trigger; rely solely on hybrid signals.
+        let saturation_threshold = 10.0;
+
+        brain.growth_commit_ema = 1.0;
+        brain.growth_eligibility_norm_ema = 1.0;
+        brain.growth_prune_norm_ema = 0.0;
+
+        brain.age_steps = 100;
+        brain.growth_last_birth_step = 100;
+        assert!(
+            !brain.should_grow(saturation_threshold),
+            "Hybrid mode should enforce cooldown"
+        );
+
+        brain.age_steps = 111;
+        assert!(
+            brain.should_grow(saturation_threshold),
+            "Hybrid mode should allow growth after cooldown"
+        );
     }
 
     #[test]
