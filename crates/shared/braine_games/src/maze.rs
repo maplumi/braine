@@ -247,6 +247,14 @@ pub struct MazeGame {
 
     pub steps_in_episode: u32,
 
+    /// How many episodes to run on the same maze layout before reseeding.
+    ///
+    /// Keeping the maze stable for a short curriculum window reduces
+    /// non-stationarity and helps learning converge without manual mid-run
+    /// config changes.
+    episodes_per_maze: u32,
+    episode_idx: u32,
+
     action_names: Vec<String>,
     stimulus_key: String,
     visit_counts: Vec<u16>,
@@ -274,6 +282,8 @@ impl MazeGame {
             last_event: MazeEvent::None,
             stats: GameStats::new(),
             steps_in_episode: 0,
+            episodes_per_maze: 8,
+            episode_idx: 0,
             action_names: vec![
                 "up".to_string(),
                 "right".to_string(),
@@ -286,6 +296,14 @@ impl MazeGame {
         };
         g.refresh_stimulus_key();
         g
+    }
+
+    pub fn episodes_per_maze(&self) -> u32 {
+        self.episodes_per_maze
+    }
+
+    pub fn set_episodes_per_maze(&mut self, v: u32) {
+        self.episodes_per_maze = v.clamp(1, 1_000);
     }
 
     pub fn stimulus_name(&self) -> &'static str {
@@ -448,6 +466,88 @@ impl MazeGame {
                 0.0
             },
         ));
+
+        brain.apply_stimulus(Stimulus::new(
+            "maze_moved",
+            if self.last_event == MazeEvent::Moved {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_timeout",
+            if self.last_event == MazeEvent::Timeout {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+
+        // Simple short-term memory to break perceptual aliasing.
+        let last = self
+            .last_action
+            .as_deref()
+            .and_then(MazeAction::from_action_str);
+        brain.apply_stimulus(Stimulus::new(
+            "maze_last_action_none",
+            if last.is_none() { 1.0 } else { 0.0 },
+        ));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_last_action_up",
+            if matches!(last, Some(MazeAction::Up)) {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_last_action_right",
+            if matches!(last, Some(MazeAction::Right)) {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_last_action_down",
+            if matches!(last, Some(MazeAction::Down)) {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_last_action_left",
+            if matches!(last, Some(MazeAction::Left)) {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+
+        // Visitation bucket at the current cell (0, 1, 2+).
+        let idx = (py as usize) * (self.sim.grid.w() as usize) + (px as usize);
+        let visits = self.visit_counts.get(idx).copied().unwrap_or(0);
+        let vb = if visits == 0 {
+            0
+        } else if visits == 1 {
+            1
+        } else {
+            2
+        };
+        brain.apply_stimulus(Stimulus::new(
+            "maze_visit_b0",
+            if vb == 0 { 1.0 } else { 0.0 },
+        ));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_visit_b1",
+            if vb == 1 { 1.0 } else { 0.0 },
+        ));
+        brain.apply_stimulus(Stimulus::new(
+            "maze_visit_b2",
+            if vb == 2 { 1.0 } else { 0.0 },
+        ));
     }
 
     pub fn score_action(&mut self, action: &str) -> Option<(f32, bool)> {
@@ -555,8 +655,26 @@ impl MazeGame {
 
     fn reset_episode(&mut self, _success: bool) {
         self.steps_in_episode = 0;
-        self.sim.seed = self.sim.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        self.sim.regenerate();
+        self.episode_idx = self.episode_idx.wrapping_add(1);
+
+        // Curriculum window: keep the same maze for a handful of episodes.
+        // Always regenerate on success to avoid overfitting to a single maze.
+        // NOTE: Some pinned toolchains treat `u32::is_multiple_of` as unavailable.
+        // Keep this portable by using `%` and silencing the corresponding clippy lint.
+        #[allow(clippy::manual_is_multiple_of)]
+        let should_regen = _success
+            || self.episodes_per_maze <= 1
+            || (self.episode_idx % self.episodes_per_maze) == 0;
+
+        if should_regen {
+            self.sim.seed = self.sim.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            self.sim.regenerate();
+        } else {
+            self.sim.player_x = 0;
+            self.sim.player_y = 0;
+            self.sim.goal_x = self.sim.grid.w().saturating_sub(1);
+            self.sim.goal_y = self.sim.grid.h().saturating_sub(1);
+        }
         self.visit_counts.fill(0);
         self.refresh_stimulus_key();
     }
@@ -585,13 +703,38 @@ impl MazeGame {
         let dist01 = (dist as f32) / (denom as f32);
         let bucket = (dist01 * 4.0).floor().clamp(0.0, 3.0) as u32;
 
+        let idx = (self.sim.player_y as usize) * (self.sim.grid.w() as usize)
+            + (self.sim.player_x as usize);
+        let visits = self.visit_counts.get(idx).copied().unwrap_or(0);
+        let vb = if visits == 0 {
+            0
+        } else if visits == 1 {
+            1
+        } else {
+            2
+        };
+
+        let last = self
+            .last_action
+            .as_deref()
+            .and_then(MazeAction::from_action_str)
+            .map(|a| match a {
+                MazeAction::Up => 'U',
+                MazeAction::Right => 'R',
+                MazeAction::Down => 'D',
+                MazeAction::Left => 'L',
+            })
+            .unwrap_or('0');
+
         self.stimulus_key = format!(
-            "maze_{}_w{:01x}_{}{}_b{}",
+            "maze_{}_w{:01x}_{}{}_b{}_v{}_a{}",
             self.difficulty.name(),
             walls,
             dx_tag,
             dy_tag,
-            bucket
+            bucket,
+            vb,
+            last
         );
     }
 }
@@ -715,5 +858,21 @@ mod tests {
             (c & (W_UP | W_RIGHT | W_DOWN | W_LEFT)) != (W_UP | W_RIGHT | W_DOWN | W_LEFT)
         });
         assert!(any_open);
+    }
+
+    #[test]
+    fn maze_can_hold_layout_for_multiple_episodes() {
+        let mut g = MazeGame::new_with_difficulty(MazeDifficulty::Easy);
+        g.set_episodes_per_maze(8);
+
+        let cells0 = g.sim.grid.cells.clone();
+
+        // Timeout-based reset should usually keep the same layout within the window.
+        g.reset_episode(false);
+        assert_eq!(g.sim.grid.cells, cells0);
+
+        // Success should regenerate immediately (avoid overfitting one maze).
+        g.reset_episode(true);
+        assert_ne!(g.sim.grid.cells, cells0);
     }
 }
