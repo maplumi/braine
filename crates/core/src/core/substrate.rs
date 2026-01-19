@@ -155,6 +155,13 @@ pub struct BrainConfig {
     pub salience_decay: f32,
     pub salience_gain: f32,
 
+    /// Low-pass activity trace decay used to separate fast activation from
+    /// learning/salience traces.
+    ///
+    /// - 0.0 disables the trace and uses instantaneous activation.
+    /// - Higher values track activation more quickly.
+    pub activity_trace_decay: f32,
+
     // If set, makes behavior reproducible for evaluation.
     pub seed: Option<u64>,
 
@@ -226,6 +233,7 @@ impl Default for BrainConfig {
             imprint_rate: 0.5,
             salience_decay: 0.001, // Slow decay to preserve importance history
             salience_gain: 0.1,    // Moderate gain when activated
+            activity_trace_decay: 0.05,
             seed: None,
             causal_decay: 0.002,
 
@@ -315,6 +323,10 @@ impl BrainConfig {
         }
         if self.causal_decay < 0.0 || self.causal_decay > 1.0 {
             return Err("causal_decay must be in [0, 1]");
+        }
+
+        if !self.activity_trace_decay.is_finite() || self.activity_trace_decay < 0.0 {
+            return Err("activity_trace_decay must be finite and >= 0");
         }
 
         if self.learning_deadband < 0.0 || self.learning_deadband > 1.0 {
@@ -585,6 +597,11 @@ pub struct Brain {
     cfg: BrainConfig,
     units: Vec<Unit>,
 
+    /// Slow activity trace per unit (ephemeral; not persisted).
+    ///
+    /// Used to decouple fast `amp` from learning/salience gating.
+    activity_trace: Vec<f32>,
+
     /// CSR-format connection storage for cache-friendly iteration.
     connections: CsrConnections,
 
@@ -813,6 +830,8 @@ impl Brain {
 
         let eligibility = vec![0.0; connections.weights.len()];
 
+        let activity_trace = vec![0.0; cfg.unit_count];
+
         let pending_input = vec![0.0; cfg.unit_count];
         let reserved = vec![false; cfg.unit_count];
         let learning_enabled = vec![true; cfg.unit_count];
@@ -832,6 +851,7 @@ impl Brain {
         Self {
             cfg,
             units,
+            activity_trace,
             connections,
             eligibility,
             tier: ExecutionTier::default(),
@@ -1466,11 +1486,15 @@ impl Brain {
             }
         }
 
+        // Initialize activity trace from current activation.
+        let activity_trace: Vec<f32> = units.iter().map(|u| u.amp.max(0.0)).collect();
+
         let eligibility_len = connections.weights.len();
 
         let mut brain = Self {
             cfg,
             units,
+            activity_trace,
             connections,
             eligibility: vec![0.0; eligibility_len],
             tier: ExecutionTier::default(),
@@ -1590,6 +1614,7 @@ impl Brain {
                 + 4 // homeostasis_target_amp
                 + 4 // homeostasis_rate
                 + 4 // homeostasis_every
+                + 4 // activity_trace_decay
     }
 
     #[cfg(feature = "std")]
@@ -1625,83 +1650,157 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.homeostasis_target_amp)?;
         storage::write_f32_le(w, self.cfg.homeostasis_rate)?;
         storage::write_u32_le(w, self.cfg.homeostasis_every)?;
+        storage::write_f32_le(w, self.cfg.activity_trace_decay)?;
         Ok(())
     }
 
     #[cfg(feature = "std")]
     fn read_cfg_payload<R: Read>(r: &mut R) -> io::Result<BrainConfig> {
-        let unit_count = storage::read_u32_le(r)? as usize;
-        let connectivity_per_unit = storage::read_u32_le(r)? as usize;
+        // Parse from a bounded payload buffer so we can safely branch based on
+        // remaining bytes and support legacy layouts.
+        let mut payload: Vec<u8> = Vec::new();
+        r.read_to_end(&mut payload)?;
 
-        let dt = storage::read_f32_le(r)?;
-        let base_freq = storage::read_f32_le(r)?;
-        let noise_amp = storage::read_f32_le(r)?;
-        let noise_phase = storage::read_f32_le(r)?;
-        // New fields (phase coupling) appended after noise_*.
-        // For backwards compatibility, default to legacy linear mode.
-        let phase_coupling_mode = storage::read_u32_le(r).unwrap_or(0) as u8;
-        let phase_coupling_k = storage::read_f32_le(r).unwrap_or(2.0);
+        fn remaining(c: &io::Cursor<&[u8]>) -> usize {
+            (c.get_ref().len() as u64).saturating_sub(c.position()) as usize
+        }
 
-        let global_inhibition = storage::read_f32_le(r)?;
-        let hebb_rate = storage::read_f32_le(r)?;
-        let forget_rate = storage::read_f32_le(r)?;
-        let prune_below = storage::read_f32_le(r)?;
-        let coactive_threshold = storage::read_f32_le(r)?;
-        let phase_lock_threshold = storage::read_f32_le(r)?;
-        let imprint_rate = storage::read_f32_le(r)?;
+        fn read_f32_default(c: &mut io::Cursor<&[u8]>, default: f32) -> f32 {
+            if remaining(c) < 4 {
+                return default;
+            }
+            storage::read_f32_le(c).unwrap_or(default)
+        }
 
-        // New fields (salience_decay, salience_gain) added after imprint_rate.
-        // For backwards compatibility, try reading them with defaults.
-        let salience_decay = storage::read_f32_le(r).unwrap_or(0.001);
-        let salience_gain = storage::read_f32_le(r).unwrap_or(0.1);
+        fn read_u32_default(c: &mut io::Cursor<&[u8]>, default: u32) -> u32 {
+            if remaining(c) < 4 {
+                return default;
+            }
+            storage::read_u32_le(c).unwrap_or(default)
+        }
 
-        let seed_present = storage::read_u32_le(r)?;
-        let seed = storage::read_u64_le(r)?;
-        let causal_decay = storage::read_f32_le(r)?;
+        fn read_u64_default(c: &mut io::Cursor<&[u8]>, default: u64) -> u64 {
+            if remaining(c) < 8 {
+                return default;
+            }
+            storage::read_u64_le(c).unwrap_or(default)
+        }
 
-        // New fields (control-loop tuning). For backwards compatibility, read with defaults.
-        let learning_deadband = storage::read_f32_le(r).unwrap_or(0.05);
-        let eligibility_decay = storage::read_f32_le(r).unwrap_or(0.02);
-        let eligibility_gain = storage::read_f32_le(r).unwrap_or(0.35);
-        // New smoothing knobs for eligibility.
-        // For backwards compatibility, default to hard gates.
-        let coactive_softness = storage::read_f32_le(r).unwrap_or(0.0);
-        let phase_gate_softness = storage::read_f32_le(r).unwrap_or(0.0);
-        let plasticity_budget = storage::read_f32_le(r).unwrap_or(0.0);
-        let homeostasis_target_amp = storage::read_f32_le(r).unwrap_or(0.25);
-        let homeostasis_rate = storage::read_f32_le(r).unwrap_or(0.0);
-        let homeostasis_every = storage::read_u32_le(r).unwrap_or(50);
+        fn parse_layout(
+            payload: &[u8],
+            expect_phase_fields: bool,
+        ) -> io::Result<(BrainConfig, bool)> {
+            let mut c = io::Cursor::new(payload);
 
-        Ok(BrainConfig {
-            unit_count,
-            connectivity_per_unit,
-            dt,
-            base_freq,
-            noise_amp,
-            noise_phase,
-            phase_coupling_mode,
-            phase_coupling_k,
-            global_inhibition,
-            hebb_rate,
-            forget_rate,
-            prune_below,
-            coactive_threshold,
-            phase_lock_threshold,
-            imprint_rate,
-            salience_decay,
-            salience_gain,
-            seed: if seed_present != 0 { Some(seed) } else { None },
-            causal_decay,
-            learning_deadband,
-            eligibility_decay,
-            eligibility_gain,
-            coactive_softness,
-            phase_gate_softness,
-            plasticity_budget,
-            homeostasis_target_amp,
-            homeostasis_rate,
-            homeostasis_every,
-        })
+            let unit_count = storage::read_u32_le(&mut c)? as usize;
+            let connectivity_per_unit = storage::read_u32_le(&mut c)? as usize;
+
+            let dt = storage::read_f32_le(&mut c)?;
+            let base_freq = storage::read_f32_le(&mut c)?;
+            let noise_amp = storage::read_f32_le(&mut c)?;
+            let noise_phase = storage::read_f32_le(&mut c)?;
+
+            // Phase coupling fields were introduced in a later layout.
+            let (phase_coupling_mode, phase_coupling_k) = if expect_phase_fields {
+                let mode = read_u32_default(&mut c, 0) as u8;
+                let k = read_f32_default(&mut c, 2.0);
+                (mode, k)
+            } else {
+                (0u8, 2.0)
+            };
+
+            let global_inhibition = storage::read_f32_le(&mut c)?;
+            let hebb_rate = storage::read_f32_le(&mut c)?;
+            let forget_rate = storage::read_f32_le(&mut c)?;
+            let prune_below = storage::read_f32_le(&mut c)?;
+            let coactive_threshold = storage::read_f32_le(&mut c)?;
+            let phase_lock_threshold = storage::read_f32_le(&mut c)?;
+            let imprint_rate = storage::read_f32_le(&mut c)?;
+
+            // Salience fields are optional in older images.
+            let salience_decay = read_f32_default(&mut c, 0.001);
+            let salience_gain = read_f32_default(&mut c, 0.1);
+
+            let seed_present = read_u32_default(&mut c, 0);
+            let seed = read_u64_default(&mut c, 0);
+            let causal_decay = read_f32_default(&mut c, 0.002);
+
+            // Control-loop tuning parameters.
+            let learning_deadband = read_f32_default(&mut c, 0.05);
+            let eligibility_decay = read_f32_default(&mut c, 0.02);
+            let eligibility_gain = read_f32_default(&mut c, 0.35);
+
+            // Determine whether smoothing knobs are present.
+            // Remaining tail is either:
+            // - legacy: plasticity_budget + homeostasis_target_amp + homeostasis_rate + homeostasis_every
+            // - with smoothing: coactive_softness + phase_gate_softness + (legacy tail)
+            let mut coactive_softness = 0.0;
+            let mut phase_gate_softness = 0.0;
+            let after_elig_remaining = remaining(&c);
+            if after_elig_remaining >= 24 {
+                coactive_softness = read_f32_default(&mut c, 0.0);
+                phase_gate_softness = read_f32_default(&mut c, 0.0);
+            }
+
+            let plasticity_budget = read_f32_default(&mut c, 0.0);
+            let homeostasis_target_amp = read_f32_default(&mut c, 0.25);
+            let homeostasis_rate = read_f32_default(&mut c, 0.0);
+            let homeostasis_every = read_u32_default(&mut c, 50);
+
+            // Activity-trace field is appended at the end; optional.
+            let activity_trace_decay = read_f32_default(&mut c, 0.0);
+
+            let cfg = BrainConfig {
+                unit_count,
+                connectivity_per_unit,
+                dt,
+                base_freq,
+                noise_amp,
+                noise_phase,
+                phase_coupling_mode,
+                phase_coupling_k,
+                global_inhibition,
+                hebb_rate,
+                forget_rate,
+                prune_below,
+                coactive_threshold,
+                phase_lock_threshold,
+                imprint_rate,
+                salience_decay,
+                salience_gain,
+                activity_trace_decay,
+                seed: if seed_present != 0 { Some(seed) } else { None },
+                causal_decay,
+                learning_deadband,
+                eligibility_decay,
+                eligibility_gain,
+                coactive_softness,
+                phase_gate_softness,
+                plasticity_budget,
+                homeostasis_target_amp,
+                homeostasis_rate,
+                homeostasis_every,
+            };
+
+            // Basic sanity: only accept if seed_present looks plausible and cfg validates.
+            let seed_ok = seed_present == 0 || seed_present == 1;
+            let cfg_ok = cfg.validate().is_ok();
+            Ok((cfg, seed_ok && cfg_ok))
+        }
+
+        // Try the newer layout first (phase coupling fields present), then fall back.
+        let (cfg_new, ok_new) = parse_layout(&payload, true)?;
+        if ok_new {
+            return Ok(cfg_new);
+        }
+
+        let (cfg_old, ok_old) = parse_layout(&payload, false)?;
+        if ok_old {
+            return Ok(cfg_old);
+        }
+
+        // If both heuristics fail, return the "new" parse to preserve information.
+        Ok(cfg_new)
     }
 
     #[cfg(feature = "std")]
@@ -3375,13 +3474,27 @@ impl Brain {
         let salience_decay = self.cfg.salience_decay;
         let salience_gain = self.cfg.salience_gain;
         let salience_threshold = self.cfg.coactive_threshold;
+        let trace_decay = self.cfg.activity_trace_decay;
+
+        if self.activity_trace.len() != self.units.len() {
+            self.activity_trace.resize(self.units.len(), 0.0);
+        }
 
         for i in 0..self.units.len() {
             self.units[i].amp = next_amp[i];
             self.units[i].phase = next_phase[i];
 
+            // Update slow activity trace (derived; not a learned weight).
+            let act = next_amp[i].max(0.0);
+            let tr = &mut self.activity_trace[i];
+            *tr = if trace_decay <= 0.0 {
+                act
+            } else {
+                (1.0 - trace_decay) * (*tr) + trace_decay * act
+            };
+
             // Update salience: decay + gain when active
-            let activation = (next_amp[i] - salience_threshold).max(0.0);
+            let activation = (*tr - salience_threshold).max(0.0);
             self.units[i].salience =
                 (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
             // Clamp salience to reasonable range
@@ -3509,13 +3622,26 @@ impl Brain {
         let salience_decay = self.cfg.salience_decay;
         let salience_gain = self.cfg.salience_gain;
         let salience_threshold = self.cfg.coactive_threshold;
+        let trace_decay = self.cfg.activity_trace_decay;
+
+        if self.activity_trace.len() != n {
+            self.activity_trace.resize(n, 0.0);
+        }
 
         for i in 0..n {
             self.units[i].amp = amps[i];
             self.units[i].phase = phases[i];
 
+            let act = amps[i].max(0.0);
+            let tr = &mut self.activity_trace[i];
+            *tr = if trace_decay <= 0.0 {
+                act
+            } else {
+                (1.0 - trace_decay) * (*tr) + trace_decay * act
+            };
+
             // Update salience: decay + gain when active
-            let activation = (amps[i] - salience_threshold).max(0.0);
+            let activation = (*tr - salience_threshold).max(0.0);
             self.units[i].salience =
                 (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
             self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
@@ -3589,13 +3715,26 @@ impl Brain {
         let salience_decay = self.cfg.salience_decay;
         let salience_gain = self.cfg.salience_gain;
         let salience_threshold = self.cfg.coactive_threshold;
+        let trace_decay = self.cfg.activity_trace_decay;
+
+        if self.activity_trace.len() != self.units.len() {
+            self.activity_trace.resize(self.units.len(), 0.0);
+        }
 
         for (i, (amp, phase)) in next.into_iter().enumerate() {
             self.units[i].amp = amp;
             self.units[i].phase = phase;
 
+            let act = amp.max(0.0);
+            let tr = &mut self.activity_trace[i];
+            *tr = if trace_decay <= 0.0 {
+                act
+            } else {
+                (1.0 - trace_decay) * (*tr) + trace_decay * act
+            };
+
             // Update salience: decay + gain when active
-            let activation = (amp - salience_threshold).max(0.0);
+            let activation = (*tr - salience_threshold).max(0.0);
             self.units[i].salience =
                 (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
             self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
@@ -3689,13 +3828,26 @@ impl Brain {
             let salience_decay = self.cfg.salience_decay;
             let salience_gain = self.cfg.salience_gain;
             let salience_threshold = self.cfg.coactive_threshold;
+            let trace_decay = self.cfg.activity_trace_decay;
+
+            if self.activity_trace.len() != self.units.len() {
+                self.activity_trace.resize(self.units.len(), 0.0);
+            }
 
             for (i, gu) in gpu_units.into_iter().enumerate() {
                 self.units[i].amp = gu.amp;
                 self.units[i].phase = gu.phase;
 
+                let act = gu.amp.max(0.0);
+                let tr = &mut self.activity_trace[i];
+                *tr = if trace_decay <= 0.0 {
+                    act
+                } else {
+                    (1.0 - trace_decay) * (*tr) + trace_decay * act
+                };
+
                 // Update salience: decay + gain when active
-                let activation = (gu.amp - salience_threshold).max(0.0);
+                let activation = (*tr - salience_threshold).max(0.0);
                 self.units[i].salience =
                     (1.0 - salience_decay) * self.units[i].salience + salience_gain * activation;
                 self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
@@ -3760,11 +3912,24 @@ impl Brain {
                     let salience_decay = self.cfg.salience_decay;
                     let salience_gain = self.cfg.salience_gain;
                     let salience_threshold = self.cfg.coactive_threshold;
+                    let trace_decay = self.cfg.activity_trace_decay;
+
+                    if self.activity_trace.len() != self.units.len() {
+                        self.activity_trace.resize(self.units.len(), 0.0);
+                    }
                     for (i, gu) in gpu_units.into_iter().enumerate() {
                         self.units[i].amp = gu.amp;
                         self.units[i].phase = gu.phase;
 
-                        let activation = (gu.amp - salience_threshold).max(0.0);
+                        let act = gu.amp.max(0.0);
+                        let tr = &mut self.activity_trace[i];
+                        *tr = if trace_decay <= 0.0 {
+                            act
+                        } else {
+                            (1.0 - trace_decay) * (*tr) + trace_decay * act
+                        };
+
+                        let activation = (*tr - salience_threshold).max(0.0);
                         self.units[i].salience = (1.0 - salience_decay) * self.units[i].salience
                             + salience_gain * activation;
                         self.units[i].salience = self.units[i].salience.clamp(0.0, 10.0);
@@ -4171,6 +4336,7 @@ impl Brain {
         self.pending_input.push(0.0);
         self.sensor_member.push(false);
         self.group_member.push(false);
+        self.activity_trace.push(0.0);
 
         // Append to CSR: add offset for new unit, then add connections.
         let old_end = *self.connections.offsets.last().unwrap_or(&0);
@@ -4225,6 +4391,7 @@ impl Brain {
         self.pending_input.reserve(count);
         self.sensor_member.reserve(count);
         self.group_member.reserve(count);
+        self.activity_trace.reserve(count);
 
         self.connections.offsets.reserve(count);
         self.connections.targets.reserve(count * connectivity);
@@ -4332,6 +4499,7 @@ impl Brain {
             self.pending_input.push(0.0);
             self.sensor_member.push(false);
             self.group_member.push(false);
+            self.activity_trace.push(0.0);
             self.cfg.unit_count = self.units.len();
 
             // Wire FROM new unit TO group units (new unit can influence the group).
@@ -4733,6 +4901,17 @@ impl Brain {
     ///
     /// This is the "fast" factor that can run continuously without causing drift.
     fn update_eligibility_scalar(&mut self) {
+        if self.activity_trace.len() != self.units.len() {
+            self.activity_trace.resize(self.units.len(), 0.0);
+        }
+
+        let activity_for_learning = |brain: &Brain, unit: usize| -> f32 {
+            let instant = brain.units[unit].amp.max(0.0);
+            if brain.cfg.activity_trace_decay <= 0.0 {
+                return instant;
+            }
+            brain.activity_trace[unit].max(instant)
+        };
         if self.eligibility.len() != self.connections.weights.len() {
             self.eligibility.resize(self.connections.weights.len(), 0.0);
         }
@@ -4762,7 +4941,7 @@ impl Brain {
                 continue;
             }
 
-            let a_amp = self.units[owner].amp;
+            let a_amp = activity_for_learning(self, owner);
             if a_amp <= thr {
                 continue;
             }
@@ -4776,7 +4955,7 @@ impl Brain {
                     continue;
                 }
 
-                let b_amp = self.units[target].amp;
+                let b_amp = activity_for_learning(self, target);
                 if b_amp <= thr {
                     continue;
                 }
@@ -5533,6 +5712,48 @@ mod tests {
         brain.set_neuromodulator(0.1);
         brain.apply_plasticity_scalar();
         assert_eq!(brain.connections.weights[0], 0.0);
+    }
+
+    #[test]
+    fn activity_trace_can_drive_eligibility_when_amp_drops() {
+        let cfg = BrainConfig {
+            unit_count: 4,
+            connectivity_per_unit: 1,
+            base_freq: 0.0,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.1,
+            coactive_threshold: 0.2,
+            phase_lock_threshold: 0.5,
+            eligibility_decay: 0.0,
+            eligibility_gain: 1.0,
+            learning_deadband: 0.0,
+            activity_trace_decay: 0.5,
+            coactive_softness: 0.0,
+            phase_gate_softness: 0.0,
+            seed: Some(3),
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+        brain.connections.targets[0] = 1;
+        brain.connections.weights[0] = 0.0;
+        brain
+            .eligibility
+            .resize(brain.connections.weights.len(), 0.0);
+
+        // Seed a strong trace directly (tests can access private fields in-module).
+        brain.units[0].phase = 0.0;
+        brain.units[1].phase = 0.0;
+        brain.activity_trace[0] = 1.0;
+        brain.activity_trace[1] = 1.0;
+
+        // Drop instantaneous amps below threshold; trace should still drive eligibility.
+        brain.units[0].amp = 0.0;
+        brain.units[1].amp = 0.0;
+        brain.update_eligibility_scalar();
+        assert!(brain.eligibility[0] > 0.0);
     }
 
     #[test]

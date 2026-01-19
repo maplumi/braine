@@ -74,12 +74,12 @@ Default:
 
 ### Implementation notes
 - Add `activity_trace: Vec<f32>` to `Brain` state.
-- Update trace each `step()` (and any inference step if desired; initial plan: update in both step paths since it’s not a learned weight).
-- Modify eligibility update to use `trace` instead of raw amp for coactivity term.
+- Update trace during dynamics write-back (scalar/simd/parallel/gpu paths) since it’s derived state, not a learned weight.
+- Modify eligibility and salience updates to use the trace as the primary activity signal.
 
 ### Validation
-- Unit test: trace converges to amp under constant activation and decays when amp=0.
-- Ensure existing learning tests still pass.
+- Unit test: trace can drive eligibility even after instantaneous amp drops.
+- Regression: existing learning tests continue passing (eligibility gating remains robust when tests directly set `amp`).
 
 ---
 

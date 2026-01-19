@@ -38,8 +38,7 @@ pub struct Unit {
 ```
 
 **Not currently tracked:**
-- Access frequency / activation history
-- Cumulative importance / "salience"
+- Access frequency / activation history (separate from salience)
 - Connectivity density (in/out degree)
 
 ---
@@ -52,14 +51,15 @@ pub struct Unit {
 
 **Implementation Options:**
 
-1. **Activation Accumulator** (recommended)
+1. **Activation Accumulator** (implemented)
    ```rust
    pub struct Unit {
        // ... existing fields ...
        pub salience: f32,  // Accumulated importance
    }
    ```
-   - Update: `salience = salience * decay + amp * lr` when activated
+   - Update: `salience = (1-decay)*salience + gain*max(0, trace - threshold)`
+   - Trace is an EMA of nonnegative amplitude (`activity_trace`)
    - Decay slowly over time to forget old importance
    - Visualize as node size
 
@@ -75,12 +75,13 @@ pub struct Unit {
    ```
 
 **Mathematical Model:**
-$$\text{salience}_i(t+1) = (1 - \lambda_s) \cdot \text{salience}_i(t) + \alpha_s \cdot \mathbb{1}[a_i(t) > \theta]$$
+$$\text{salience}_i(t+1) = (1 - \lambda_s) \cdot \text{salience}_i(t) + \alpha_s \cdot \max(0, \tilde{a}_i(t) - \theta)$$
 
 Where:
 - $\lambda_s$ = salience decay rate (e.g., 0.001)
 - $\alpha_s$ = salience gain on activation (e.g., 0.1)
 - $\theta$ = activation threshold
+- $\tilde{a}_i(t)$ = slow activity trace (EMA of $\max(0,a_i)$)
 
 ---
 

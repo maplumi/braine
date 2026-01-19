@@ -48,6 +48,10 @@ For unit $i \in \{0,\dots,N-1\}$ at discrete step $t$:
 - decay: $\lambda_i > 0$ (amplitude decay factor)
 - salience: $s_i(t) \in [0,10]$ (visualization/importance proxy)
 
+Derived (non-persisted) state:
+
+- activity trace: $\tilde{a}_i(t) \in [0,2]$ (slow, nonnegative; used for salience/learning gates)
+
 Sparse directed couplings are stored as CSR edges:
 
 - adjacency list for each source $i$: targets $j \in \mathcal{N}(i)$
@@ -128,10 +132,20 @@ $$
 A_i(t) = \sum_{j \in \mathcal{N}(i)} w_{ij}(t)\, a_j(t)
 $$
 
-Phase influence (note: this implementation uses *angle differences*, not a sinusoid):
+Phase influence (bounded coupling):
+
+Let $\delta_{ij}(t) = \Delta(\phi_j(t),\phi_i(t))$.
+
+The phase coupling uses a mode and gain (`phase_coupling_mode`, `phase_coupling_k`):
+
+- legacy linear (mode 0): $f(\delta) = \delta$
+- sinusoidal (mode 1): $f(\delta) = \sin(k\,\delta)$
+- saturating tanh (mode 2): $f(\delta) = \tanh(k\,\delta)$
+
+Then:
 
 $$
-P_i(t) = \sum_{j \in \mathcal{N}(i)} w_{ij}(t)\, \Delta(\phi_j(t),\phi_i(t))
+P_i(t) = \sum_{j \in \mathcal{N}(i)} w_{ij}(t)\, f\big(\delta_{ij}(t)\big)
 $$
 
 ### 3.4 Discrete-time update
@@ -171,10 +185,18 @@ $$
 ### 3.5 Salience (importance trace)
 Salience uses the coactivity threshold $\theta$ = `coactive_threshold`.
 
+First, define a slow activity trace (EMA) with decay $d$ = `activity_trace_decay`:
+
+$$
+	ilde{a}_i(t+1) = (1-d)\,\tilde{a}_i(t) + d\,\max(0, a_i(t+1))
+$$
+
+If $d = 0$, the implementation effectively uses instantaneous $\max(0,a_i)$.
+
 Let activation for salience be:
 
 $$
-\alpha_i(t+1) = \max(0, a_i(t+1) - \theta)
+\alpha_i(t+1) = \max(0, \tilde{a}_i(t+1) - \theta)
 $$
 
 With decay $\rho$ = `salience_decay` and gain $\gamma$ = `salience_gain`:
@@ -203,10 +225,10 @@ In the current implementation, learning is split into two phases:
 
 Let eligibility decay be $\rho_e$ = `eligibility_decay` and eligibility gain be $\gamma_e$ = `eligibility_gain`.
 
-Define a soft-thresholded co-activity magnitude:
+Define a soft-thresholded co-activity magnitude (using the activity trace when enabled):
 
 $$
-c_{ij}(t) = \max(0, a_i(t) - \theta)\,\max(0, a_j(t) - \theta)
+c_{ij}(t) = \max(0, \tilde{a}_i(t) - \theta)\,\max(0, \tilde{a}_j(t) - \theta)
 $$
 
 Compute phase alignment $\ell_{ij}(t) = \mathrm{align}(\phi_i(t),\phi_j(t))$ and define a correlation term:
