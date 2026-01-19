@@ -649,8 +649,82 @@ fn App() -> impl IntoView {
     let (status, set_status) = signal(String::from("ready"));
 
     // True while we're waiting for a nonblocking GPU step to complete.
-    // (Useful for debugging perceived UI stalls.)
+    // Note: when GPU is active, the runtime may briefly report "pending" between
+    // polls; debounce this so the topbar doesn't flicker.
     let (gpu_step_pending, set_gpu_step_pending) = signal(false);
+    let gpu_pending_requested = StoredValue::new(std::cell::Cell::new(false));
+    let gpu_pending_show_timeout = StoredValue::new(std::cell::Cell::new(None::<i32>));
+    let gpu_pending_hide_timeout = StoredValue::new(std::cell::Cell::new(None::<i32>));
+
+    let set_gpu_step_pending_debounced = {
+        let set_gpu_step_pending = set_gpu_step_pending.clone();
+        move |pending: bool| {
+            gpu_pending_requested.set_value(pending);
+
+            let Some(win) = web_sys::window() else {
+                set_gpu_step_pending.set(pending);
+                return;
+            };
+
+            // Cancel any pending opposite-direction transition.
+            if pending {
+                if let Some(id) = gpu_pending_hide_timeout.get_value().take() {
+                    win.clear_timeout_with_handle(id);
+                }
+            } else if let Some(id) = gpu_pending_show_timeout.get_value().take() {
+                win.clear_timeout_with_handle(id);
+            }
+
+            // Debounce show/hide with hysteresis.
+            // - Only show after a short delay (real stalls, not normal GPU polling).
+            // - Hide slightly delayed to avoid blink when the step completes right away.
+            if pending {
+                if gpu_step_pending.get_untracked() {
+                    return;
+                }
+                if gpu_pending_show_timeout.get_value().is_some() {
+                    return;
+                }
+
+                let cb = Closure::wrap(Box::new(move || {
+                    gpu_pending_show_timeout.set_value(None);
+                    if gpu_pending_requested.get_value() {
+                        set_gpu_step_pending.set(true);
+                    }
+                }) as Box<dyn FnMut()>);
+
+                if let Ok(id) = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(),
+                    250,
+                ) {
+                    gpu_pending_show_timeout.set_value(Some(id));
+                    cb.forget();
+                }
+            } else {
+                if !gpu_step_pending.get_untracked() {
+                    return;
+                }
+                if gpu_pending_hide_timeout.get_value().is_some() {
+                    return;
+                }
+
+                let cb = Closure::wrap(Box::new(move || {
+                    gpu_pending_hide_timeout.set_value(None);
+                    if !gpu_pending_requested.get_value() {
+                        set_gpu_step_pending.set(false);
+                    }
+                }) as Box<dyn FnMut()>);
+
+                if let Ok(id) = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(),
+                    150,
+                ) {
+                    gpu_pending_hide_timeout.set_value(Some(id));
+                    cb.forget();
+                }
+            }
+        }
+    };
 
     // Core learning/runtime controls.
     let (learning_enabled, set_learning_enabled) = signal(settings0.learning_enabled);
@@ -1620,11 +1694,11 @@ fn App() -> impl IntoView {
                 TickResult::PendingGpu => {
                     // A GPU step is in-flight; don't count this as a completed step.
                     // Still refresh *game UI only* so e.g. Pong animation doesn't appear frozen.
-                    set_gpu_step_pending.set(true);
+                    set_gpu_step_pending_debounced(true);
                     refresh_game_ui_from_runtime();
                 }
                 TickResult::Advanced(out) => {
-                    set_gpu_step_pending.set(false);
+                    set_gpu_step_pending_debounced(false);
                     set_brain_dirty.set(true);
                     if let Some(out) = out {
                         let last_action = out.last_action.clone();

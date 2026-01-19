@@ -39,7 +39,7 @@ pub(super) fn Topbar(
                 <span class="status">{move || status.get()}</span>
                 <Show when=move || gpu_pending.get()>
                     <span class="gpu-pending" title="Waiting for GPU brain step">
-                        "GPU pending"
+                        "GPU busy"
                     </span>
                 </Show>
                 <Show when=move || is_running.get()>
