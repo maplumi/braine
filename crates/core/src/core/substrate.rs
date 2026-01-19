@@ -122,6 +122,16 @@ pub struct BrainConfig {
     pub noise_amp: f32,
     pub noise_phase: f32,
 
+    /// Phase coupling mode for dynamics.
+    ///
+    /// 0 = linear wrapped angle difference (legacy)
+    /// 1 = sinusoidal (Kuramoto-like; bounded)
+    /// 2 = tanh(k * delta) (bounded linear-ish)
+    pub phase_coupling_mode: u8,
+
+    /// Gain used for tanh phase coupling mode.
+    pub phase_coupling_k: f32,
+
     // Competition: subtract proportional inhibition from all units.
     pub global_inhibition: f32,
 
@@ -166,6 +176,18 @@ pub struct BrainConfig {
     /// Eligibility trace gain (accumulation rate). Higher accumulates faster.
     pub eligibility_gain: f32,
 
+    /// Smoothness for coactivity thresholding in eligibility.
+    ///
+    /// 0.0 keeps a hard ReLU at `coactive_threshold`. Higher values make the
+    /// transition smoother (softplus temperature, in amp units).
+    pub coactive_softness: f32,
+
+    /// Smoothness for phase-gate blending in eligibility.
+    ///
+    /// 0.0 keeps a hard gate at `phase_lock_threshold`. Higher values increase
+    /// blending width (in alignment units).
+    pub phase_gate_softness: f32,
+
     /// Plasticity budget: maximum total `sum(|Δw|)` per step. 0 disables budgeting.
     pub plasticity_budget: f32,
 
@@ -193,6 +215,8 @@ impl Default for BrainConfig {
             base_freq: 1.0,
             noise_amp: 0.02,
             noise_phase: 0.01,
+            phase_coupling_mode: 1,
+            phase_coupling_k: 2.0,
             global_inhibition: 0.2,
             hebb_rate: 0.08,
             forget_rate: 0.0005,
@@ -210,6 +234,8 @@ impl Default for BrainConfig {
             learning_deadband: 0.05,
             eligibility_decay: 0.02,
             eligibility_gain: 0.35,
+            coactive_softness: 0.05,
+            phase_gate_softness: 0.05,
             plasticity_budget: 0.0,
             homeostasis_target_amp: 0.25,
             homeostasis_rate: 0.0,
@@ -275,6 +301,12 @@ impl BrainConfig {
         if self.dt <= 0.0 || self.dt > 1.0 {
             return Err("dt must be in (0, 1]");
         }
+        if self.phase_coupling_mode > 2 {
+            return Err("phase_coupling_mode must be in [0, 2]");
+        }
+        if !self.phase_coupling_k.is_finite() || self.phase_coupling_k < 0.0 {
+            return Err("phase_coupling_k must be finite and >= 0");
+        }
         if self.hebb_rate < 0.0 || self.hebb_rate > 1.0 {
             return Err("hebb_rate must be in [0, 1]");
         }
@@ -293,6 +325,12 @@ impl BrainConfig {
         }
         if !self.eligibility_gain.is_finite() || self.eligibility_gain < 0.0 {
             return Err("eligibility_gain must be finite and >= 0");
+        }
+        if !self.coactive_softness.is_finite() || self.coactive_softness < 0.0 {
+            return Err("coactive_softness must be finite and >= 0");
+        }
+        if !self.phase_gate_softness.is_finite() || self.phase_gate_softness < 0.0 {
+            return Err("phase_gate_softness must be finite and >= 0");
         }
         if !self.plasticity_budget.is_finite() || self.plasticity_budget < 0.0 {
             return Err("plasticity_budget must be finite and >= 0");
@@ -1529,6 +1567,8 @@ impl Brain {
             + 4  // base_freq
             + 4  // noise_amp
             + 4  // noise_phase
+            + 4  // phase_coupling_mode
+            + 4  // phase_coupling_k
             + 4  // global_inhibition
             + 4  // hebb_rate
             + 4  // forget_rate
@@ -1544,6 +1584,8 @@ impl Brain {
                 + 4 // learning_deadband
                 + 4 // eligibility_decay
                 + 4 // eligibility_gain
+                + 4 // coactive_softness
+                + 4 // phase_gate_softness
                 + 4 // plasticity_budget
                 + 4 // homeostasis_target_amp
                 + 4 // homeostasis_rate
@@ -1558,6 +1600,8 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.base_freq)?;
         storage::write_f32_le(w, self.cfg.noise_amp)?;
         storage::write_f32_le(w, self.cfg.noise_phase)?;
+        storage::write_u32_le(w, self.cfg.phase_coupling_mode as u32)?;
+        storage::write_f32_le(w, self.cfg.phase_coupling_k)?;
         storage::write_f32_le(w, self.cfg.global_inhibition)?;
         storage::write_f32_le(w, self.cfg.hebb_rate)?;
         storage::write_f32_le(w, self.cfg.forget_rate)?;
@@ -1575,6 +1619,8 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.learning_deadband)?;
         storage::write_f32_le(w, self.cfg.eligibility_decay)?;
         storage::write_f32_le(w, self.cfg.eligibility_gain)?;
+        storage::write_f32_le(w, self.cfg.coactive_softness)?;
+        storage::write_f32_le(w, self.cfg.phase_gate_softness)?;
         storage::write_f32_le(w, self.cfg.plasticity_budget)?;
         storage::write_f32_le(w, self.cfg.homeostasis_target_amp)?;
         storage::write_f32_le(w, self.cfg.homeostasis_rate)?;
@@ -1591,6 +1637,11 @@ impl Brain {
         let base_freq = storage::read_f32_le(r)?;
         let noise_amp = storage::read_f32_le(r)?;
         let noise_phase = storage::read_f32_le(r)?;
+        // New fields (phase coupling) appended after noise_*.
+        // For backwards compatibility, default to legacy linear mode.
+        let phase_coupling_mode = storage::read_u32_le(r).unwrap_or(0) as u8;
+        let phase_coupling_k = storage::read_f32_le(r).unwrap_or(2.0);
+
         let global_inhibition = storage::read_f32_le(r)?;
         let hebb_rate = storage::read_f32_le(r)?;
         let forget_rate = storage::read_f32_le(r)?;
@@ -1612,6 +1663,10 @@ impl Brain {
         let learning_deadband = storage::read_f32_le(r).unwrap_or(0.05);
         let eligibility_decay = storage::read_f32_le(r).unwrap_or(0.02);
         let eligibility_gain = storage::read_f32_le(r).unwrap_or(0.35);
+        // New smoothing knobs for eligibility.
+        // For backwards compatibility, default to hard gates.
+        let coactive_softness = storage::read_f32_le(r).unwrap_or(0.0);
+        let phase_gate_softness = storage::read_f32_le(r).unwrap_or(0.0);
         let plasticity_budget = storage::read_f32_le(r).unwrap_or(0.0);
         let homeostasis_target_amp = storage::read_f32_le(r).unwrap_or(0.25);
         let homeostasis_rate = storage::read_f32_le(r).unwrap_or(0.0);
@@ -1624,6 +1679,8 @@ impl Brain {
             base_freq,
             noise_amp,
             noise_phase,
+            phase_coupling_mode,
+            phase_coupling_k,
             global_inhibition,
             hebb_rate,
             forget_rate,
@@ -1638,6 +1695,8 @@ impl Brain {
             learning_deadband,
             eligibility_decay,
             eligibility_gain,
+            coactive_softness,
+            phase_gate_softness,
             plasticity_budget,
             homeostasis_target_amp,
             homeostasis_rate,
@@ -3290,7 +3349,8 @@ impl Brain {
             for (target, weight) in self.neighbors(i) {
                 let v = &self.units[target];
                 influence_amp += weight * v.amp;
-                influence_phase += weight * angle_diff(v.phase, u.phase);
+                influence_phase +=
+                    weight * phase_coupling_term(angle_diff(v.phase, u.phase), &self.cfg);
             }
 
             let noise_a = self
@@ -3348,7 +3408,8 @@ impl Brain {
             for (target, weight) in self.neighbors(i) {
                 let v = &self.units[target];
                 influence_amp[i] += weight * v.amp;
-                influence_phase[i] += weight * angle_diff(v.phase, u_phase);
+                influence_phase[i] +=
+                    weight * phase_coupling_term(angle_diff(v.phase, u_phase), &self.cfg);
             }
         }
 
@@ -3507,7 +3568,8 @@ impl Brain {
                     let weight = connections.weights[idx];
                     let v = &units[target];
                     influence_amp += weight * v.amp;
-                    influence_phase += weight * angle_diff(v.phase, u.phase);
+                    influence_phase +=
+                        weight * phase_coupling_term(angle_diff(v.phase, u.phase), cfg);
                 }
 
                 let (noise_a, noise_p) = noise[i];
@@ -3578,7 +3640,7 @@ impl Brain {
             for (target, weight) in self.neighbors(i) {
                 let v = &self.units[target];
                 inf_amp += weight * v.amp;
-                inf_phase += weight * angle_diff(v.phase, u_phase);
+                inf_phase += weight * phase_coupling_term(angle_diff(v.phase, u_phase), &self.cfg);
             }
 
             influences.push(GpuInfluence {
@@ -3741,7 +3803,7 @@ impl Brain {
             for (target, weight) in self.neighbors(i) {
                 let v = &self.units[target];
                 inf_amp += weight * v.amp;
-                inf_phase += weight * angle_diff(v.phase, u_phase);
+                inf_phase += weight * phase_coupling_term(angle_diff(v.phase, u_phase), &self.cfg);
             }
 
             influences.push(GpuInfluence {
@@ -4721,12 +4783,22 @@ impl Brain {
 
                 let align = phase_alignment(a_phase, self.units[target].phase);
 
-                // A tiny anti-alignment term helps maintain sparsity by weakening
-                // consistently misaligned co-activity.
-                let corr = if align > phase_thr { align } else { -0.05 };
+                // Smooth blend between a small anti-alignment term and alignment.
+                // softness=0 keeps the legacy hard gate.
+                let corr = if self.cfg.phase_gate_softness <= 0.0 {
+                    if align > phase_thr {
+                        align
+                    } else {
+                        -0.05
+                    }
+                } else {
+                    let sigma = sigmoid((align - phase_thr) / self.cfg.phase_gate_softness);
+                    (1.0 - sigma) * (-0.05) + sigma * align
+                };
 
-                // Co-activity magnitude (soft-thresholded).
-                let co = (a_amp - thr).max(0.0) * (b_amp - thr).max(0.0);
+                // Co-activity magnitude (soft-thresholded). softness=0 keeps hard ReLU.
+                let co = smooth_relu(a_amp - thr, self.cfg.coactive_softness)
+                    * smooth_relu(b_amp - thr, self.cfg.coactive_softness);
 
                 let de = gain * co * corr;
                 let e = &mut self.eligibility[idx];
@@ -5323,6 +5395,47 @@ fn wrap_angle(mut x: f32) -> f32 {
 
 fn angle_diff(a: f32, b: f32) -> f32 {
     wrap_angle(a - b)
+}
+
+fn phase_coupling_term(delta: f32, cfg: &BrainConfig) -> f32 {
+    match cfg.phase_coupling_mode {
+        0 => delta,
+        1 => delta.sin(),
+        2 => {
+            let k = cfg.phase_coupling_k.max(0.0);
+            (k * delta).tanh()
+        }
+        _ => delta.sin(),
+    }
+}
+
+fn sigmoid(x: f32) -> f32 {
+    // Stable-ish sigmoid for f32.
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let ex = x.exp();
+        ex / (1.0 + ex)
+    }
+}
+
+fn softplus(x: f32) -> f32 {
+    // Stable softplus: log(1 + exp(x)).
+    if x > 20.0 {
+        x
+    } else if x < -20.0 {
+        x.exp()
+    } else {
+        (x.exp()).ln_1p()
+    }
+}
+
+fn smooth_relu(x: f32, softness: f32) -> f32 {
+    if softness <= 0.0 {
+        x.max(0.0)
+    } else {
+        softness * softplus(x / softness)
+    }
 }
 
 fn phase_alignment(a: f32, b: f32) -> f32 {
