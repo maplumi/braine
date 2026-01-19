@@ -175,7 +175,6 @@ export component MainWindow inherits Window {
     callback save-brain();
     callback load-brain();
     callback reset-brain();
-    callback migrate-state-format(int);
     callback set-max-units(int);
     callback save-snapshot();
     callback load-snapshot(string);
@@ -912,11 +911,6 @@ export component MainWindow inherits Window {
                                         spacing: 8px;
                                         Button { text: "Save brain"; clicked => { save-brain(); } }
                                         Button { text: "Load brain"; clicked => { load-brain(); } }
-                                        Button {
-                                            text: "Migrate to v2";
-                                            enabled: !root.running && root.storage-state-wrapper-version != 2;
-                                            clicked => { migrate-state-format(2); }
-                                        }
                                         CheckBox {
                                             text: "Enable reset";
                                             checked: root.reset-confirmed;

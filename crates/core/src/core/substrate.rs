@@ -2004,47 +2004,13 @@ impl Brain {
     /// `storage::CapacityWriter`.
     #[cfg(feature = "std")]
     pub fn save_image_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.save_image_to_with_version(w, storage::VERSION_V2)
-    }
-
-    /// Serialize a brain image to a specific format version.
-    ///
-    /// - V1: raw, uncompressed chunks.
-    /// - V2: each chunk payload is LZ4-compressed with an explicit uncompressed length.
-    #[cfg(feature = "std")]
-    pub fn save_image_to_with_version<W: Write>(&self, w: &mut W, version: u32) -> io::Result<()> {
-        match version {
-            storage::VERSION_V1 => self.save_image_v1_to(w),
-            storage::VERSION_V2 => self.save_image_v2_to(w),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unsupported brain image version for save",
-            )),
-        }
+        self.save_image_v3_to(w)
     }
 
     #[cfg(feature = "std")]
-    fn save_image_v1_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
+    fn save_image_v3_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(storage::MAGIC)?;
-        storage::write_u32_le(w, storage::VERSION_V1)?;
-
-        self.write_cfg_chunk(w)?;
-        self.write_prng_chunk(w)?;
-        self.write_stat_chunk(w)?;
-        self.write_unit_chunk(w)?;
-        self.write_mask_chunk(w)?;
-        self.write_salience_chunk(w)?;
-        self.write_groups_chunk(w)?;
-        self.write_latent_modules_chunk(w)?;
-        self.write_symbols_chunk(w)?;
-        self.write_causality_chunk(w)?;
-        Ok(())
-    }
-
-    #[cfg(feature = "std")]
-    fn save_image_v2_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(storage::MAGIC)?;
-        storage::write_u32_le(w, storage::VERSION_V2)?;
+        storage::write_u32_le(w, storage::VERSION_CURRENT)?;
 
         self.write_cfg_chunk_v2(w)?;
         self.write_prng_chunk_v2(w)?;
@@ -2073,7 +2039,7 @@ impl Brain {
         }
 
         let version = storage::read_u32_le(r)?;
-        if version != storage::VERSION_V1 && version != storage::VERSION_V2 {
+        if version != storage::VERSION_CURRENT {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unsupported brain image version",
@@ -2101,22 +2067,15 @@ impl Brain {
                 Err(e) => return Err(e),
             };
 
-            let payload = if version == storage::VERSION_V2 {
-                // V2 chunks are LZ4-compressed.
+            // Current chunks are LZ4-compressed.
+            let payload = {
                 let mut take = r.take(len as u64);
                 let uncompressed_len = storage::read_u32_le(&mut take)? as usize;
                 let mut compressed = Vec::with_capacity((len as usize).saturating_sub(4));
                 take.read_to_end(&mut compressed)?;
                 let decompressed = storage::decompress_lz4(&compressed, uncompressed_len)?;
-                // Drain (should already be drained by read_to_end, but keep it symmetric).
                 io::copy(&mut take, &mut io::sink())?;
                 decompressed
-            } else {
-                let mut take = r.take(len as u64);
-                let mut buf = vec![0u8; len as usize];
-                take.read_exact(&mut buf)?;
-                io::copy(&mut take, &mut io::sink())?;
-                buf
             };
 
             let mut cursor = io::Cursor::new(payload);
@@ -2149,18 +2108,17 @@ impl Brain {
             }
         }
 
-        let mut cfg =
-            cfg.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing CFG0"))?;
+        let cfg = cfg.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing CFG0"))?;
         let units =
             units.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing UNIT"))?;
         let connections = connections.ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "missing UNIT connections")
         })?;
-        // The authoritative unit count is the UNIT chunk payload length.
-        // Older images (prior to unit-count sync on neurogenesis) may have a stale
-        // CFG0.unit_count; tolerate and repair in-memory to keep images loadable.
         if cfg.unit_count != units.len() {
-            cfg.unit_count = units.len();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CFG0 unit_count mismatch",
+            ));
         }
         let unit_count = cfg.unit_count;
 
@@ -2269,13 +2227,6 @@ impl Brain {
         Ok(cw.written())
     }
 
-    #[cfg(feature = "std")]
-    pub fn image_size_bytes_v1(&self) -> io::Result<usize> {
-        let mut cw = storage::CountingWriter::new();
-        self.save_image_to_with_version(&mut cw, storage::VERSION_V1)?;
-        Ok(cw.written())
-    }
-
     // -------------------------------------------------------------------------
     // WASM-friendly byte array persistence API
     // -------------------------------------------------------------------------
@@ -2299,14 +2250,6 @@ impl Brain {
     pub fn load_image_bytes(bytes: &[u8]) -> io::Result<Self> {
         let mut cursor = io::Cursor::new(bytes);
         Self::load_image_from(&mut cursor)
-    }
-
-    #[cfg(feature = "std")]
-    fn write_cfg_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = Self::cfg_payload_len_bytes();
-        w.write_all(b"CFG0")?;
-        storage::write_u32_le(w, payload_len)?;
-        self.write_cfg_payload(w)
     }
 
     #[cfg(feature = "std")]
@@ -2670,24 +2613,10 @@ impl Brain {
     }
 
     #[cfg(feature = "std")]
-    fn write_prng_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(b"PRNG")?;
-        storage::write_u32_le(w, 8)?;
-        storage::write_u64_le(w, self.rng.state())
-    }
-
-    #[cfg(feature = "std")]
     fn write_prng_chunk_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut payload: Vec<u8> = Vec::with_capacity(8);
         storage::write_u64_le(&mut payload, self.rng.state())?;
         storage::write_chunk_v2_lz4(w, *b"PRNG", &payload)
-    }
-
-    #[cfg(feature = "std")]
-    fn write_stat_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(b"STAT")?;
-        storage::write_u32_le(w, 8)?;
-        storage::write_u64_le(w, self.age_steps)
     }
 
     #[cfg(feature = "std")]
@@ -2712,52 +2641,6 @@ impl Brain {
         len += valid_count * 4; // weights
         u32::try_from(len)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "UNIT chunk too large"))
-    }
-
-    #[cfg(feature = "std")]
-    fn write_unit_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = self.unit_payload_len_bytes()?;
-        w.write_all(b"UNIT")?;
-        storage::write_u32_le(w, payload_len)?;
-
-        // Write unit scalars.
-        storage::write_u32_le(w, self.units.len() as u32)?;
-        for u in &self.units {
-            storage::write_f32_le(w, u.amp)?;
-            storage::write_f32_le(w, u.phase)?;
-            storage::write_f32_le(w, u.bias)?;
-            storage::write_f32_le(w, u.decay)?;
-        }
-
-        // Write CSR connections (compacted: skip tombstones).
-        // First, compute compacted offsets and collect valid connections.
-        let mut compact_offsets: Vec<usize> = Vec::with_capacity(self.units.len() + 1);
-        let mut compact_targets: Vec<UnitId> = Vec::new();
-        let mut compact_weights: Vec<f32> = Vec::new();
-
-        for i in 0..self.units.len() {
-            compact_offsets.push(compact_targets.len());
-            for (target, weight) in self.neighbors(i) {
-                compact_targets.push(target);
-                compact_weights.push(weight);
-            }
-        }
-        compact_offsets.push(compact_targets.len());
-
-        // Write connection count and offsets.
-        storage::write_u32_le(w, compact_targets.len() as u32)?;
-        for &off in &compact_offsets {
-            storage::write_u32_le(w, off as u32)?;
-        }
-        // Write targets and weights.
-        for &t in &compact_targets {
-            storage::write_u32_le(w, t as u32)?;
-        }
-        for &wt in &compact_weights {
-            storage::write_f32_le(w, wt)?;
-        }
-
-        Ok(())
     }
 
     #[cfg(feature = "std")]
@@ -2856,25 +2739,6 @@ impl Brain {
     }
 
     #[cfg(feature = "std")]
-    fn write_mask_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = self.mask_payload_len_bytes();
-        w.write_all(b"MASK")?;
-        storage::write_u32_le(w, payload_len)?;
-
-        let n = self.units.len();
-        storage::write_u32_le(w, n as u32)?;
-
-        let bytes_len = n.div_ceil(8);
-        storage::write_u32_le(w, bytes_len as u32)?;
-        Self::write_bool_bits(w, &self.reserved)?;
-
-        storage::write_u32_le(w, bytes_len as u32)?;
-        Self::write_bool_bits(w, &self.learning_enabled)?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "std")]
     fn write_mask_chunk_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut payload: Vec<u8> = Vec::with_capacity(self.mask_payload_len_bytes() as usize);
         let n = self.units.len();
@@ -2967,19 +2831,6 @@ impl Brain {
     }
 
     #[cfg(feature = "std")]
-    fn write_salience_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = self.salience_payload_len_bytes();
-        w.write_all(b"SALI")?;
-        storage::write_u32_le(w, payload_len)?;
-
-        storage::write_u32_le(w, self.units.len() as u32)?;
-        for u in &self.units {
-            storage::write_f32_le(w, u.salience)?;
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "std")]
     fn write_salience_chunk_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut payload: Vec<u8> = Vec::with_capacity(self.salience_payload_len_bytes() as usize);
         storage::write_u32_le(&mut payload, self.units.len() as u32)?;
@@ -3021,33 +2872,6 @@ impl Brain {
     }
 
     #[cfg(feature = "std")]
-    fn write_groups_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = self.groups_payload_len_bytes()?;
-        w.write_all(b"GRPS")?;
-        storage::write_u32_le(w, payload_len)?;
-
-        storage::write_u32_le(w, self.sensor_groups.len() as u32)?;
-        for g in &self.sensor_groups {
-            storage::write_string(w, &g.name)?;
-            storage::write_u32_le(w, g.units.len() as u32)?;
-            for &u in &g.units {
-                storage::write_u32_le(w, u as u32)?;
-            }
-        }
-
-        storage::write_u32_le(w, self.action_groups.len() as u32)?;
-        for g in &self.action_groups {
-            storage::write_string(w, &g.name)?;
-            storage::write_u32_le(w, g.units.len() as u32)?;
-            for &u in &g.units {
-                storage::write_u32_le(w, u as u32)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "std")]
     fn write_groups_chunk_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut payload: Vec<u8> = Vec::with_capacity(self.groups_payload_len_bytes()? as usize);
 
@@ -3084,24 +2908,6 @@ impl Brain {
 
         u32::try_from(len)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "LMOD chunk too large"))
-    }
-
-    #[cfg(feature = "std")]
-    fn write_latent_modules_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = self.latent_modules_payload_len_bytes()?;
-        w.write_all(&LATENT_MODULES_CHUNK)?;
-        storage::write_u32_le(w, payload_len)?;
-
-        storage::write_u32_le(w, self.latent_groups.len() as u32)?;
-        for g in &self.latent_groups {
-            storage::write_string(w, &g.name)?;
-            storage::write_u32_le(w, g.units.len() as u32)?;
-            for &u in &g.units {
-                storage::write_u32_le(w, u as u32)?;
-            }
-        }
-
-        Ok(())
     }
 
     #[cfg(feature = "std")]
@@ -3178,19 +2984,6 @@ impl Brain {
     }
 
     #[cfg(feature = "std")]
-    fn write_symbols_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = self.symbols_payload_len_bytes()?;
-        w.write_all(b"SYMB")?;
-        storage::write_u32_le(w, payload_len)?;
-
-        storage::write_u32_le(w, self.symbols_rev.len() as u32)?;
-        for s in &self.symbols_rev {
-            storage::write_string(w, s)?;
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "std")]
     fn write_symbols_chunk_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut payload: Vec<u8> = Vec::with_capacity(self.symbols_payload_len_bytes()? as usize);
         storage::write_u32_le(&mut payload, self.symbols_rev.len() as u32)?;
@@ -3242,14 +3035,6 @@ impl Brain {
         })?;
 
         Ok((symbols, reward_pos, reward_neg))
-    }
-
-    #[cfg(feature = "std")]
-    fn write_causality_chunk<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let payload_len = self.causal.image_payload_len_bytes();
-        w.write_all(b"CAUS")?;
-        storage::write_u32_le(w, payload_len)?;
-        self.causal.write_image_payload(w)
     }
 
     #[cfg(feature = "std")]

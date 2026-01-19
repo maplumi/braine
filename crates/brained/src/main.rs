@@ -405,13 +405,6 @@ enum Request {
     SaveBrain,
     LoadBrain,
     ResetBrain,
-
-    /// Rewrite canonical brain file + snapshots to a target daemon-state wrapper format.
-    ///
-    /// Safety: requires the daemon to be stopped.
-    MigrateStateFormat {
-        target_state_version: u32,
-    },
     Shutdown,
     SetFramerate {
         fps: u32,
@@ -697,8 +690,7 @@ struct StorageInfo {
     /// Daemon state wrapper version for the canonical brain file.
     ///
     /// - 0: unknown / missing
-    /// - 1: BRSTATE1 (V1)
-    /// - 2: BRSTATE2 (V2, LZ4 chunks, optional embedded runtime)
+    /// - 3: BRSTATE3 (current)
     #[serde(default)]
     state_wrapper_version: u32,
     #[serde(default)]
@@ -1123,7 +1115,7 @@ impl DaemonState {
 
             loaded_snapshot_stem: None,
 
-            persist_state_version: state_image::VERSION_V1,
+            persist_state_version: state_image::VERSION_V3,
 
             meaning_last: MeaningSnapshot::default(),
             meaning_pair_gap_history: Vec::with_capacity(96),
@@ -2054,103 +2046,6 @@ impl DaemonState {
         }
     }
 
-    fn migrate_state_format(&mut self, target_state_version: u32) -> Result<(), String> {
-        if self.running {
-            return Err("Stop the daemon before migrating storage format".to_string());
-        }
-        if target_state_version != state_image::VERSION_V1
-            && target_state_version != state_image::VERSION_V2
-        {
-            return Err("Unsupported target_state_version".to_string());
-        }
-
-        // Ensure canonical files are up to date prior to rewrite.
-        self.save_brain()?;
-
-        let canonical = self.paths.brain_file();
-        self.rewrite_state_file_in_place(
-            &canonical,
-            Some(self.paths.runtime_state_file()),
-            target_state_version,
-        )?;
-
-        let snap_dir = self.snapshots_dir();
-        if snap_dir.exists() {
-            let entries = std::fs::read_dir(&snap_dir)
-                .map_err(|e| format!("Failed to read snapshots dir {:?}: {e}", snap_dir))?;
-            for ent in entries.flatten() {
-                let p = ent.path();
-                if !p.is_file() {
-                    continue;
-                }
-                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if !name.starts_with("brain_") || !name.ends_with(".bbi") {
-                    continue;
-                }
-                let stem = name
-                    .strip_prefix("brain_")
-                    .and_then(|s| s.strip_suffix(".bbi"))
-                    .unwrap_or("");
-                let rt = Self::runtime_snapshot_path(&snap_dir, stem);
-                self.rewrite_state_file_in_place(&p, Some(rt), target_state_version)?;
-            }
-        }
-
-        self.persist_state_version = target_state_version;
-        // Ensure subsequent saves stay in the migrated format.
-        self.save_brain()?;
-        Ok(())
-    }
-
-    fn rewrite_state_file_in_place(
-        &self,
-        path: &Path,
-        runtime_path: Option<PathBuf>,
-        target_state_version: u32,
-    ) -> Result<(), String> {
-        let mut file =
-            File::open(path).map_err(|e| format!("Failed to open brain file {:?}: {e}", path))?;
-        let mut magic = [0u8; 8];
-        file.read_exact(&mut magic)
-            .map_err(|e| format!("Failed to read file header {:?}: {e}", path))?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|e| format!("Failed to seek file {:?}: {e}", path))?;
-
-        let (brain, experts_state, embedded_runtime) = if state_image::is_state_magic(&magic) {
-            let loaded = state_image::load_state_from(&mut file)
-                .map_err(|e| format!("Failed to load daemon state {:?}: {e}", path))?;
-            let ex = loaded.experts_state.unwrap_or_default();
-            (loaded.brain, ex, loaded.runtime_state)
-        } else {
-            // Legacy: brain image only.
-            let b = Brain::load_image_from(&mut file)
-                .map_err(|e| format!("Failed to load legacy brain image {:?}: {e}", path))?;
-            (b, Vec::new(), None)
-        };
-
-        let runtime_bytes: Option<Vec<u8>> = runtime_path
-            .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .or(embedded_runtime);
-
-        let tmp = path.with_extension("bbi.tmp");
-        {
-            let mut out = File::create(&tmp)
-                .map_err(|e| format!("Failed to create temp file {:?}: {e}", tmp))?;
-            state_image::save_state_to_with_version(
-                &mut out,
-                &brain,
-                &experts_state,
-                runtime_bytes.as_deref(),
-                target_state_version,
-            )
-            .map_err(|e| format!("Failed to write migrated state {:?}: {e}", tmp))?;
-        }
-        std::fs::rename(&tmp, path)
-            .map_err(|e| format!("Failed to replace file {:?}: {e}", path))?;
-        Ok(())
-    }
-
     fn save_snapshot(&self) -> Result<String, String> {
         // Ensure the canonical files are current, then copy them into snapshots/.
         self.save_brain()?;
@@ -2653,14 +2548,13 @@ impl DaemonState {
             // Track state wrapper version for subsequent saves.
             self.persist_state_version = Self::detect_state_wrapper_version(&path);
         } else {
-            // Legacy: brain image only.
-            self.brain = Brain::load_image_from(&mut file)
-                .map_err(|e| format!("Failed to load brain: {}", e))?;
-            self.experts.set_enabled(false);
-            self.persist_state_version = state_image::VERSION_V1;
+            return Err(
+                "Incompatible brain file format (expected BRSTATE3). Delete braine.bbi and restart."
+                    .to_string(),
+            );
         }
 
-        // Ensure required IO groups exist (for backwards compatibility with older images).
+        // Ensure required IO groups exist.
         self.brain.ensure_sensor_min_width("spot_left", 4);
         self.brain.ensure_sensor_min_width("spot_right", 4);
         self.brain.ensure_sensor_min_width("spot_rev_ctx", 2);
@@ -2673,7 +2567,7 @@ impl DaemonState {
         self.brain.ensure_action_min_width("right", 6);
         self.brain.set_observer_telemetry(true);
 
-        // Apply the same IO/back-compat fixups to all expert brains and fork points.
+        // Apply the same IO fixups to all expert brains and fork points.
         let game_kind = self.game.kind();
         let spotxy_allowed = if let ActiveGame::SpotXY(g) = &self.game {
             Some(g.allowed_actions())
@@ -3654,20 +3548,6 @@ async fn handle_client(
                 s.reset_brain();
                 Response::Success {
                     message: "Brain reset".to_string(),
-                }
-            }
-            Request::MigrateStateFormat {
-                target_state_version,
-            } => {
-                let mut s = state.write().await;
-                match s.migrate_state_format(target_state_version) {
-                    Ok(_) => Response::Success {
-                        message: format!(
-                            "Storage migrated to daemon state wrapper version {}",
-                            target_state_version
-                        ),
-                    },
-                    Err(e) => Response::Error { message: e },
                 }
             }
             Request::Shutdown => {

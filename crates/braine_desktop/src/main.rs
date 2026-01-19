@@ -345,10 +345,6 @@ enum Request {
     SaveBrain,
     LoadBrain,
     ResetBrain,
-
-    MigrateStateFormat {
-        target_state_version: u32,
-    },
     SetFramerate {
         fps: u32,
     },
@@ -1808,15 +1804,6 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let c = client.clone();
         ui.on_reset_brain(move || c.send(Request::ResetBrain));
-    }
-    {
-        let c = client.clone();
-        ui.on_migrate_state_format(move |target| {
-            let target_state_version = (target as u32).max(1);
-            c.send(Request::MigrateStateFormat {
-                target_state_version,
-            });
-        });
     }
 
     // Auto snapshot (UI-driven repeating timer)

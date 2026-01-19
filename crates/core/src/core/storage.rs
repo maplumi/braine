@@ -1,21 +1,17 @@
 use std::io::{self, Read, Write};
 
 pub const MAGIC: &[u8; 8] = b"BRAINE01";
-pub const VERSION_V1: u32 = 1;
-pub const VERSION_V2: u32 = 2;
+pub const VERSION_V3: u32 = 3;
+pub const VERSION_CURRENT: u32 = VERSION_V3;
 
 pub fn compress_lz4(input: &[u8]) -> Vec<u8> {
     lz4_flex::compress(input)
 }
 
 pub fn decompress_lz4(input: &[u8], expected_size: usize) -> io::Result<Vec<u8>> {
-    // Primary format (current): raw LZ4 block with external expected size.
-    // Compatibility: older persisted images may have used size-prepended blocks.
-    match lz4_flex::decompress(input, expected_size) {
-        Ok(v) => Ok(v),
-        Err(_) => lz4_flex::decompress_size_prepended(input)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "lz4 decompression failed")),
-    }
+    // Strict format: raw LZ4 block with external expected size.
+    lz4_flex::decompress(input, expected_size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "lz4 decompression failed"))
 }
 
 pub struct CapacityWriter<W> {

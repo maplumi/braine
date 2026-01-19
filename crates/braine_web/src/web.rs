@@ -200,7 +200,11 @@ use tooltip::{TooltipPortal, TooltipStore};
 
 const IDB_DB_NAME: &str = "braine";
 const IDB_STORE: &str = "kv";
-const IDB_KEY_BRAIN_IMAGE: &str = "brain_image";
+// Current-only brain image key. Older keys are intentionally not supported.
+const IDB_KEY_BRAIN_IMAGE: &str = "brain_image_v3";
+// Legacy key used by older web builds. We proactively delete it to avoid repeated
+// auto-load failures when formats change.
+const IDB_KEY_BRAIN_IMAGE_LEGACY: &str = "brain_image";
 const IDB_KEY_GAME_ACCURACY: &str = "game_accuracy";
 
 const LOCALSTORAGE_THEME_KEY: &str = "braine_theme";
@@ -2440,6 +2444,8 @@ fn App() -> impl IntoView {
         move || {
             let set_status = set_status.clone();
             spawn_local(async move {
+                // Best-effort: clear both current and legacy keys.
+                let _ = idb_delete_key(IDB_KEY_BRAIN_IMAGE_LEGACY).await;
                 match idb_delete_key(IDB_KEY_BRAIN_IMAGE).await {
                     Ok(()) => {
                         set_idb_loaded.set(false);
@@ -2448,37 +2454,6 @@ fn App() -> impl IntoView {
                         set_status.set("cleared saved brain image (IndexedDB)".to_string());
                     }
                     Err(e) => set_status.set(format!("clear failed: {e}")),
-                }
-            });
-        }
-    };
-
-    // Migration: if IndexedDB contains an older brain image format, load it and re-save
-    // using the current serializer (latest version).
-    let do_migrate_idb_format = {
-        let set_status = set_status.clone();
-        move || {
-            let set_status = set_status.clone();
-            spawn_local(async move {
-                match idb_get_bytes(IDB_KEY_BRAIN_IMAGE).await {
-                    Ok(Some(bytes)) => match Brain::load_image_bytes(&bytes) {
-                        Ok(brain) => match brain.save_image_bytes() {
-                            Ok(new_bytes) => {
-                                match idb_put_bytes(IDB_KEY_BRAIN_IMAGE, &new_bytes).await {
-                                    Ok(()) => set_status.set(format!(
-                                        "migrated IndexedDB brain image: {} -> {} bytes",
-                                        bytes.len(),
-                                        new_bytes.len()
-                                    )),
-                                    Err(e) => set_status.set(format!("migration save failed: {e}")),
-                                }
-                            }
-                            Err(e) => set_status.set(format!("migration encode failed: {e}")),
-                        },
-                        Err(e) => set_status.set(format!("migration load failed: {e}")),
-                    },
-                    Ok(None) => set_status.set("no saved brain image in IndexedDB".to_string()),
-                    Err(e) => set_status.set(format!("migration read failed: {e}")),
                 }
             });
         }
@@ -2498,6 +2473,9 @@ fn App() -> impl IntoView {
 
             let set_status = set_status.clone();
             spawn_local(async move {
+                // Never attempt to load legacy images; delete any old key to avoid
+                // repeatedly hitting strict format errors after upgrades.
+                let _ = idb_delete_key(IDB_KEY_BRAIN_IMAGE_LEGACY).await;
                 match idb_get_bytes(IDB_KEY_BRAIN_IMAGE).await {
                     Ok(Some(bytes)) => match Brain::load_image_bytes(&bytes) {
                         Ok(brain) => {
@@ -2512,9 +2490,14 @@ fn App() -> impl IntoView {
                                 .set(format!("auto-loaded {} bytes from IndexedDB", bytes.len()));
                         }
                         Err(e) => {
-                            // Don't crash: show a clear error and let the user clear/reset.
+                            // Strict format: if the saved bytes are invalid, clear them so
+                            // we don't fail on every refresh.
+                            let _ = idb_delete_key(IDB_KEY_BRAIN_IMAGE).await;
+                            set_idb_loaded.set(false);
+                            set_brain_dirty.set(false);
+                            set_idb_last_save.set(String::new());
                             set_status.set(format!(
-                                "auto-load failed: {e} (you can clear the saved brain image in Persistence)"
+                                "auto-load failed: {e} (cleared saved brain image; re-save/import a current .bbi)"
                             ));
                         }
                     },
@@ -6234,7 +6217,7 @@ fn App() -> impl IntoView {
 
                                     <div class="subtle" style="margin-top: 8px;">
                                         {move || {
-                                            let src = if idb_loaded.get() { "IndexedDB (brain_image)" } else { "fresh" };
+                                            let src = if idb_loaded.get() { "IndexedDB (brain_image_v3)" } else { "fresh" };
                                             let autosave = if idb_autosave.get() { "on" } else { "off" };
                                             let ts = idb_last_save.get();
                                             if ts.is_empty() {
@@ -7646,7 +7629,6 @@ fn App() -> impl IntoView {
                                                 <button class="btn" on:click=move |_| do_save()>"💾 Save (IndexedDB)"</button>
                                                 <button class="btn" on:click=move |_| do_load()>"📂 Load (IndexedDB)"</button>
                                                 <button class="btn" on:click=move |_| do_clear_saved_brain()>"🧹 Clear saved brain"</button>
-                                                <button class="btn" on:click=move |_| do_migrate_idb_format()>"🔁 Migrate stored format"</button>
                                                 <button class="btn" on:click=move |_| do_export_bbi()>"📥 Export .bbi"</button>
                                                 <button class="btn" on:click=move |_| do_import_bbi_click()>"📤 Import .bbi"</button>
                                             </div>
@@ -7679,7 +7661,7 @@ fn App() -> impl IntoView {
                                             <div class="subtle" style="margin-top: 8px;">
                                                 {move || {
                                                     if idb_loaded.get() {
-                                                        "Source: IndexedDB (brain_image)".to_string()
+                                                        "Source: IndexedDB (brain_image_v3)".to_string()
                                                     } else {
                                                         "Source: fresh (not loaded from IndexedDB yet)".to_string()
                                                     }
