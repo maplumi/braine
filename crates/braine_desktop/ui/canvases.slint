@@ -3,6 +3,7 @@
 
 import { Theme } from "theme.slint";
 import { GameState } from "types.slint";
+import { MazeWallSeg } from "types.slint";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Spot Game Canvas
@@ -369,6 +370,7 @@ export component SpotXYCanvas inherits Rectangle {
 
 export component MazeCanvas inherits Rectangle {
     in property <GameState> game;
+    in property <[MazeWallSeg]> maze-wall-segs;
 
     background: Theme.bg-dark;
     border-color: Theme.border;
@@ -384,6 +386,41 @@ export component MazeCanvas inherits Rectangle {
         border-color: Theme.border;
         border-width: 1px;
         border-radius: 8px;
+    }
+
+    // Maze walls (drawn as paths for performance and clarity)
+    // Coordinates are normalized (0..1) in the maze grid space.
+    Rectangle {
+        x: field.x;
+        y: field.y;
+        width: field.width;
+        height: field.height;
+        background: transparent;
+
+        property <float> mw: max(2, game.maze-w) * 1.0;
+        property <float> mh: max(2, game.maze-h) * 1.0;
+        property <length> cell_px: min(field.width / mw, field.height / mh);
+
+        for s in maze-wall-segs: Path {
+            commands:
+                "M "
+                + (s.x1 * ((parent.width) / 1px))
+                + " "
+                + (s.y1 * ((parent.height) / 1px))
+                + " L "
+                + (s.x2 * ((parent.width) / 1px))
+                + " "
+                + (s.y2 * ((parent.height) / 1px));
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: parent.width / 1px;
+            viewbox-height: parent.height / 1px;
+            fill: transparent;
+            stroke: #7aa2ff;
+            stroke-width: max(1px, parent.cell_px * 0.10);
+            stroke-line-cap: square;
+            opacity: 0.70;
+        }
     }
 
     // Goal (green square)

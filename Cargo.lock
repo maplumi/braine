@@ -535,6 +535,7 @@ name = "braine_desktop"
 version = "0.1.0"
 dependencies = [
  "braine",
+ "braine_games",
  "serde",
  "serde_json",
  "slint",

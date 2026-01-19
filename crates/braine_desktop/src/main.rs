@@ -213,6 +213,74 @@ fn force_layout_step(
 
 slint::include_modules!();
 
+fn build_maze_wall_segs(seed: u64, w: u32, h: u32) -> Vec<MazeWallSeg> {
+    use braine_games::maze::MazeSim;
+
+    const W_UP: u8 = 1;
+    const W_RIGHT: u8 = 2;
+    const W_DOWN: u8 = 4;
+    const W_LEFT: u8 = 8;
+
+    let w = w.max(2);
+    let h = h.max(2);
+
+    let sim = MazeSim::new_with_dims(seed, w, h);
+
+    let mw = w as f32;
+    let mh = h as f32;
+
+    let mut segs: Vec<MazeWallSeg> = Vec::with_capacity((w as usize) * (h as usize) * 2);
+
+    for y in 0..h {
+        for x in 0..w {
+            let walls = sim.grid.walls(x, y);
+
+            let x0 = (x as f32) / mw;
+            let x1 = ((x + 1) as f32) / mw;
+            let y0 = (y as f32) / mh;
+            let y1 = ((y + 1) as f32) / mh;
+
+            // Draw unique wall segments only:
+            // - top and left for all cells
+            // - plus the outer right/bottom borders
+            if (walls & W_UP) != 0 {
+                segs.push(MazeWallSeg {
+                    x1: x0,
+                    y1: y0,
+                    x2: x1,
+                    y2: y0,
+                });
+            }
+            if (walls & W_LEFT) != 0 {
+                segs.push(MazeWallSeg {
+                    x1: x0,
+                    y1: y0,
+                    x2: x0,
+                    y2: y1,
+                });
+            }
+            if x + 1 == w && (walls & W_RIGHT) != 0 {
+                segs.push(MazeWallSeg {
+                    x1,
+                    y1: y0,
+                    x2: x1,
+                    y2: y1,
+                });
+            }
+            if y + 1 == h && (walls & W_DOWN) != 0 {
+                segs.push(MazeWallSeg {
+                    x1: x0,
+                    y1,
+                    x2: x1,
+                    y2: y1,
+                });
+            }
+        }
+    }
+
+    segs
+}
+
 fn hist_to_dots(hist: &[f32]) -> Vec<MeaningHistDot> {
     let n = hist.len();
     if n == 0 {
@@ -690,6 +758,8 @@ enum DaemonGameState {
         #[serde(default)]
         maze_h: u32,
         #[serde(default)]
+        maze_seed: u64,
+        #[serde(default)]
         maze_player_x: u32,
         #[serde(default)]
         maze_player_y: u32,
@@ -884,6 +954,13 @@ impl DaemonGameState {
         match self {
             Self::Maze { maze_w, maze_h, .. } => (*maze_w, *maze_h),
             _ => (0, 0),
+        }
+    }
+
+    fn maze_seed(&self) -> u64 {
+        match self {
+            Self::Maze { maze_seed, .. } => *maze_seed,
+            _ => 0,
         }
     }
 
@@ -2058,6 +2135,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 let (maze_player_x, maze_player_y) = snap.game.maze_player_xy();
                 let (maze_goal_x, maze_goal_y) = snap.game.maze_goal_xy();
                 let maze_steps = snap.game.maze_steps();
+
+                // Maze wall overlay (desktop): reconstruct deterministically from seed + dims.
+                if snap.game.kind() == "maze" {
+                    let segs = build_maze_wall_segs(snap.game.maze_seed(), maze_w, maze_h);
+                    ui.set_maze_wall_segs(ModelRc::new(VecModel::from(segs)));
+                } else {
+                    ui.set_maze_wall_segs(ModelRc::new(VecModel::from(Vec::<MazeWallSeg>::new())));
+                }
 
                 ui.set_game(GameState {
                     kind: snap.game.kind().into(),
