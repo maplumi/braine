@@ -288,6 +288,39 @@ pub struct BrainConfig {
     /// Effective prune threshold becomes `prune_below + cross_module_prune_bonus`.
     /// 0.0 disables extra pruning.
     pub cross_module_prune_bonus: f32,
+
+    // ---------------------------------------------------------------------
+    // Latent modules: auto-formation + retirement (scaling phase 5)
+    // ---------------------------------------------------------------------
+    /// If true, allow auto-creating latent modules when routing is enabled but
+    /// the router is uninformative and the committed symbol set appears novel.
+    pub latent_module_auto_create: bool,
+
+    /// Number of units to reserve for each auto-created latent module.
+    ///
+    /// 0 disables auto-creation even if `latent_module_auto_create` is true.
+    pub latent_module_auto_width: u32,
+
+    /// Minimum steps between auto-created latent modules.
+    pub latent_module_auto_cooldown_steps: u32,
+
+    /// Maximum number of active (non-empty) latent modules allowed.
+    /// 0 means unlimited.
+    pub latent_module_auto_max_active: u32,
+
+    /// Reward magnitude required to allow auto-creation.
+    ///
+    /// Auto-creation is allowed only when `abs(neuromod) >= threshold`.
+    pub latent_module_auto_reward_threshold: f32,
+
+    /// Retire a latent module (freeing its units) if it has not been routed for
+    /// this many steps.
+    ///
+    /// 0 disables retirement.
+    pub latent_module_retire_after_steps: u32,
+
+    /// Retire only if `abs(reward_ema) < threshold`.
+    pub latent_module_retire_reward_threshold: f32,
 }
 
 impl Default for BrainConfig {
@@ -355,6 +388,15 @@ impl Default for BrainConfig {
             cross_module_plasticity_scale: 1.0,
             cross_module_forget_boost: 0.0,
             cross_module_prune_bonus: 0.0,
+
+            // Latent module defaults (off by default).
+            latent_module_auto_create: false,
+            latent_module_auto_width: 8,
+            latent_module_auto_cooldown_steps: 500,
+            latent_module_auto_max_active: 0,
+            latent_module_auto_reward_threshold: 0.2,
+            latent_module_retire_after_steps: 0,
+            latent_module_retire_reward_threshold: 0.05,
         }
     }
 }
@@ -535,6 +577,20 @@ impl BrainConfig {
         }
         if !self.cross_module_prune_bonus.is_finite() || self.cross_module_prune_bonus < 0.0 {
             return Err("cross_module_prune_bonus must be finite and >= 0");
+        }
+
+        if self.latent_module_auto_width as usize > self.unit_count {
+            return Err("latent_module_auto_width must be <= unit_count");
+        }
+        if !self.latent_module_auto_reward_threshold.is_finite()
+            || self.latent_module_auto_reward_threshold < 0.0
+        {
+            return Err("latent_module_auto_reward_threshold must be finite and >= 0");
+        }
+        if !self.latent_module_retire_reward_threshold.is_finite()
+            || self.latent_module_retire_reward_threshold < 0.0
+        {
+            return Err("latent_module_retire_reward_threshold must be finite and >= 0");
         }
         Ok(())
     }
@@ -760,6 +816,8 @@ struct RoutingModule {
     signature: HashMap<SymbolId, f32>,
     // Reward summary to bias routing.
     reward_ema: f32,
+    // Last step index when this module was selected by the router.
+    last_routed_step: u64,
 }
 
 /// A dynamical brain-like substrate with local learning.
@@ -842,6 +900,14 @@ pub struct Brain {
     routing_module_index: HashMap<String, u16>,
     unit_module: Vec<u16>,
     learning_route_modules: Vec<u16>,
+
+    // Cached unit counts per module (ephemeral; derived from `unit_module`).
+    module_unit_counts: Vec<u32>,
+    module_unit_counts_dirty: bool,
+
+    // Latent module auto-formation state (ephemeral; not persisted).
+    latent_auto_last_create_step: u64,
+    latent_auto_seq: u32,
 
     // Fast lookup: stimulus name -> sensor group index.
     // Derived from `sensor_groups`; not serialized.
@@ -1060,6 +1126,8 @@ impl Brain {
         let routing_modules: Vec<RoutingModule> = Vec::new();
         let routing_module_index: HashMap<String, u16> = HashMap::new();
         let learning_route_modules: Vec<u16> = Vec::new();
+        let module_unit_counts: Vec<u32> = Vec::new();
+        let module_unit_counts_dirty = true;
 
         // Reserve reward symbols up front.
         let reward_pos_symbol = intern_symbol(&mut symbols, &mut symbols_rev, "reward_pos");
@@ -1088,6 +1156,10 @@ impl Brain {
             routing_module_index,
             unit_module,
             learning_route_modules,
+            module_unit_counts,
+            module_unit_counts_dirty,
+            latent_auto_last_create_step: 0,
+            latent_auto_seq: 0,
             pending_input,
             neuromod: 0.0,
             pruned_last_step: 0,
@@ -1138,7 +1210,16 @@ impl Brain {
             name: name.to_string(),
             signature: HashMap::new(),
             reward_ema: 0.0,
+            last_routed_step: 0,
         });
+
+        // Keep derived caches sized; counts will be recomputed lazily.
+        if self.module_unit_counts.len() < self.routing_modules.len() {
+            self.module_unit_counts
+                .resize(self.routing_modules.len(), 0);
+        }
+        self.module_unit_counts_dirty = true;
+
         self.routing_module_index.insert(key, idx);
         idx
     }
@@ -1159,7 +1240,37 @@ impl Brain {
         self.learning_route_modules.contains(&mid)
     }
 
-    fn route_modules_from_symbols(&self, symbols: &[SymbolId]) -> Vec<u16> {
+    fn refresh_module_unit_counts_if_dirty(&mut self) {
+        if !self.module_unit_counts_dirty {
+            return;
+        }
+        self.module_unit_counts_dirty = false;
+
+        let module_count = self.routing_modules.len();
+        self.module_unit_counts.clear();
+        self.module_unit_counts.resize(module_count, 0);
+
+        for &mid in &self.unit_module {
+            if mid == NO_MODULE {
+                continue;
+            }
+            let idx = mid as usize;
+            if idx < self.module_unit_counts.len() {
+                self.module_unit_counts[idx] = self.module_unit_counts[idx].saturating_add(1);
+            }
+        }
+    }
+
+    #[inline]
+    fn module_has_units_cached(&self, mid: u16) -> bool {
+        self.module_unit_counts
+            .get(mid as usize)
+            .copied()
+            .unwrap_or(0)
+            > 0
+    }
+
+    fn route_modules_from_symbols(&mut self, symbols: &[SymbolId]) -> Vec<u16> {
         let top_k = self.cfg.module_routing_top_k as usize;
         if top_k == 0 {
             return Vec::new();
@@ -1168,10 +1279,16 @@ impl Brain {
             return Vec::new();
         }
 
+        self.refresh_module_unit_counts_if_dirty();
+
         // Build a score per module.
         let beta = self.cfg.module_routing_beta;
         let mut scored: Vec<(u16, f32)> = Vec::with_capacity(self.routing_modules.len());
         for (i, m) in self.routing_modules.iter().enumerate() {
+            let mid = i as u16;
+            if !self.module_has_units_cached(mid) {
+                continue;
+            }
             let mut score = beta * m.reward_ema;
 
             // Seed match: if a boundary symbol name matches module name, prefer it.
@@ -1186,7 +1303,11 @@ impl Brain {
                 }
             }
 
-            scored.push((i as u16, score));
+            scored.push((mid, score));
+        }
+
+        if scored.is_empty() {
+            return Vec::new();
         }
 
         // If all scores are ~zero, do not gate.
@@ -1199,11 +1320,7 @@ impl Brain {
         }
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
-        scored
-            .into_iter()
-            .take(top_k.min(self.routing_modules.len()))
-            .map(|(i, _)| i)
-            .collect()
+        scored.into_iter().take(top_k).map(|(i, _)| i).collect()
     }
 
     fn update_routing_signatures(&mut self, routed: &[u16], symbols: &[SymbolId], reward: f32) {
@@ -1246,6 +1363,170 @@ impl Brain {
         }
     }
 
+    fn routing_symbol_set_is_novel(&self, symbols: &[SymbolId]) -> bool {
+        if symbols.is_empty() {
+            return false;
+        }
+
+        // Consider the set "novel" if any committed symbol has never been
+        // associated with any existing module signature.
+        for &sid in symbols {
+            let mut seen = false;
+            for m in &self.routing_modules {
+                if m.signature.contains_key(&sid) {
+                    seen = true;
+                    break;
+                }
+            }
+            if !seen {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn count_active_latent_modules(&mut self) -> u32 {
+        let mids: Vec<u16> = self
+            .latent_groups
+            .iter()
+            .filter_map(|g| {
+                let mut key = String::with_capacity("latent::".len() + g.name.len());
+                key.push_str("latent::");
+                key.push_str(g.name.as_str());
+                self.routing_module_index.get(&key).copied()
+            })
+            .collect();
+
+        self.refresh_module_unit_counts_if_dirty();
+
+        let mut n: u32 = 0;
+        for mid in mids {
+            if self.module_has_units_cached(mid) {
+                n = n.saturating_add(1);
+            }
+        }
+        n
+    }
+
+    fn maybe_auto_create_latent_module(&mut self, symbols: &[SymbolId]) -> Option<u16> {
+        if !self.cfg.latent_module_auto_create {
+            return None;
+        }
+        if self.cfg.module_routing_top_k == 0 {
+            return None;
+        }
+        if self.cfg.latent_module_auto_width == 0 {
+            return None;
+        }
+
+        // Require reward signal (positive or negative) to avoid churning modules
+        // during low-salience background activity.
+        if self.neuromod.abs() < self.cfg.latent_module_auto_reward_threshold {
+            return None;
+        }
+
+        // Cooldown between auto-created modules.
+        let since = self
+            .age_steps
+            .saturating_sub(self.latent_auto_last_create_step);
+        if since < self.cfg.latent_module_auto_cooldown_steps as u64 {
+            return None;
+        }
+
+        // Respect max active latent modules when configured.
+        if self.cfg.latent_module_auto_max_active > 0 {
+            let active = self.count_active_latent_modules();
+            if active >= self.cfg.latent_module_auto_max_active {
+                return None;
+            }
+        }
+
+        // Only create when routing appears uninformative and the symbol set is novel.
+        if !self.routing_symbol_set_is_novel(symbols) {
+            return None;
+        }
+
+        let width = self.cfg.latent_module_auto_width as usize;
+        if width == 0 {
+            return None;
+        }
+
+        // Generate a unique, non-colliding module name.
+        for _ in 0..10_000 {
+            self.latent_auto_seq = self.latent_auto_seq.wrapping_add(1);
+            let name = format!("auto_latent_{:06}", self.latent_auto_seq);
+
+            let collides = self.sensor_groups.iter().any(|g| g.name == name)
+                || self.action_groups.iter().any(|g| g.name == name)
+                || self.latent_groups.iter().any(|g| g.name == name);
+            if collides {
+                continue;
+            }
+
+            self.define_module(&name, width);
+            self.latent_auto_last_create_step = self.age_steps;
+
+            let mid = self.ensure_routing_module("latent", &name);
+            return Some(mid);
+        }
+
+        None
+    }
+
+    fn maybe_retire_latent_modules(&mut self) {
+        let retire_after = self.cfg.latent_module_retire_after_steps;
+        if retire_after == 0 {
+            return;
+        }
+
+        let reward_thr = self.cfg.latent_module_retire_reward_threshold;
+        let now = self.age_steps;
+
+        // Iterate from the end so removals preserve stable indices elsewhere.
+        for idx in (0..self.latent_groups.len()).rev() {
+            let gname = self.latent_groups[idx].name.clone();
+
+            let mut key = String::with_capacity("latent::".len() + gname.len());
+            key.push_str("latent::");
+            key.push_str(gname.as_str());
+
+            let Some(&mid) = self.routing_module_index.get(&key) else {
+                continue;
+            };
+            let Some(m) = self.routing_modules.get(mid as usize) else {
+                continue;
+            };
+
+            let since_routed = now.saturating_sub(m.last_routed_step);
+            if since_routed < retire_after as u64 {
+                continue;
+            }
+            if m.reward_ema.abs() >= reward_thr {
+                continue;
+            }
+
+            // Retire: unassign units from the module and drop the latent group.
+            let units = core::mem::take(&mut self.latent_groups[idx].units);
+            for id in units {
+                if id < self.unit_module.len() {
+                    self.unit_module[id] = NO_MODULE;
+                }
+                if id < self.group_member.len() {
+                    self.group_member[id] = false;
+                }
+            }
+            self.latent_groups.remove(idx);
+            self.module_unit_counts_dirty = true;
+
+            // Clear routing state so the retired module does not bias future routing.
+            if let Some(m) = self.routing_modules.get_mut(mid as usize) {
+                m.signature.clear();
+                m.reward_ema = 0.0;
+            }
+        }
+    }
+
     #[allow(dead_code)]
     fn rebuild_sensor_group_index(&mut self) {
         self.sensor_group_index.clear();
@@ -1277,11 +1558,21 @@ impl Brain {
                 }
             }
         }
+
+        for g in &self.latent_groups {
+            for &id in &g.units {
+                if id < self.group_member.len() {
+                    self.group_member[id] = true;
+                }
+            }
+        }
     }
 
     fn rebuild_routing_from_groups(&mut self) {
         self.routing_modules.clear();
         self.routing_module_index.clear();
+        self.module_unit_counts.clear();
+        self.module_unit_counts_dirty = true;
 
         if self.unit_module.len() != self.units.len() {
             self.unit_module.resize(self.units.len(), NO_MODULE);
@@ -1330,6 +1621,8 @@ impl Brain {
                 }
             }
         }
+
+        self.module_unit_counts_dirty = true;
     }
 
     // =========================================================================
@@ -1941,6 +2234,10 @@ impl Brain {
             routing_module_index: HashMap::new(),
             unit_module: vec![NO_MODULE; unit_count],
             learning_route_modules: Vec::new(),
+            module_unit_counts: Vec::new(),
+            module_unit_counts_dirty: true,
+            latent_auto_last_create_step: 0,
+            latent_auto_seq: 0,
             pending_input: vec![0.0; unit_count],
             neuromod: 0.0,
             symbols,
@@ -2070,6 +2367,13 @@ impl Brain {
                 + 4 // cross_module_plasticity_scale
                 + 4 // cross_module_forget_boost
                 + 4 // cross_module_prune_bonus
+                + 4 // latent_module_auto_create
+                + 4 // latent_module_auto_width
+                + 4 // latent_module_auto_cooldown_steps
+                + 4 // latent_module_auto_max_active
+                + 4 // latent_module_auto_reward_threshold
+                + 4 // latent_module_retire_after_steps
+                + 4 // latent_module_retire_reward_threshold
     }
 
     #[cfg(feature = "std")]
@@ -2131,6 +2435,22 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.cross_module_plasticity_scale)?;
         storage::write_f32_le(w, self.cfg.cross_module_forget_boost)?;
         storage::write_f32_le(w, self.cfg.cross_module_prune_bonus)?;
+
+        // Phase 5: latent module auto-formation + retirement (appended; backwards compatible).
+        storage::write_u32_le(
+            w,
+            if self.cfg.latent_module_auto_create {
+                1
+            } else {
+                0
+            },
+        )?;
+        storage::write_u32_le(w, self.cfg.latent_module_auto_width)?;
+        storage::write_u32_le(w, self.cfg.latent_module_auto_cooldown_steps)?;
+        storage::write_u32_le(w, self.cfg.latent_module_auto_max_active)?;
+        storage::write_f32_le(w, self.cfg.latent_module_auto_reward_threshold)?;
+        storage::write_u32_le(w, self.cfg.latent_module_retire_after_steps)?;
+        storage::write_f32_le(w, self.cfg.latent_module_retire_reward_threshold)?;
         Ok(())
     }
 
@@ -2255,6 +2575,15 @@ impl Brain {
             let cross_module_forget_boost = read_f32_default(&mut c, 0.0);
             let cross_module_prune_bonus = read_f32_default(&mut c, 0.0);
 
+            // Optional appended phase 5 knobs (safe defaults).
+            let latent_module_auto_create = read_u32_default(&mut c, 0) != 0;
+            let latent_module_auto_width = read_u32_default(&mut c, 8);
+            let latent_module_auto_cooldown_steps = read_u32_default(&mut c, 500);
+            let latent_module_auto_max_active = read_u32_default(&mut c, 0);
+            let latent_module_auto_reward_threshold = read_f32_default(&mut c, 0.2);
+            let latent_module_retire_after_steps = read_u32_default(&mut c, 0);
+            let latent_module_retire_reward_threshold = read_f32_default(&mut c, 0.05);
+
             let cfg = BrainConfig {
                 unit_count,
                 connectivity_per_unit,
@@ -2308,6 +2637,14 @@ impl Brain {
                 cross_module_plasticity_scale,
                 cross_module_forget_boost,
                 cross_module_prune_bonus,
+
+                latent_module_auto_create,
+                latent_module_auto_width,
+                latent_module_auto_cooldown_steps,
+                latent_module_auto_max_active,
+                latent_module_auto_reward_threshold,
+                latent_module_retire_after_steps,
+                latent_module_retire_reward_threshold,
             };
 
             // Basic sanity: only accept if seed_present looks plausible and cfg validates.
@@ -2956,6 +3293,7 @@ impl Brain {
                     self.unit_module[id] = module;
                 }
             }
+            self.module_unit_counts_dirty = true;
             self.sensor_groups[idx].units.extend(extra);
             self.intern(name);
             min_width
@@ -3005,6 +3343,7 @@ impl Brain {
                     self.unit_module[id] = module;
                 }
             }
+            self.module_unit_counts_dirty = true;
             self.action_groups[idx].units.extend(extra);
             self.intern(name);
             min_width
@@ -3255,6 +3594,7 @@ impl Brain {
                 self.unit_module[id] = module;
             }
         }
+        self.module_unit_counts_dirty = true;
         self.sensor_groups.push(NamedGroup {
             name: name.to_string(),
             units,
@@ -3285,6 +3625,7 @@ impl Brain {
                 self.unit_module[id] = module;
             }
         }
+        self.module_unit_counts_dirty = true;
         self.action_groups.push(NamedGroup {
             name: name.to_string(),
             units,
@@ -3314,10 +3655,12 @@ impl Brain {
         let module = self.ensure_routing_module("latent", name);
         let units = self.allocate_units(width);
         for &id in &units {
+            self.group_member[id] = true;
             if id < self.unit_module.len() {
                 self.unit_module[id] = module;
             }
         }
+        self.module_unit_counts_dirty = true;
 
         self.latent_groups.push(NamedGroup {
             name: name.to_string(),
@@ -3722,7 +4065,27 @@ impl Brain {
         // Phase 2 (routing-as-attention): decide which modules are eligible to learn
         // on the *next* step, based on this committed boundary symbol set.
         if self.cfg.module_routing_top_k > 0 {
-            let routed = self.route_modules_from_symbols(&self.active_symbols);
+            // Clone small vector to avoid borrowing `self` immutably across `&mut self` calls.
+            let symbols = self.active_symbols.clone();
+
+            let mut routed = self.route_modules_from_symbols(&symbols);
+
+            // Phase 5 (latent module auto-formation): if routing is enabled but
+            // uninformative, optionally create a fresh latent module to capture
+            // a novel committed symbol set.
+            if routed.is_empty() {
+                if let Some(mid) = self.maybe_auto_create_latent_module(&symbols) {
+                    routed = vec![mid];
+                }
+            }
+
+            // Record last routed step for retirement criteria.
+            for &mid in &routed {
+                if let Some(m) = self.routing_modules.get_mut(mid as usize) {
+                    m.last_routed_step = self.age_steps;
+                }
+            }
+
             self.learning_route_modules = routed;
 
             // Update signatures for routed modules to make routing self-organizing.
@@ -3731,12 +4094,14 @@ impl Brain {
                 let reward = self.neuromod.clamp(-1.0, 1.0);
                 // Clone small vectors to avoid borrow conflicts with `&mut self`.
                 let routed = self.learning_route_modules.clone();
-                let symbols = self.active_symbols.clone();
                 self.update_routing_signatures(&routed, &symbols, reward);
             }
         } else {
             self.learning_route_modules.clear();
         }
+
+        // Phase 5 (latent module retirement): clean up stale, low-utility latent modules.
+        self.maybe_retire_latent_modules();
 
         // Lagged causal update:
         // - lag 1 is stored inside `CausalMemory.prev_symbols`
@@ -5242,6 +5607,7 @@ impl Brain {
             self.group_member.push(false);
             self.activity_trace.push(0.0);
             self.unit_module.push(module);
+            self.module_unit_counts_dirty = true;
             self.cfg.unit_count = self.units.len();
 
             // Wire FROM new unit TO group units (new unit can influence the group).
@@ -6891,6 +7257,102 @@ mod tests {
 
         assert_eq!(brain.learning_route_modules, vec![ctx_mid]);
     }
+
+    #[test]
+    fn latent_module_auto_create_triggers_on_novel_symbols_when_router_uninformative() {
+        let cfg = BrainConfig {
+            unit_count: 24,
+            connectivity_per_unit: 2,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.1,
+            forget_rate: 0.0,
+            prune_below: 0.0,
+            imprint_rate: 0.0,
+            learning_deadband: 0.0,
+            module_routing_top_k: 1,
+            module_routing_strict: true,
+            module_signature_decay: 0.2,
+            latent_module_auto_create: true,
+            latent_module_auto_width: 4,
+            latent_module_auto_cooldown_steps: 0,
+            latent_module_auto_reward_threshold: 0.0,
+            seed: Some(11),
+            causal_decay: 0.01,
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+        brain.define_sensor("s", 2);
+
+        // Create a novel committed symbol set that has no signature associations yet.
+        brain.note_symbol("novel_evt");
+        brain.neuromod = 0.8;
+        brain.commit_observation();
+
+        assert!(
+            brain
+                .latent_groups
+                .iter()
+                .any(|g| g.name.starts_with("auto_latent_")),
+            "expected an auto-created latent module"
+        );
+        assert_eq!(brain.learning_route_modules.len(), 1);
+        let mid = brain.learning_route_modules[0] as usize;
+        assert!(brain
+            .routing_modules
+            .get(mid)
+            .is_some_and(|m| m.name.starts_with("auto_latent_")));
+    }
+
+    #[test]
+    fn latent_module_retirement_frees_units_when_stale_and_low_reward() {
+        let cfg = BrainConfig {
+            unit_count: 24,
+            connectivity_per_unit: 2,
+            dt: 0.05,
+            base_freq: 1.0,
+            noise_amp: 0.0,
+            noise_phase: 0.0,
+            global_inhibition: 0.0,
+            hebb_rate: 0.1,
+            forget_rate: 0.0,
+            prune_below: 0.0,
+            imprint_rate: 0.0,
+            learning_deadband: 0.0,
+            module_routing_top_k: 1,
+            latent_module_retire_after_steps: 10,
+            latent_module_retire_reward_threshold: 0.05,
+            seed: Some(12),
+            causal_decay: 0.01,
+            ..Default::default()
+        };
+
+        let mut brain = Brain::new(cfg);
+        brain.age_steps = 100;
+        brain.define_module("tmp", 4);
+        assert_eq!(brain.latent_groups.len(), 1);
+        let units = brain.latent_groups[0].units.clone();
+
+        let mid = *brain
+            .routing_module_index
+            .get("latent::tmp")
+            .expect("latent module should exist") as usize;
+        brain.routing_modules[mid].last_routed_step = 0;
+        brain.routing_modules[mid].reward_ema = 0.0;
+
+        brain.commit_observation();
+
+        assert!(brain.latent_groups.is_empty(), "expected module to retire");
+        for id in units {
+            assert_eq!(brain.unit_module[id], NO_MODULE);
+            assert!(!brain.group_member[id]);
+        }
+    }
+
     #[test]
     fn csr_neighbors_iteration() {
         let cfg = BrainConfig {

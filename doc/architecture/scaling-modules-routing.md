@@ -1,4 +1,4 @@
-# Scaling plan: module-local learning + routing (Phase 1–4)
+# Scaling plan: module-local learning + routing (Phase 1–5)
 
 This document translates the scalability recommendations into a Braine-aligned implementation path.
 
@@ -6,7 +6,7 @@ This document translates the scalability recommendations into a Braine-aligned i
 - Scale should primarily come from **reusing the same recurrent dynamics and local learning rules**, not from spawning expert/child brains just because a task is larger.
 - Child brains remain reserved for **novelty / distribution shift / collapse**, and should consolidate structure back into the parent.
 
-The goal of Phase 1–4 is to make compute and interference predictable without turning the system into an MoE/LLM.
+The goal of Phase 1–5 is to make compute and interference predictable without turning the system into an MoE/LLM.
 
 ---
 
@@ -114,6 +114,38 @@ Persistence is implemented as an **optional chunk** in the brain image (forward-
 
 ---
 
+## Phase 5: latent module auto-formation + retirement
+
+Phase 4 adds the *ability* to define internal partitions. Phase 5 makes that structure **self-organizing**:
+
+- when routing is enabled but uninformative for a committed boundary symbol set, and
+- when that symbol set appears novel (not associated with any module signature), and
+- when reward salience is high enough,
+
+the brain may auto-create a fresh latent module with a reserved unit budget. This is a *representation move* (a new internal partition), not a new learner.
+
+Symmetrically, stale low-utility latent modules can be retired (their units are freed and the group is removed from persistence) when they have not been routed for a long time and their reward EMA remains near zero.
+
+### Mechanisms
+
+- **Auto-create** (off by default)
+	- `latent_module_auto_create`: enable/disable
+	- `latent_module_auto_width`: unit budget for each auto-created module (0 disables)
+	- `latent_module_auto_cooldown_steps`: minimum steps between creations
+	- `latent_module_auto_max_active`: cap active latent modules (0 = unlimited)
+	- `latent_module_auto_reward_threshold`: requires `abs(neuromod) >= threshold`
+
+- **Retire** (off by default)
+	- `latent_module_retire_after_steps`: staleness window (0 disables)
+	- `latent_module_retire_reward_threshold`: retire only if `abs(reward_ema)` is below this
+
+### Safety notes
+
+- Routing never selects empty modules (modules with zero assigned units are ignored).
+- Defaults keep legacy behavior: no auto-create, no retirement.
+
+---
+
 ## Constraints / safety
 
 - Defaults must preserve current behavior (routing/budgets off by default).
@@ -139,6 +171,10 @@ Persistence is implemented as an **optional chunk** in the brain image (forward-
 **Phase 4 success:**
 - latent modules roundtrip through save/load
 - latent modules can be selected by routing (e.g., via symbol seed-match)
+
+**Phase 5 success:**
+- when routing is uninformative under novel boundary symbol sets, a latent module can be auto-created and becomes routable
+- stale, low-utility latent modules retire cleanly (units unassigned; group removed from persistence)
 
 ---
 
