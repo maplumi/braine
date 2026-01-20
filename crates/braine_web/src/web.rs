@@ -4551,8 +4551,9 @@ fn App() -> impl IntoView {
                                     <div style=STYLE_CARD>
                                         <h3 style="margin: 0 0 10px 0; font-size: 1rem; color: var(--accent);">"Braine APIs (By Category)"</h3>
                                         <p style="margin: 0; color: var(--muted); font-size: 0.9rem; line-height: 1.7;">
-                                            "Braine’s long-lived state is owned by a central daemon (brained). Clients (desktop/web/edge) talk to it over newline-delimited JSON on TCP 127.0.0.1:9876. "
-                                            "This section lists the core API categories and the most important request/response shapes."
+                                            "Braine’s long-lived state is owned by a central daemon (brained). Desktop and CLI clients talk to it over newline-delimited JSON on TCP 127.0.0.1:9876. "
+                                            "The web app runs fully in-browser (WASM) today and does not connect to the daemon. "
+                                            "This section lists the daemon API categories and the most important request/response shapes."
                                         </p>
                                     </div>
 
