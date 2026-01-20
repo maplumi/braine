@@ -5,11 +5,13 @@ use super::types::{MazeUiState, PongUiState};
 
 use braine_games::maze::MazeSim;
 
+type MazeWallCache = Option<(u64, u32, u32, Vec<u8>)>;
+
 thread_local! {
     // Cached maze wall bits, keyed by (seed, w, h).
     // We cache the *wall bits* rather than the full MazeSim to avoid repeated
     // deterministic reconstruction (which becomes noticeable at high redraw rates).
-    static MAZE_WALL_CACHE: std::cell::RefCell<Option<(u64, u32, u32, Vec<u8>)>> =
+    static MAZE_WALL_CACHE: std::cell::RefCell<MazeWallCache> =
         const { std::cell::RefCell::new(None) };
 }
 

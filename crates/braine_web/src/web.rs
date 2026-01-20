@@ -2824,6 +2824,10 @@ fn App() -> impl IntoView {
         };
         let window_raf = window.clone();
 
+        let running: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(true),
+        );
+
         let last_drawn_version: std::rc::Rc<std::cell::RefCell<u64>> =
             std::rc::Rc::new(std::cell::RefCell::new(0));
 
@@ -2831,7 +2835,17 @@ fn App() -> impl IntoView {
         let f: RafCallbackCell = std::rc::Rc::new(std::cell::RefCell::new(None));
         let g = f.clone();
 
+        on_cleanup({
+            let running = running.clone();
+            move || {
+                running.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |_ts_ms: f64| {
+            if !running.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             let v = spotxy_render_version.get_value();
             if v != *last_drawn_version.borrow() {
                 *last_drawn_version.borrow_mut() = v;
@@ -2877,6 +2891,7 @@ fn App() -> impl IntoView {
             let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
         }
 
+        // Keep the RAF closure alive; it self-disables via `running` on cleanup.
         std::mem::forget(g);
     });
 
@@ -2902,6 +2917,10 @@ fn App() -> impl IntoView {
         };
         let window_raf = window.clone();
 
+        let running: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(true),
+        );
+
         let last_drawn_version: std::rc::Rc<std::cell::RefCell<u64>> =
             std::rc::Rc::new(std::cell::RefCell::new(0));
 
@@ -2909,7 +2928,17 @@ fn App() -> impl IntoView {
         let f: RafCallbackCell = std::rc::Rc::new(std::cell::RefCell::new(None));
         let g = f.clone();
 
+        on_cleanup({
+            let running = running.clone();
+            move || {
+                running.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |_ts_ms: f64| {
+            if !running.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             let v = maze_render_version.get_value();
             if v != *last_drawn_version.borrow() {
                 *last_drawn_version.borrow_mut() = v;
@@ -2965,6 +2994,10 @@ fn App() -> impl IntoView {
         };
         let window_raf = window.clone();
 
+        let running: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(true),
+        );
+
         let smoothed: std::rc::Rc<std::cell::RefCell<Option<PongUiState>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
         let last_ts_ms: std::rc::Rc<std::cell::RefCell<Option<f64>>> =
@@ -2974,7 +3007,17 @@ fn App() -> impl IntoView {
         let f: RafCallbackCell = std::rc::Rc::new(std::cell::RefCell::new(None));
         let g = f.clone();
 
+        on_cleanup({
+            let running = running.clone();
+            move || {
+                running.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |ts_ms: f64| {
+            if !running.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             let Some(canvas) = pong_canvas_ref.get() else {
                 // Canvas not mounted (game not visible); keep the RAF loop alive.
                 if let Some(cb) = f.borrow().as_ref() {
@@ -3034,8 +3077,6 @@ fn App() -> impl IntoView {
             let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
         }
 
-        // Keep the closure alive for the lifetime of the app.
-        // (Leptos will not drop it because we intentionally leak it here.)
         std::mem::forget(g);
     });
 
