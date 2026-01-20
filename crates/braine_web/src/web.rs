@@ -580,7 +580,8 @@ fn App() -> impl IntoView {
             if level != ToastLevel::Error {
                 if let Some(win) = web_sys::window() {
                     let cb = Closure::wrap(Box::new(move || {
-                        toasts.update(|ts| ts.retain(|t| t.id != id));
+                        // Use fallible access to gracefully handle disposed values.
+                        let _ = toasts.try_update(|ts| ts.retain(|t| t.id != id));
                     }) as Box<dyn FnMut()>);
                     let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
                         cb.as_ref().unchecked_ref(),
@@ -704,9 +705,18 @@ fn App() -> impl IntoView {
                 }
 
                 let cb = Closure::wrap(Box::new(move || {
-                    gpu_pending_show_timeout.set_value(None);
-                    if gpu_pending_requested.get_value() {
-                        set_gpu_step_pending.set(true);
+                    // Use fallible access to gracefully handle disposed values.
+                    use leptos::prelude::WriteValue;
+                    let _ = gpu_pending_show_timeout
+                        .try_write_value()
+                        .map(|mut g| *g = None);
+                    use leptos::prelude::ReadValue;
+                    if gpu_pending_requested
+                        .try_read_value()
+                        .map(|g| *g)
+                        .unwrap_or(false)
+                    {
+                        let _ = set_gpu_step_pending.try_set(true);
                     }
                 }) as Box<dyn FnMut()>);
 
@@ -726,9 +736,18 @@ fn App() -> impl IntoView {
                 }
 
                 let cb = Closure::wrap(Box::new(move || {
-                    gpu_pending_hide_timeout.set_value(None);
-                    if !gpu_pending_requested.get_value() {
-                        set_gpu_step_pending.set(false);
+                    // Use fallible access to gracefully handle disposed values.
+                    use leptos::prelude::WriteValue;
+                    let _ = gpu_pending_hide_timeout
+                        .try_write_value()
+                        .map(|mut g| *g = None);
+                    use leptos::prelude::ReadValue;
+                    if !gpu_pending_requested
+                        .try_read_value()
+                        .map(|g| *g)
+                        .unwrap_or(false)
+                    {
+                        let _ = set_gpu_step_pending.try_set(false);
                     }
                 }) as Box<dyn FnMut()>);
 
@@ -826,7 +845,8 @@ fn App() -> impl IntoView {
         move || {
             if let Some(win) = web_sys::window() {
                 let cb = Closure::wrap(Box::new(move || {
-                    set_analytics_modal_open.set(false);
+                    // Use fallible access to gracefully handle disposed values.
+                    let _ = set_analytics_modal_open.try_set(false);
                 }) as Box<dyn FnMut()>);
                 let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
                     cb.as_ref().unchecked_ref(),
@@ -929,7 +949,8 @@ fn App() -> impl IntoView {
                 set_config_applied.set(true);
                 if let Some(win) = web_sys::window() {
                     let cb = Closure::wrap(Box::new(move || {
-                        set_config_applied.set(false);
+                        // Use fallible access to gracefully handle disposed values.
+                        let _ = set_config_applied.try_set(false);
                     }) as Box<dyn FnMut()>);
                     let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
                         cb.as_ref().unchecked_ref(),
@@ -1135,7 +1156,8 @@ fn App() -> impl IntoView {
         move || {
             if let Some(win) = web_sys::window() {
                 let cb = Closure::wrap(Box::new(move || {
-                    set_game_info_modal_kind.set(None);
+                    // Use fallible access to gracefully handle disposed values.
+                    let _ = set_game_info_modal_kind.try_set(None);
                 }) as Box<dyn FnMut()>);
                 let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
                     cb.as_ref().unchecked_ref(),
@@ -1205,51 +1227,63 @@ fn App() -> impl IntoView {
         let set_idle = set_brainviz_idle_time;
         if let Some(window) = web_sys::window() {
             let cb = Closure::wrap(Box::new(move || {
-                // Visual animation: always increment idle time
-                set_idle.update(|t| *t += 0.033);
+                // Use fallible access to gracefully handle disposed reactive values.
+                // If any value is disposed, silently skip this tick (the app is shutting down).
+                let Some(_) = set_idle.try_update(|t| *t += 0.033) else {
+                    return;
+                };
 
                 // Check if brain is running (game loop active)
-                let running = is_running.get_untracked();
-                let learning = learning_enabled.get_untracked();
+                let Some(running) = is_running.try_get_untracked() else {
+                    return;
+                };
+                let Some(learning) = learning_enabled.try_get_untracked() else {
+                    return;
+                };
 
                 if running {
                     // Brain is running: reset idle state
-                    set_idle_sync_done.set(false);
-                    set_idle_dream_counter.set(0);
-                    set_idle_status.set("".to_string());
+                    let _ = set_idle_sync_done.try_set(false);
+                    let _ = set_idle_dream_counter.try_set(0);
+                    let _ = set_idle_status.try_set("".to_string());
                 } else {
                     // Brain is idle: perform actual maintenance operations
 
                     // 1. One-time sync when entering idle (only if not in learning mode)
-                    if !idle_sync_done.get_untracked() {
+                    let Some(sync_done) = idle_sync_done.try_get_untracked() else {
+                        return;
+                    };
+                    if !sync_done {
                         let mut synced: Option<usize> = None;
-                        runtime.update_value(|r| {
+                        let _ = runtime.try_update_value(|r| {
                             // Only sync if not in high-learning state.
                             if !r.brain.is_learning_mode() {
                                 synced = Some(r.brain.global_sync());
                             }
                         });
-                        set_idle_sync_done.set(true);
+                        let _ = set_idle_sync_done.try_set(true);
                         if synced.is_some() {
-                            set_idle_status.set("sync: phases aligned".to_string());
-                            set_brain_dirty.set(true);
+                            let _ = set_idle_status.try_set("sync: phases aligned".to_string());
+                            let _ = set_brain_dirty.try_set(true);
                         }
                     }
 
                     // 2. Periodic dreaming while idle (every ~3 seconds, 90 ticks)
-                    set_idle_dream_counter.update(|c| *c += 1);
-                    let counter = idle_dream_counter.get_untracked();
+                    let _ = set_idle_dream_counter.try_update(|c| *c += 1);
+                    let Some(counter) = idle_dream_counter.try_get_untracked() else {
+                        return;
+                    };
 
                     if counter >= 90 && !learning {
                         // Run idle maintenance (micro-dream on inactive clusters)
-                        runtime.update_value(|r| {
+                        let _ = runtime.try_update_value(|r| {
                             if let Some(processed) = r.brain.idle_maintenance(false) {
-                                set_idle_status
-                                    .set(format!("dreaming: {} units consolidated", processed));
-                                set_brain_dirty.set(true);
+                                let _ = set_idle_status
+                                    .try_set(format!("dreaming: {} units consolidated", processed));
+                                let _ = set_brain_dirty.try_set(true);
                             }
                         });
-                        set_idle_dream_counter.set(0);
+                        let _ = set_idle_dream_counter.try_set(0);
                     }
                 }
             }) as Box<dyn FnMut()>);
@@ -1272,37 +1306,49 @@ fn App() -> impl IntoView {
         let set_status = set_status.clone();
         if let Some(window) = web_sys::window() {
             let cb = Closure::wrap(Box::new(move || {
-                if !idb_autosave.get_untracked() {
+                // Use fallible access to gracefully handle disposed reactive values.
+                let Some(autosave) = idb_autosave.try_get_untracked() else {
+                    return;
+                };
+                if !autosave {
                     return;
                 }
-                if !brain_dirty.get_untracked() {
+                let Some(dirty) = brain_dirty.try_get_untracked() else {
+                    return;
+                };
+                if !dirty {
                     return;
                 }
 
-                let bytes = match runtime.with_value(|r| r.brain.save_image_bytes()) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        set_status.set(format!("autosave failed: {e}"));
+                // StoredValue access - use try-pattern.
+                use leptos::prelude::WithValue;
+                let bytes = match runtime.try_with_value(|r| r.brain.save_image_bytes()) {
+                    Some(Ok(b)) => b,
+                    Some(Err(e)) => {
+                        let _ = set_status.try_set(format!("autosave failed: {e}"));
                         return;
                     }
+                    None => return, // Disposed.
                 };
-                let accs = game_accuracies.get_untracked();
+                let Some(accs) = game_accuracies.try_get_untracked() else {
+                    return;
+                };
 
                 let set_status = set_status.clone();
                 spawn_local(async move {
                     match idb_put_bytes(IDB_KEY_BRAIN_IMAGE, &bytes).await {
                         Ok(()) => {
                             let _ = save_game_accuracies(&accs).await;
-                            set_brain_dirty.set(false);
-                            set_idb_loaded.set(true);
+                            let _ = set_brain_dirty.try_set(false);
+                            let _ = set_idb_loaded.try_set(true);
                             let ts = js_sys::Date::new_0()
                                 .to_iso_string()
                                 .as_string()
                                 .unwrap_or_default();
-                            set_idb_last_save.set(ts);
+                            let _ = set_idb_last_save.try_set(ts);
                         }
                         Err(e) => {
-                            set_status.set(format!("autosave failed: {e}"));
+                            let _ = set_status.try_set(format!("autosave failed: {e}"));
                         }
                     }
                 });
@@ -1737,17 +1783,39 @@ fn App() -> impl IntoView {
     let do_tick = {
         let runtime = runtime.clone();
         move || {
-            let cfg = TickConfig {
-                trial_period_ms: trial_period_ms.get_untracked(),
-                exploration_eps: exploration_eps.get_untracked(),
-                meaning_alpha: meaning_alpha.get_untracked(),
-                reward_scale: reward_scale.get_untracked(),
-                reward_bias: reward_bias.get_untracked(),
-                learning_enabled: learning_enabled.get_untracked(),
+            // Use fallible access to gracefully handle disposed reactive values.
+            // If any required value is disposed, the game loop is effectively dead.
+            let Some(trial_period_ms_val) = trial_period_ms.try_get_untracked() else {
+                return;
+            };
+            let Some(exploration_eps_val) = exploration_eps.try_get_untracked() else {
+                return;
+            };
+            let Some(meaning_alpha_val) = meaning_alpha.try_get_untracked() else {
+                return;
+            };
+            let Some(reward_scale_val) = reward_scale.try_get_untracked() else {
+                return;
+            };
+            let Some(reward_bias_val) = reward_bias.try_get_untracked() else {
+                return;
+            };
+            let Some(learning_enabled_val) = learning_enabled.try_get_untracked() else {
+                return;
             };
 
+            let cfg = TickConfig {
+                trial_period_ms: trial_period_ms_val,
+                exploration_eps: exploration_eps_val,
+                meaning_alpha: meaning_alpha_val,
+                reward_scale: reward_scale_val,
+                reward_bias: reward_bias_val,
+                learning_enabled: learning_enabled_val,
+            };
+
+            use leptos::prelude::UpdateValue;
             let mut tick_result: TickResult = TickResult::Advanced(None);
-            runtime.update_value(|r| {
+            let _ = runtime.try_update_value(|r| {
                 tick_result = r.tick(&cfg);
             });
 
@@ -2842,10 +2910,15 @@ fn App() -> impl IntoView {
         });
 
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |_ts_ms: f64| {
+            // Check running flag BEFORE any reactive access to avoid disposed-value panics.
             if !running.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
-            let v = spotxy_render_version.get_value();
+            // Use try-access to gracefully handle disposed reactive values.
+            use leptos::prelude::ReadValue;
+            let Some(v) = spotxy_render_version.try_read_value().map(|g| *g) else {
+                return; // Disposed; stop the RAF loop.
+            };
             if v != *last_drawn_version.borrow() {
                 *last_drawn_version.borrow_mut() = v;
 
@@ -2857,14 +2930,24 @@ fn App() -> impl IntoView {
                     return;
                 };
 
-                let grid_n = spotxy_grid_n.get_untracked();
-                let accent = if spotxy_eval.get_untracked() {
+                // Fallible reads to gracefully handle disposal.
+                let Some(grid_n) = spotxy_grid_n.try_get_untracked() else {
+                    return;
+                };
+                let Some(spotxy_eval_val) = spotxy_eval.try_get_untracked() else {
+                    return;
+                };
+                let accent = if spotxy_eval_val {
                     "#22c55e"
                 } else {
                     "#7aa2ff"
                 };
-                let pos = spotxy_pos.get_untracked();
-                let action = last_action.get_untracked();
+                let Some(pos) = spotxy_pos.try_get_untracked() else {
+                    return;
+                };
+                let Some(action) = last_action.try_get_untracked() else {
+                    return;
+                };
                 let selected = if action.is_empty() {
                     None
                 } else {
@@ -2934,10 +3017,15 @@ fn App() -> impl IntoView {
         });
 
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |_ts_ms: f64| {
+            // Check running flag BEFORE any reactive access to avoid disposed-value panics.
             if !running.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
-            let v = maze_render_version.get_value();
+            // Use try-access to gracefully handle disposed reactive values.
+            use leptos::prelude::ReadValue;
+            let Some(v) = maze_render_version.try_read_value().map(|g| *g) else {
+                return; // Disposed; stop the RAF loop.
+            };
             if v != *last_drawn_version.borrow() {
                 *last_drawn_version.borrow_mut() = v;
 
@@ -2948,8 +3036,13 @@ fn App() -> impl IntoView {
                     return;
                 };
 
-                let s = maze_state.get_untracked();
-                let action = last_action.get_untracked();
+                // Fallible reads to gracefully handle disposal.
+                let Some(s) = maze_state.try_get_untracked() else {
+                    return;
+                };
+                let Some(action) = last_action.try_get_untracked() else {
+                    return;
+                };
                 let selected = if action.is_empty() {
                     None
                 } else {
@@ -3012,6 +3105,7 @@ fn App() -> impl IntoView {
         });
 
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |ts_ms: f64| {
+            // Check running flag BEFORE any reactive access to avoid disposed-value panics.
             if !running.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
@@ -3035,10 +3129,13 @@ fn App() -> impl IntoView {
                 dt_s as f32
             };
 
-            // Smooth towards latest snapshot
-            let target = pong_state.get_untracked();
+            // Smooth towards latest snapshot - use fallible access to handle disposal.
+            let Some(target) = pong_state.try_get_untracked() else {
+                return;
+            };
             if let Some(t) = target {
-                let tau: f32 = 0.07; // seconds; lower = snappier, higher = smoother
+                // Faster convergence for snappier ball movement.
+                let tau: f32 = 0.035; // seconds; lower = snappier, higher = smoother
                 let alpha: f32 = 1.0 - (-dt_s / tau).exp();
 
                 let mut cur = smoothed.borrow_mut();
