@@ -356,7 +356,9 @@ impl MazeGame {
     }
 
     fn dist_to_goal(&self, x: u32, y: u32) -> Option<u16> {
-        let w = self.sim.grid.w().max(1) as usize;
+        // Maze grids are expected to be at least 2x2, but keep this resilient
+        // against any corrupted state.
+        let w = self.sim.grid.w().max(2) as usize;
         if x >= self.sim.grid.w() || y >= self.sim.grid.h() {
             return None;
         }
@@ -370,8 +372,10 @@ impl MazeGame {
     }
 
     fn recompute_goal_distances(&mut self) {
-        let w_u32 = self.sim.grid.w().max(1);
-        let h_u32 = self.sim.grid.h().max(1);
+        // Defensive: MazeGrid::new() keeps invariants (>=2x2), but if any
+        // corrupted/stale state leaks in, we must not panic here.
+        let w_u32 = self.sim.grid.w().max(2);
+        let h_u32 = self.sim.grid.h().max(2);
         let w = w_u32 as usize;
         let h = h_u32 as usize;
         let len = w.saturating_mul(h).max(1);
@@ -382,6 +386,7 @@ impl MazeGame {
         let gx = self.sim.goal_x.min(w_u32.saturating_sub(1));
         let gy = self.sim.goal_y.min(h_u32.saturating_sub(1));
         let goal_idx = (gy as usize) * w + (gx as usize);
+        let goal_idx = goal_idx.min(self.goal_dist_to_goal.len().saturating_sub(1));
         self.goal_dist_to_goal[goal_idx] = 0;
 
         let mut q: VecDeque<(u32, u32)> = VecDeque::new();
@@ -1078,5 +1083,21 @@ mod tests {
 
         assert!(d0 > 0);
         assert!(checked, "did not find a closer legal move to test");
+    }
+
+    #[test]
+    fn recompute_goal_distances_is_resilient_to_corrupted_dims() {
+        let mut g = MazeGame::new_with_difficulty(MazeDifficulty::Easy);
+
+        // Simulate a corrupted/stale state where the grid dimensions are wrong.
+        // This previously could panic when indexing into the goal-distance field.
+        g.sim.grid.w = 0;
+        g.sim.grid.h = 0;
+        g.sim.grid.cells.clear();
+        g.sim.goal_x = 6;
+        g.sim.goal_y = 6;
+
+        g.recompute_goal_distances();
+        assert!(!g.goal_dist_to_goal.is_empty());
     }
 }
