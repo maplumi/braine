@@ -240,12 +240,12 @@ impl GpuContext {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Dynamics Bind Group Layout"),
             entries: &[
-                // Units buffer (read-write)
+                // Units input buffer (read-only)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -279,6 +279,17 @@ impl GpuContext {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Units output buffer (read-write)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -356,7 +367,7 @@ impl GpuContext {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -392,6 +403,16 @@ impl GpuContext {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -412,8 +433,14 @@ impl GpuContext {
 
         // Also validate bind group creation against the layout.
         // This catches common Storage/Uniform mismatches early.
-        let dummy_units = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Units Buffer (dummy)"),
+        let dummy_units_in = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Units In Buffer (dummy)"),
+            size: std::mem::size_of::<GpuUnit>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let dummy_units_out = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Units Out Buffer (dummy)"),
             size: std::mem::size_of::<GpuUnit>() as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
@@ -442,7 +469,7 @@ impl GpuContext {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: dummy_units.as_entire_binding(),
+                    resource: dummy_units_in.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -455,6 +482,10 @@ impl GpuContext {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: dummy_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: dummy_units_out.as_entire_binding(),
                 },
             ],
         });
@@ -501,13 +532,20 @@ impl GpuContext {
         }
 
         // Create buffers
-        let units_buffer = self
+        let units_in_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Units Buffer"),
+                label: Some("Units In Buffer"),
                 contents: bytemuck::cast_slice(units),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             });
+
+        let units_out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Units Out Buffer"),
+            size: std::mem::size_of_val(units) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
 
         let influences_buffer = self
             .device
@@ -555,7 +593,7 @@ impl GpuContext {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: units_buffer.as_entire_binding(),
+                    resource: units_in_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -568,6 +606,10 @@ impl GpuContext {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: units_out_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -591,7 +633,7 @@ impl GpuContext {
 
         // Copy results back
         encoder.copy_buffer_to_buffer(
-            &units_buffer,
+            &units_out_buffer,
             0,
             &staging_buffer,
             0,
@@ -641,13 +683,20 @@ impl GpuContext {
         }
 
         // Create buffers
-        let units_buffer = self
+        let units_in_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Units Buffer"),
+                label: Some("Units In Buffer"),
                 contents: bytemuck::cast_slice(units),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             });
+
+        let units_out_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Units Out Buffer"),
+            size: std::mem::size_of_val(units) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
 
         let influences_buffer = self
             .device
@@ -695,7 +744,7 @@ impl GpuContext {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: units_buffer.as_entire_binding(),
+                    resource: units_in_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -708,6 +757,10 @@ impl GpuContext {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: units_out_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -729,7 +782,7 @@ impl GpuContext {
         }
 
         encoder.copy_buffer_to_buffer(
-            &units_buffer,
+            &units_out_buffer,
             0,
             &staging_buffer,
             0,
@@ -856,10 +909,11 @@ struct Params {
     unit_count: u32,
 }
 
-@group(0) @binding(0) var<storage, read_write> units: array<Unit>;
+@group(0) @binding(0) var<storage, read> units_in: array<Unit>;
 @group(0) @binding(1) var<storage, read> influences: array<Influence>;
 @group(0) @binding(2) var<storage, read> inputs: array<Input>;
 @group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var<storage, read_write> units_out: array<Unit>;
 
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
@@ -884,7 +938,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let u = units[i];
+    let u = units_in[i];
     let inf = influences[i];
     let input = inputs[i].value;
 
@@ -897,8 +951,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let new_phase = wrap_angle(u.phase + d_phase);
 
-    units[i].amp = new_amp;
-    units[i].phase = new_phase;
+    units_out[i].amp = new_amp;
+    units_out[i].phase = new_phase;
+    units_out[i].bias = u.bias;
+    units_out[i].decay = u.decay;
 }
 "#;
 
