@@ -5,6 +5,14 @@ use super::types::{MazeUiState, PongUiState};
 
 use braine_games::maze::MazeSim;
 
+thread_local! {
+    // Cached maze wall bits, keyed by (seed, w, h).
+    // We cache the *wall bits* rather than the full MazeSim to avoid repeated
+    // deterministic reconstruction (which becomes noticeable at high redraw rates).
+    static MAZE_WALL_CACHE: std::cell::RefCell<Option<(u64, u32, u32, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[allow(deprecated)]
 pub(super) fn clear_canvas(canvas: &web_sys::HtmlCanvasElement) -> Result<(), String> {
     let ctx = canvas
@@ -161,16 +169,22 @@ pub(super) fn draw_spotxy(
 /// Parse a grid cell action like "spotxy_cell_02_01_00" into (ix, iy)
 fn parse_spotxy_cell_action(action: &str, expected_n: u32) -> Option<(u32, u32)> {
     // Format: spotxy_cell_{n:02}_{ix:02}_{iy:02}
-    let parts: Vec<&str> = action.split('_').collect();
-    if parts.len() != 5 || parts[0] != "spotxy" || parts[1] != "cell" {
+    let mut it = action.split('_');
+    if it.next()? != "spotxy" {
         return None;
     }
-    let n: u32 = parts[2].parse().ok()?;
+    if it.next()? != "cell" {
+        return None;
+    }
+    let n: u32 = it.next()?.parse().ok()?;
     if n != expected_n {
         return None;
     }
-    let ix: u32 = parts[3].parse().ok()?;
-    let iy: u32 = parts[4].parse().ok()?;
+    let ix: u32 = it.next()?.parse().ok()?;
+    let iy: u32 = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
     Some((ix, iy))
 }
 
@@ -369,47 +383,65 @@ pub(super) fn draw_maze(
     let ox = (wpx - draw_w) * 0.5;
     let oy = (hpx - draw_h) * 0.5;
 
-    // Reconstruct maze deterministically.
-    let sim = MazeSim::new_with_dims(s.seed, s.w, s.h);
+    // Maze walls: cache by (seed,w,h) to avoid rebuilding every draw.
+    let walls: Vec<u8> = MAZE_WALL_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let reuse = cache
+            .as_ref()
+            .is_some_and(|(seed, w, h, _)| *seed == s.seed && *w == s.w && *h == s.h);
+        if !reuse {
+            let sim = MazeSim::new_with_dims(s.seed, s.w, s.h);
+            let mut out = Vec::with_capacity((s.w as usize) * (s.h as usize));
+            for y in 0..s.h {
+                for x in 0..s.w {
+                    out.push(sim.grid.walls(x, y));
+                }
+            }
+            *cache = Some((s.seed, s.w, s.h, out));
+        }
+        cache
+            .as_ref()
+            .map(|(_, _, _, v)| v.clone())
+            .unwrap_or_default()
+    });
 
     // Wall styling
     ctx.set_stroke_style_str("rgba(122, 162, 255, 0.55)");
     ctx.set_line_width((cell * 0.10).clamp(1.0, 3.0));
 
     // Wall bits: 1=up,2=right,4=down,8=left.
-    for y in 0..s.h {
-        for x in 0..s.w {
+    // Performance: build one path and stroke once.
+    ctx.begin_path();
+    let w = s.w;
+    let h = s.h;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y as usize) * (w as usize) + (x as usize);
+            let walls = walls.get(idx).copied().unwrap_or(0);
+
             let wx = ox + (x as f64) * cell;
             let wy = oy + (y as f64) * cell;
-            let walls = sim.grid.walls(x, y);
 
-            // Draw per-wall.
+            // Draw unique segments only (top + left for each cell, plus outer borders).
             if (walls & 1) != 0 {
-                ctx.begin_path();
                 ctx.move_to(wx, wy);
                 ctx.line_to(wx + cell, wy);
-                ctx.stroke();
-            }
-            if (walls & 2) != 0 {
-                ctx.begin_path();
-                ctx.move_to(wx + cell, wy);
-                ctx.line_to(wx + cell, wy + cell);
-                ctx.stroke();
-            }
-            if (walls & 4) != 0 {
-                ctx.begin_path();
-                ctx.move_to(wx, wy + cell);
-                ctx.line_to(wx + cell, wy + cell);
-                ctx.stroke();
             }
             if (walls & 8) != 0 {
-                ctx.begin_path();
                 ctx.move_to(wx, wy);
                 ctx.line_to(wx, wy + cell);
-                ctx.stroke();
+            }
+            if x + 1 == w && (walls & 2) != 0 {
+                ctx.move_to(wx + cell, wy);
+                ctx.line_to(wx + cell, wy + cell);
+            }
+            if y + 1 == h && (walls & 4) != 0 {
+                ctx.move_to(wx, wy + cell);
+                ctx.line_to(wx + cell, wy + cell);
             }
         }
     }
+    ctx.stroke();
 
     // Goal (square)
     let gx = ox + (s.goal_x as f64 + 0.5) * cell;

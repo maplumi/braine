@@ -2754,57 +2754,143 @@ fn App() -> impl IntoView {
     };
 
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    // SpotXY canvas: coalesce updates and render on requestAnimationFrame to avoid
+    // multiple draws per tick and reduce UI jank.
+    let spotxy_render_version = StoredValue::new(0u64);
     Effect::new(move |_| {
         let _ = spotxy_grid_n.get();
         let _ = spotxy_eval.get();
-        let pos = spotxy_pos.get();
-        let action = last_action.get();
+        let _ = spotxy_pos.get();
+        let _ = last_action.get();
+        spotxy_render_version.update_value(|v| *v = v.wrapping_add(1));
+    });
+
+    let spotxy_anim_started = StoredValue::new(false);
+    Effect::new(move |_| {
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
-
-        let grid_n = spotxy_grid_n.get();
-        let accent = if spotxy_eval.get() {
-            "#22c55e"
-        } else {
-            "#7aa2ff"
-        };
-
-        let selected = if action.is_empty() {
-            None
-        } else {
-            Some(action.as_str())
-        };
-
-        match pos {
-            Some((x, y)) => {
-                let _ = draw_spotxy(&canvas, x, y, grid_n, accent, selected);
-            }
-            None => {
-                let _ = draw_spotxy(&canvas, 0.0, 0.0, grid_n, accent, selected);
-            }
+        if spotxy_anim_started.get_value() {
+            return;
         }
+        spotxy_anim_started.set_value(true);
+
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let window_raf = window.clone();
+
+        let last_drawn_version: std::rc::Rc<std::cell::RefCell<u64>> =
+            std::rc::Rc::new(std::cell::RefCell::new(0));
+
+        type RafCallbackCell = std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+        let f: RafCallbackCell = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let g = f.clone();
+
+        *g.borrow_mut() = Some(Closure::wrap(Box::new(move |_ts_ms: f64| {
+            let v = spotxy_render_version.get_value();
+            if v != *last_drawn_version.borrow() {
+                *last_drawn_version.borrow_mut() = v;
+
+                let grid_n = spotxy_grid_n.get_untracked();
+                let accent = if spotxy_eval.get_untracked() {
+                    "#22c55e"
+                } else {
+                    "#7aa2ff"
+                };
+                let pos = spotxy_pos.get_untracked();
+                let action = last_action.get_untracked();
+                let selected = if action.is_empty() {
+                    None
+                } else {
+                    Some(action.as_str())
+                };
+
+                match pos {
+                    Some((x, y)) => {
+                        let _ = draw_spotxy(&canvas, x, y, grid_n, accent, selected);
+                    }
+                    None => {
+                        let _ = draw_spotxy(&canvas, 0.0, 0.0, grid_n, accent, selected);
+                    }
+                }
+            }
+
+            if let Some(cb) = f.borrow().as_ref() {
+                let _ = window_raf.request_animation_frame(cb.as_ref().unchecked_ref());
+            }
+        }) as Box<dyn FnMut(f64)>));
+
+        if let Some(cb) = g.borrow().as_ref() {
+            let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
+        }
+
+        std::mem::forget(g);
     });
 
     let maze_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    // Maze canvas: coalesce updates and render on requestAnimationFrame.
+    let maze_render_version = StoredValue::new(0u64);
     Effect::new(move |_| {
-        let s = maze_state.get();
-        let action = last_action.get();
+        let _ = maze_state.get();
+        let _ = last_action.get();
+        maze_render_version.update_value(|v| *v = v.wrapping_add(1));
+    });
+
+    let maze_anim_started = StoredValue::new(false);
+    Effect::new(move |_| {
         let Some(canvas) = maze_canvas_ref.get() else {
             return;
         };
-
-        let selected = if action.is_empty() {
-            None
-        } else {
-            Some(action.as_str())
-        };
-
-        if let Some(s) = &s {
-            let _ = draw_maze(&canvas, s, selected);
-        } else {
-            let _ = clear_canvas(&canvas);
+        if maze_anim_started.get_value() {
+            return;
         }
+        maze_anim_started.set_value(true);
+
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let window_raf = window.clone();
+
+        let last_drawn_version: std::rc::Rc<std::cell::RefCell<u64>> =
+            std::rc::Rc::new(std::cell::RefCell::new(0));
+
+        type RafCallbackCell = std::rc::Rc<std::cell::RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+        let f: RafCallbackCell = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let g = f.clone();
+
+        *g.borrow_mut() = Some(Closure::wrap(Box::new(move |_ts_ms: f64| {
+            let v = maze_render_version.get_value();
+            if v != *last_drawn_version.borrow() {
+                *last_drawn_version.borrow_mut() = v;
+
+                let s = maze_state.get_untracked();
+                let action = last_action.get_untracked();
+                let selected = if action.is_empty() {
+                    None
+                } else {
+                    Some(action.as_str())
+                };
+
+                if let Some(s) = &s {
+                    let _ = draw_maze(&canvas, s, selected);
+                } else {
+                    let _ = clear_canvas(&canvas);
+                }
+            }
+
+            if let Some(cb) = f.borrow().as_ref() {
+                let _ = window_raf.request_animation_frame(cb.as_ref().unchecked_ref());
+            }
+        }) as Box<dyn FnMut(f64)>));
+
+        if let Some(cb) = g.borrow().as_ref() {
+            let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
+        }
+
+        std::mem::forget(g);
     });
 
     let pong_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
