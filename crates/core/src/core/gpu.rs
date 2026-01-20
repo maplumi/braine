@@ -312,33 +312,39 @@ impl GpuContext {
 
         // Also validate bind group creation against the layout.
         // This catches common Storage/Uniform mismatches early.
+        // WebGPU enforces `minBindingSize` at bind-group creation time.
+        // Use generously-sized dummy buffers so this validation step remains
+        // robust if WGSL structs/layout evolve.
+        const DUMMY_STORAGE_BYTES: u64 = 256;
+        const DUMMY_UNIFORM_BYTES: u64 = 256;
+
         let dummy_units_in = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Units In Buffer (dummy)"),
-            size: std::mem::size_of::<GpuUnit>() as u64,
+            size: (std::mem::size_of::<GpuUnit>() as u64).max(DUMMY_STORAGE_BYTES),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let dummy_units_out = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Units Out Buffer (dummy)"),
-            size: std::mem::size_of::<GpuUnit>() as u64,
+            size: (std::mem::size_of::<GpuUnit>() as u64).max(DUMMY_STORAGE_BYTES),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let dummy_influences = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Influences Buffer (dummy)"),
-            size: std::mem::size_of::<GpuInfluence>() as u64,
+            size: (std::mem::size_of::<GpuInfluence>() as u64).max(DUMMY_STORAGE_BYTES),
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
         let dummy_inputs = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Inputs Buffer (dummy)"),
-            size: std::mem::size_of::<GpuInput>() as u64,
+            size: (std::mem::size_of::<GpuInput>() as u64).max(DUMMY_STORAGE_BYTES),
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
         let dummy_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Params Buffer (dummy)"),
-            size: std::mem::size_of::<GpuParams>() as u64,
+            size: (std::mem::size_of::<GpuParams>() as u64).max(DUMMY_UNIFORM_BYTES),
             usage: wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: false,
         });
@@ -778,7 +784,9 @@ struct Influence {
 
 struct Input {
     value: f32,
-    _padding: vec3<f32>,
+    _padding0: f32,
+    _padding1: f32,
+    _padding2: f32,
 }
 
 struct Params {
