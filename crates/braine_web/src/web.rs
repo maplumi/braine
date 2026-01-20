@@ -2824,9 +2824,8 @@ fn App() -> impl IntoView {
         };
         let window_raf = window.clone();
 
-        let running: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(
-            std::sync::atomic::AtomicBool::new(true),
-        );
+        let running: std::sync::Arc<std::sync::atomic::AtomicBool> =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let last_drawn_version: std::rc::Rc<std::cell::RefCell<u64>> =
             std::rc::Rc::new(std::cell::RefCell::new(0));
@@ -2917,9 +2916,8 @@ fn App() -> impl IntoView {
         };
         let window_raf = window.clone();
 
-        let running: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(
-            std::sync::atomic::AtomicBool::new(true),
-        );
+        let running: std::sync::Arc<std::sync::atomic::AtomicBool> =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let last_drawn_version: std::rc::Rc<std::cell::RefCell<u64>> =
             std::rc::Rc::new(std::cell::RefCell::new(0));
@@ -2994,9 +2992,8 @@ fn App() -> impl IntoView {
         };
         let window_raf = window.clone();
 
-        let running: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(
-            std::sync::atomic::AtomicBool::new(true),
-        );
+        let running: std::sync::Arc<std::sync::atomic::AtomicBool> =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
         let smoothed: std::rc::Rc<std::cell::RefCell<Option<PongUiState>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
