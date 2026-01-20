@@ -11,7 +11,8 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
 thread_local! {
-    static GPU_CTX: std::cell::OnceCell<Option<GpuContext>> = const { std::cell::OnceCell::new() };
+    static GPU_CTX: std::cell::OnceCell<Result<GpuContext, String>> =
+        const { std::cell::OnceCell::new() };
 }
 
 thread_local! {
@@ -50,26 +51,26 @@ pub async fn init_gpu_context(max_units: usize) -> Result<(), String> {
     #[cfg(target_arch = "wasm32")]
     {
         // If already initialized (success or failure), return current state.
-        if GPU_CTX.with(|cell| cell.get().is_some()) {
-            return if GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some()) {
-                Ok(())
-            } else {
-                Err("GPU init previously failed".to_string())
+        if let Some(res) = GPU_CTX.with(|cell| cell.get()) {
+            return match res {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e.clone()),
             };
         }
 
         let ctx_res = GpuContext::new_async(max_units).await;
-        let ok = ctx_res.is_ok();
+        let err = ctx_res.as_ref().err().cloned();
+        let ok = err.is_none();
         GPU_CTX.with(|cell| {
             // Ignore double-set races; wasm is single-threaded, but be defensive.
-            let _ = cell.set(ctx_res.ok());
+            let _ = cell.set(ctx_res);
         });
         if ok {
             GPU_DISABLED.with(|d| d.set(false));
             Ok(())
         } else {
             GPU_DISABLED.with(|d| d.set(true));
-            Err("WebGPU init failed".to_string())
+            Err(err.unwrap_or_else(|| "WebGPU init failed".to_string()))
         }
     }
 
@@ -96,16 +97,19 @@ pub fn with_gpu_context<T>(max_units: usize, f: impl FnOnce(Option<&GpuContext>)
         }
 
         GPU_CTX.with(|cell| match cell.get() {
-            Some(ctx) => f(ctx.as_ref()),
-            None => f(None),
+            Some(Ok(ctx)) => f(Some(ctx)),
+            _ => f(None),
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
         GPU_CTX.with(|cell| {
-            let ctx = cell.get_or_init(|| GpuContext::new(max_units));
-            f(ctx.as_ref())
+            let ctx = cell.get_or_init(|| {
+                GpuContext::new(max_units)
+                    .ok_or_else(|| "GPU adapter/device unavailable".to_string())
+            });
+            f(ctx.as_ref().ok())
         })
     }
 }
@@ -119,8 +123,7 @@ pub fn gpu_available(max_units: usize) -> bool {
         let _ = max_units;
         // On wasm, GPU initialization must be done asynchronously.
         // This function only reports whether the shared context is ready.
-        !GPU_DISABLED.with(|d| d.get())
-            && GPU_CTX.with(|cell| cell.get().and_then(|o| o.as_ref()).is_some())
+        !GPU_DISABLED.with(|d| d.get()) && GPU_CTX.with(|cell| matches!(cell.get(), Some(Ok(_))))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
