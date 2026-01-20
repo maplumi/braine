@@ -1,6 +1,8 @@
 use crate::stats::GameStats;
 use crate::time::{Duration, Instant};
 
+use std::collections::VecDeque;
+
 #[cfg(feature = "braine")]
 use braine::substrate::Brain;
 
@@ -250,6 +252,12 @@ pub struct MazeGame {
 
     pub steps_in_episode: u32,
 
+    /// Precomputed shortest-path distance-to-goal for each cell.
+    ///
+    /// Used for reward shaping and distance sensors. Manhattan distance is
+    /// misleading in a walled maze; BFS distance rewards true progress.
+    goal_dist_to_goal: Vec<u16>,
+
     /// How many episodes to run on the same maze layout before reseeding.
     ///
     /// Keeping the maze stable for a short curriculum window reduces
@@ -285,6 +293,9 @@ impl MazeGame {
             last_event: MazeEvent::None,
             stats: GameStats::new(),
             steps_in_episode: 0,
+
+            goal_dist_to_goal: Vec::new(),
+
             episodes_per_maze: 8,
             episode_idx: 0,
             action_names: vec![
@@ -297,6 +308,7 @@ impl MazeGame {
             visit_counts,
             trial_started_at: now,
         };
+        g.recompute_goal_distances();
         g.refresh_stimulus_key();
         g
     }
@@ -333,6 +345,7 @@ impl MazeGame {
         let seed = self.sim.seed;
         self.sim = MazeSim::new(seed, difficulty);
         self.visit_counts = vec![0u16; (self.sim.grid.w() as usize) * (self.sim.grid.h() as usize)];
+        self.recompute_goal_distances();
         self.stats = GameStats::new();
         self.steps_in_episode = 0;
         self.last_event = MazeEvent::None;
@@ -340,6 +353,97 @@ impl MazeGame {
         self.last_action = None;
         self.trial_started_at = Instant::now();
         self.refresh_stimulus_key();
+    }
+
+    fn dist_to_goal(&self, x: u32, y: u32) -> Option<u16> {
+        let w = self.sim.grid.w().max(1) as usize;
+        if x >= self.sim.grid.w() || y >= self.sim.grid.h() {
+            return None;
+        }
+        let idx = (y as usize) * w + (x as usize);
+        let d = *self.goal_dist_to_goal.get(idx)?;
+        if d == u16::MAX {
+            None
+        } else {
+            Some(d)
+        }
+    }
+
+    fn recompute_goal_distances(&mut self) {
+        let w_u32 = self.sim.grid.w().max(1);
+        let h_u32 = self.sim.grid.h().max(1);
+        let w = w_u32 as usize;
+        let h = h_u32 as usize;
+        let len = w.saturating_mul(h).max(1);
+
+        self.goal_dist_to_goal.clear();
+        self.goal_dist_to_goal.resize(len, u16::MAX);
+
+        let gx = self.sim.goal_x.min(w_u32.saturating_sub(1));
+        let gy = self.sim.goal_y.min(h_u32.saturating_sub(1));
+        let goal_idx = (gy as usize) * w + (gx as usize);
+        self.goal_dist_to_goal[goal_idx] = 0;
+
+        let mut q: VecDeque<(u32, u32)> = VecDeque::new();
+        q.push_back((gx, gy));
+
+        while let Some((x, y)) = q.pop_front() {
+            let base_idx = (y as usize) * w + (x as usize);
+            let base_d = self.goal_dist_to_goal[base_idx];
+            if base_d == u16::MAX {
+                continue;
+            }
+
+            let walls = self.sim.grid.walls(x, y);
+
+            // Up
+            if walls & W_UP == 0 && y > 0 {
+                let nx = x;
+                let ny = y - 1;
+                let nidx = (ny as usize) * w + (nx as usize);
+                let nd = base_d.saturating_add(1);
+                if self.goal_dist_to_goal[nidx] > nd {
+                    self.goal_dist_to_goal[nidx] = nd;
+                    q.push_back((nx, ny));
+                }
+            }
+
+            // Right
+            if walls & W_RIGHT == 0 && x + 1 < w_u32 {
+                let nx = x + 1;
+                let ny = y;
+                let nidx = (ny as usize) * w + (nx as usize);
+                let nd = base_d.saturating_add(1);
+                if self.goal_dist_to_goal[nidx] > nd {
+                    self.goal_dist_to_goal[nidx] = nd;
+                    q.push_back((nx, ny));
+                }
+            }
+
+            // Down
+            if walls & W_DOWN == 0 && y + 1 < h_u32 {
+                let nx = x;
+                let ny = y + 1;
+                let nidx = (ny as usize) * w + (nx as usize);
+                let nd = base_d.saturating_add(1);
+                if self.goal_dist_to_goal[nidx] > nd {
+                    self.goal_dist_to_goal[nidx] = nd;
+                    q.push_back((nx, ny));
+                }
+            }
+
+            // Left
+            if walls & W_LEFT == 0 && x > 0 {
+                let nx = x - 1;
+                let ny = y;
+                let nidx = (ny as usize) * w + (nx as usize);
+                let nd = base_d.saturating_add(1);
+                if self.goal_dist_to_goal[nidx] > nd {
+                    self.goal_dist_to_goal[nidx] = nd;
+                    q.push_back((nx, ny));
+                }
+            }
+        }
     }
 
     pub fn update_timing(&mut self, trial_period_ms: u32) {
@@ -407,8 +511,11 @@ impl MazeGame {
         );
 
         // Distance buckets (0..=3).
-        let dist = self.sim.manhattan_to_goal();
-        let denom = (self.sim.grid.w() + self.sim.grid.h()).max(1);
+        // Use shortest-path distance (maze topology), not Manhattan.
+        let dist = self
+            .dist_to_goal(px, py)
+            .unwrap_or_else(|| self.sim.manhattan_to_goal() as u16) as u32;
+        let denom = (self.sim.grid.w().max(1) * self.sim.grid.h().max(1)).max(1);
         let dist01 = (dist as f32) / (denom as f32);
         let bucket = (dist01 * 4.0).floor().clamp(0.0, 3.0) as u32;
         for b in 0..4 {
@@ -562,7 +669,9 @@ impl MazeGame {
 
         let act = MazeAction::from_action_str(action)?;
 
-        let dist_before = self.sim.manhattan_to_goal() as i32;
+        let dist_before =
+            self.dist_to_goal(self.sim.player_x, self.sim.player_y)
+                .unwrap_or_else(|| self.sim.manhattan_to_goal() as u16) as i32;
         let prev_idx = (self.sim.player_y as usize) * (self.sim.grid.w() as usize)
             + (self.sim.player_x as usize);
 
@@ -576,7 +685,9 @@ impl MazeGame {
             *v = v.saturating_add(1);
         }
 
-        let dist_after = self.sim.manhattan_to_goal() as i32;
+        let dist_after = self
+            .dist_to_goal(self.sim.player_x, self.sim.player_y)
+            .unwrap_or_else(|| self.sim.manhattan_to_goal() as u16) as i32;
         let delta = dist_before - dist_after;
 
         let mut reward = 0.0;
@@ -596,15 +707,37 @@ impl MazeGame {
             };
         }
 
-        // Distance shaping (disabled in hard).
-        match self.difficulty {
-            MazeDifficulty::Easy => {
-                reward += 0.02 * (delta as f32);
+        // Distance shaping (shortest-path distance, not Manhattan).
+        // Reward progress strongly, penalize regress weakly to keep exploration viable.
+        if delta != 0 {
+            let pos = delta.max(0) as f32;
+            let neg = (-delta).max(0) as f32;
+            match self.difficulty {
+                MazeDifficulty::Easy => {
+                    reward += 0.05 * pos;
+                    reward -= 0.002 * neg;
+                }
+                MazeDifficulty::Medium => {
+                    reward += 0.03 * pos;
+                    reward -= 0.004 * neg;
+                }
+                MazeDifficulty::Hard => {
+                    reward += 0.02 * pos;
+                    reward -= 0.006 * neg;
+                }
             }
-            MazeDifficulty::Medium => {
-                reward += 0.01 * (delta as f32);
+        }
+
+        // Novelty bonus: first-time visits get a small positive reward.
+        if event == MazeEvent::Moved {
+            let visits = self.visit_counts[idx] as u32;
+            if visits == 1 {
+                reward += match self.difficulty {
+                    MazeDifficulty::Easy => 0.01,
+                    MazeDifficulty::Medium => 0.006,
+                    MazeDifficulty::Hard => 0.0,
+                };
             }
-            MazeDifficulty::Hard => {}
         }
 
         // Mild anti-loop penalty.
@@ -668,6 +801,7 @@ impl MazeGame {
         if should_regen {
             self.sim.seed = self.sim.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
             self.sim.regenerate();
+            self.recompute_goal_distances();
         } else {
             self.sim.player_x = 0;
             self.sim.player_y = 0;
@@ -697,8 +831,10 @@ impl MazeGame {
             '0'
         };
 
-        let dist = self.sim.manhattan_to_goal();
-        let denom = (self.sim.grid.w() + self.sim.grid.h()).max(1);
+        let dist = self
+            .dist_to_goal(self.sim.player_x, self.sim.player_y)
+            .unwrap_or_else(|| self.sim.manhattan_to_goal() as u16) as u32;
+        let denom = (self.sim.grid.w().max(1) * self.sim.grid.h().max(1)).max(1);
         let dist01 = (dist as f32) / (denom as f32);
         let bucket = (dist01 * 4.0).floor().clamp(0.0, 3.0) as u32;
 
@@ -873,5 +1009,74 @@ mod tests {
         // Success should regenerate immediately (avoid overfitting one maze).
         g.reset_episode(true);
         assert_ne!(g.sim.grid.cells, cells0);
+    }
+
+    #[test]
+    fn goal_distance_field_has_a_decreasing_neighbor_from_start() {
+        let g = MazeGame::new_with_difficulty(MazeDifficulty::Easy);
+        let d0 = g
+            .dist_to_goal(g.sim.player_x, g.sim.player_y)
+            .expect("start distance should be defined");
+        if d0 == 0 {
+            return;
+        }
+
+        let actions = ["up", "right", "down", "left"];
+        let mut found = false;
+
+        for a in actions {
+            let mut g2 = MazeGame::new_with_difficulty(MazeDifficulty::Easy);
+            let act = MazeAction::from_action_str(a).unwrap();
+            let ev = g2.sim.try_step(act);
+            if ev != MazeEvent::Moved {
+                continue;
+            }
+            let d1 = g2
+                .dist_to_goal(g2.sim.player_x, g2.sim.player_y)
+                .expect("neighbor distance should be defined");
+            if d1 < d0 {
+                found = true;
+                break;
+            }
+        }
+
+        assert!(found, "expected at least one legal neighbor closer to goal");
+    }
+
+    #[test]
+    fn easy_mode_rewards_a_good_step_positive() {
+        let g = MazeGame::new_with_difficulty(MazeDifficulty::Easy);
+        let d0 = g
+            .dist_to_goal(g.sim.player_x, g.sim.player_y)
+            .unwrap_or_else(|| g.sim.manhattan_to_goal() as u16);
+
+        let actions = ["up", "right", "down", "left"];
+        let mut checked = false;
+
+        for a in actions {
+            let mut g2 = MazeGame::new_with_difficulty(MazeDifficulty::Easy);
+            let d0_local = g2
+                .dist_to_goal(g2.sim.player_x, g2.sim.player_y)
+                .unwrap_or_else(|| g2.sim.manhattan_to_goal() as u16);
+            let Some((reward, _done)) = g2.score_action(a) else {
+                continue;
+            };
+            if g2.last_event != MazeEvent::Moved {
+                continue;
+            }
+
+            let d1_local = g2
+                .dist_to_goal(g2.sim.player_x, g2.sim.player_y)
+                .unwrap_or_else(|| g2.sim.manhattan_to_goal() as u16);
+
+            if d1_local < d0_local {
+                assert!(reward > 0.0, "expected positive reward for a good step");
+                checked = true;
+                break;
+            }
+        }
+
+        assert!(d0 > 0);
+        assert!(checked, "did not find a closer legal move to test");
     }
 }
