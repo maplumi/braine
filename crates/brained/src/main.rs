@@ -1451,6 +1451,11 @@ impl DaemonState {
         let mut controller_scale: f32 = 1.0;
         let mut controller_is_expert: bool = false;
         {
+            // Only commit causal/meaning symbols on "decision boundaries": when a trial action is
+            // selected/scored or when we apply delayed credit (e.g. Pong hit/miss) to an earlier
+            // held action. Committing every tick dilutes reward associations and can stall learning.
+            let mut should_commit_boundary: bool = false;
+
             // Choose controller brain (supports nested experts).
             let mut ctrl_opt: Option<experts::ControllerBorrow<'_>> = if self.experts.enabled() {
                 Some(
@@ -1486,6 +1491,7 @@ impl DaemonState {
                             brain.reinforce_action(action.as_str(), r);
                             self.pending_neuromod = r;
                             self.last_reward = r;
+                            should_commit_boundary = true;
                         }
                     }
                 }
@@ -1573,6 +1579,9 @@ impl DaemonState {
                     self.last_reward = reward;
                     scored_reward = Some(reward);
 
+                    // This tick is a trial decision boundary.
+                    should_commit_boundary = true;
+
                     if allow_learning {
                         let learn_reward = if controller_is_expert {
                             (reward * controller_scale).clamp(-1.0, 1.0)
@@ -1602,7 +1611,8 @@ impl DaemonState {
             }
 
             // Commit or discard perception/action/reward symbols on the controller.
-            if allow_learning {
+            // We discard non-boundary ticks so they don't flood causality/meaning memory.
+            if allow_learning && should_commit_boundary {
                 brain.commit_observation();
             } else {
                 brain.discard_observation();

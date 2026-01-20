@@ -2,7 +2,10 @@ use crate::stats::GameStats;
 use crate::time::{Duration, Instant};
 
 #[cfg(feature = "braine")]
-use braine::substrate::{Brain, Stimulus};
+use braine::substrate::Brain;
+
+#[cfg(feature = "braine")]
+use crate::brain_io;
 
 // ─────────────────────────────────────────────────────────────────────────
 // SpotXY: 2D position (population-coded) with a 2-action rule on sign(x).
@@ -188,8 +191,8 @@ impl SpotXYGame {
     #[cfg(feature = "braine")]
     pub fn apply_stimuli(&self, brain: &mut Brain) {
         for i in 0..self.k {
-            brain.apply_stimulus(Stimulus::new(self.x_names[i].as_str(), self.x_act[i]));
-            brain.apply_stimulus(Stimulus::new(self.y_names[i].as_str(), self.y_act[i]));
+            brain_io::apply_sensor_channel(brain, self.x_names[i].as_str(), self.x_act[i]);
+            brain_io::apply_sensor_channel(brain, self.y_names[i].as_str(), self.y_act[i]);
         }
     }
 

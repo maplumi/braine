@@ -2,7 +2,10 @@ use crate::stats::GameStats;
 use crate::time::{Duration, Instant};
 
 #[cfg(feature = "braine")]
-use braine::substrate::{Brain, Stimulus};
+use braine::substrate::Brain;
+
+#[cfg(feature = "braine")]
+use crate::brain_io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MazeDifficulty {
@@ -369,46 +372,39 @@ impl MazeGame {
 
         let walls = self.sim.grid.walls(px, py);
 
-        brain.apply_stimulus(Stimulus::new(
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_wall_up",
             if walls & W_UP != 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_wall_right",
             if walls & W_RIGHT != 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_wall_down",
             if walls & W_DOWN != 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_wall_left",
             if walls & W_LEFT != 0 { 1.0 } else { 0.0 },
-        ));
+        );
 
         let dx = self.sim.goal_x as i32 - px as i32;
         let dy = self.sim.goal_y as i32 - py as i32;
 
-        brain.apply_stimulus(Stimulus::new(
-            "maze_goal_left",
-            if dx < 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
-            "maze_goal_right",
-            if dx > 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
-            "maze_goal_up",
-            if dy < 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
-            "maze_goal_down",
-            if dy > 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        brain_io::apply_sensor_channel(brain, "maze_goal_left", if dx < 0 { 1.0 } else { 0.0 });
+        brain_io::apply_sensor_channel(brain, "maze_goal_right", if dx > 0 { 1.0 } else { 0.0 });
+        brain_io::apply_sensor_channel(brain, "maze_goal_up", if dy < 0 { 1.0 } else { 0.0 });
+        brain_io::apply_sensor_channel(brain, "maze_goal_down", if dy > 0 { 1.0 } else { 0.0 });
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_goal_here",
             if dx == 0 && dy == 0 { 1.0 } else { 0.0 },
-        ));
+        );
 
         // Distance buckets (0..=3).
         let dist = self.sim.manhattan_to_goal();
@@ -422,109 +418,121 @@ impl MazeGame {
                 2 => "maze_dist_b2",
                 _ => "maze_dist_b3",
             };
-            brain.apply_stimulus(Stimulus::new(name, if b == bucket { 1.0 } else { 0.0 }));
+            brain_io::apply_sensor_channel(brain, name, if b == bucket { 1.0 } else { 0.0 });
         }
 
-        brain.apply_stimulus(Stimulus::new(
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_mode_easy",
             if self.difficulty == MazeDifficulty::Easy {
                 1.0
             } else {
                 0.0
             },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_mode_medium",
             if self.difficulty == MazeDifficulty::Medium {
                 1.0
             } else {
                 0.0
             },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_mode_hard",
             if self.difficulty == MazeDifficulty::Hard {
                 1.0
             } else {
                 0.0
             },
-        ));
+        );
 
-        brain.apply_stimulus(Stimulus::new(
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_bump",
             if self.last_event == MazeEvent::Bump {
                 1.0
             } else {
                 0.0
             },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_reached_goal",
             if self.last_event == MazeEvent::ReachedGoal {
                 1.0
             } else {
                 0.0
             },
-        ));
+        );
 
-        brain.apply_stimulus(Stimulus::new(
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_moved",
             if self.last_event == MazeEvent::Moved {
                 1.0
             } else {
                 0.0
             },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_timeout",
             if self.last_event == MazeEvent::Timeout {
                 1.0
             } else {
                 0.0
             },
-        ));
+        );
 
         // Simple short-term memory to break perceptual aliasing.
         let last = self
             .last_action
             .as_deref()
             .and_then(MazeAction::from_action_str);
-        brain.apply_stimulus(Stimulus::new(
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_last_action_none",
             if last.is_none() { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_last_action_up",
             if matches!(last, Some(MazeAction::Up)) {
                 1.0
             } else {
                 0.0
             },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_last_action_right",
             if matches!(last, Some(MazeAction::Right)) {
                 1.0
             } else {
                 0.0
             },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_last_action_down",
             if matches!(last, Some(MazeAction::Down)) {
                 1.0
             } else {
                 0.0
             },
-        ));
-        brain.apply_stimulus(Stimulus::new(
+        );
+        brain_io::apply_sensor_channel(
+            brain,
             "maze_last_action_left",
             if matches!(last, Some(MazeAction::Left)) {
                 1.0
             } else {
                 0.0
             },
-        ));
+        );
 
         // Visitation bucket at the current cell (0, 1, 2+).
         let idx = (py as usize) * (self.sim.grid.w() as usize) + (px as usize);
@@ -536,18 +544,9 @@ impl MazeGame {
         } else {
             2
         };
-        brain.apply_stimulus(Stimulus::new(
-            "maze_visit_b0",
-            if vb == 0 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
-            "maze_visit_b1",
-            if vb == 1 { 1.0 } else { 0.0 },
-        ));
-        brain.apply_stimulus(Stimulus::new(
-            "maze_visit_b2",
-            if vb == 2 { 1.0 } else { 0.0 },
-        ));
+        brain_io::apply_sensor_channel(brain, "maze_visit_b0", if vb == 0 { 1.0 } else { 0.0 });
+        brain_io::apply_sensor_channel(brain, "maze_visit_b1", if vb == 1 { 1.0 } else { 0.0 });
+        brain_io::apply_sensor_channel(brain, "maze_visit_b2", if vb == 2 { 1.0 } else { 0.0 });
     }
 
     pub fn score_action(&mut self, action: &str) -> Option<(f32, bool)> {

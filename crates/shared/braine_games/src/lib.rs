@@ -5,6 +5,11 @@ extern crate alloc;
 
 pub mod pong;
 
+// Explicit helper API for applying stimuli to a `braine::substrate::Brain`.
+// Kept behind the optional `braine` feature.
+#[cfg(feature = "braine")]
+pub mod brain_io;
+
 // WASM-safe monotonic time shim for games that use wall-clock pacing.
 #[cfg(feature = "std")]
 pub(crate) mod time;

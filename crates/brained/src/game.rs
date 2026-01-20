@@ -264,9 +264,9 @@ impl PongGame {
         let by = PongSim::bin_signed(self.sim.state.ball_y, bins);
         let py = PongSim::bin_signed(self.sim.state.paddle_y, bins);
 
-        brain.apply_stimulus(Stimulus::new(self.ball_x_names[bx as usize].as_str(), 1.0));
-        brain.apply_stimulus(Stimulus::new(self.ball_y_names[by as usize].as_str(), 1.0));
-        brain.apply_stimulus(Stimulus::new(
+        brain.apply_stimulus_inference(Stimulus::new(self.ball_x_names[bx as usize].as_str(), 1.0));
+        brain.apply_stimulus_inference(Stimulus::new(self.ball_y_names[by as usize].as_str(), 1.0));
+        brain.apply_stimulus_inference(Stimulus::new(
             self.paddle_y_names[py as usize].as_str(),
             1.0,
         ));
@@ -274,27 +274,31 @@ impl PongGame {
         // Trajectory feature: predicted intercept y at paddle (when approaching).
         if let Some(y) = self.sim.predict_primary_y_at_paddle() {
             let ty = PongSim::bin_signed(y, bins);
-            brain.apply_stimulus(Stimulus::new(
+            brain.apply_stimulus_inference(Stimulus::new(
                 self.target_y_names[ty as usize].as_str(),
                 1.0,
             ));
         } else {
-            brain.apply_stimulus(Stimulus::new("pong_target_na", 1.0));
+            brain.apply_stimulus_inference(Stimulus::new("pong_target_na", 1.0));
         }
 
         // One-shot event flash (helps the brain "notice" hits/misses).
         if self.event_flash_ticks > 0 {
             match self.last_event {
-                PongEvent::Hit => brain.apply_stimulus(Stimulus::new("pong_evt_hit", 1.0)),
-                PongEvent::Miss => brain.apply_stimulus(Stimulus::new("pong_evt_miss", 1.0)),
+                PongEvent::Hit => {
+                    brain.apply_stimulus_inference(Stimulus::new("pong_evt_hit", 1.0))
+                }
+                PongEvent::Miss => {
+                    brain.apply_stimulus_inference(Stimulus::new("pong_evt_miss", 1.0))
+                }
                 PongEvent::None => {}
             }
         }
 
         if self.sim.ball_visible() {
-            brain.apply_stimulus(Stimulus::new("pong_ball_visible", 1.0));
+            brain.apply_stimulus_inference(Stimulus::new("pong_ball_visible", 1.0));
         } else {
-            brain.apply_stimulus(Stimulus::new("pong_ball_hidden", 1.0));
+            brain.apply_stimulus_inference(Stimulus::new("pong_ball_hidden", 1.0));
         }
 
         let vx_name = if self.sim.state.ball_vx >= 0.0 {
@@ -308,25 +312,25 @@ impl PongGame {
             "pong_vy_neg"
         };
 
-        brain.apply_stimulus(Stimulus::new(vx_name, 1.0));
-        brain.apply_stimulus(Stimulus::new(vy_name, 1.0));
+        brain.apply_stimulus_inference(Stimulus::new(vx_name, 1.0));
+        brain.apply_stimulus_inference(Stimulus::new(vy_name, 1.0));
 
         if self.sim.distractor_enabled() {
             let b2x = PongSim::bin_01(self.sim.state.ball2_x, bins);
             let b2y = PongSim::bin_signed(self.sim.state.ball2_y, bins);
-            brain.apply_stimulus(Stimulus::new(
+            brain.apply_stimulus_inference(Stimulus::new(
                 self.ball2_x_names[b2x as usize].as_str(),
                 1.0,
             ));
-            brain.apply_stimulus(Stimulus::new(
+            brain.apply_stimulus_inference(Stimulus::new(
                 self.ball2_y_names[b2y as usize].as_str(),
                 1.0,
             ));
 
             if self.sim.ball2_visible() {
-                brain.apply_stimulus(Stimulus::new("pong_ball2_visible", 1.0));
+                brain.apply_stimulus_inference(Stimulus::new("pong_ball2_visible", 1.0));
             } else {
-                brain.apply_stimulus(Stimulus::new("pong_ball2_hidden", 1.0));
+                brain.apply_stimulus_inference(Stimulus::new("pong_ball2_hidden", 1.0));
             }
 
             let b2_vx_name = if self.sim.state.ball2_vx >= 0.0 {
@@ -339,8 +343,8 @@ impl PongGame {
             } else {
                 "pong_ball2_vy_neg"
             };
-            brain.apply_stimulus(Stimulus::new(b2_vx_name, 1.0));
-            brain.apply_stimulus(Stimulus::new(b2_vy_name, 1.0));
+            brain.apply_stimulus_inference(Stimulus::new(b2_vx_name, 1.0));
+            brain.apply_stimulus_inference(Stimulus::new(b2_vy_name, 1.0));
         }
     }
 

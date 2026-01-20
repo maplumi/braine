@@ -123,6 +123,29 @@ General rules:
   `note_compound_symbol([stimulus_key])`) to provide a more specific context for causal/meaning
   credit assignment than the base stimulus name.
 
+### Dev note: sensor channels vs task symbols
+
+The substrate supports two stimulus application paths:
+
+- `Brain::apply_stimulus(...)`: injects input **and** records the stimulus name as a symbol in the
+  current observation (and may update stimulus telemetry/imprinting).
+- `Brain::apply_stimulus_inference(...)`: injects input **only** (no symbol recording).
+
+Use them consistently:
+
+- **Sensor channels (high-cardinality, per-tick features)** should usually use
+  `apply_stimulus_inference` so they don’t flood the bounded causal symbol set.
+  Examples: bin/population-coded position channels, wall sensors, velocity sign bits.
+- **Task symbols / context keys (low-cardinality, credit-assignment anchors)** should be recorded as
+  symbols (via `apply_stimulus` and/or `note_*` symbol tagging) when you want the causality/meaning
+  subsystem to attribute reward to a compact named key.
+  Examples: `spotxy_bin_{...}`, `pong_b08_bx03_by05_py04_vxp_vyn`, regime/context tags.
+
+For shared games, prefer the helper wrappers in `braine_games::brain_io` to make this explicit:
+
+- `apply_sensor_channel(...)` (inference-only)
+- `apply_task_symbol(...)` (records a symbol)
+
 Below are the current encodings for each daemon game kind.
 
 ### `spot`
