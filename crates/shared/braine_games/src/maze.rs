@@ -387,14 +387,23 @@ impl MazeGame {
         let gy = self.sim.goal_y.min(h_u32.saturating_sub(1));
         let goal_idx = (gy as usize) * w + (gx as usize);
         let goal_idx = goal_idx.min(self.goal_dist_to_goal.len().saturating_sub(1));
-        self.goal_dist_to_goal[goal_idx] = 0;
+        if let Some(slot) = self.goal_dist_to_goal.get_mut(goal_idx) {
+            *slot = 0;
+        } else {
+            // Corrupted internal state: nothing useful to do.
+            return;
+        }
 
         let mut q: VecDeque<(u32, u32)> = VecDeque::new();
         q.push_back((gx, gy));
 
         while let Some((x, y)) = q.pop_front() {
             let base_idx = (y as usize) * w + (x as usize);
-            let base_d = self.goal_dist_to_goal[base_idx];
+            let Some(&base_d) = self.goal_dist_to_goal.get(base_idx) else {
+                // Defensive: if indices ever drift out of range (e.g. corrupted state),
+                // skip rather than panicking.
+                continue;
+            };
             if base_d == u16::MAX {
                 continue;
             }
@@ -407,9 +416,11 @@ impl MazeGame {
                 let ny = y - 1;
                 let nidx = (ny as usize) * w + (nx as usize);
                 let nd = base_d.saturating_add(1);
-                if self.goal_dist_to_goal[nidx] > nd {
-                    self.goal_dist_to_goal[nidx] = nd;
-                    q.push_back((nx, ny));
+                if let Some(cell) = self.goal_dist_to_goal.get_mut(nidx) {
+                    if *cell > nd {
+                        *cell = nd;
+                        q.push_back((nx, ny));
+                    }
                 }
             }
 
@@ -419,9 +430,11 @@ impl MazeGame {
                 let ny = y;
                 let nidx = (ny as usize) * w + (nx as usize);
                 let nd = base_d.saturating_add(1);
-                if self.goal_dist_to_goal[nidx] > nd {
-                    self.goal_dist_to_goal[nidx] = nd;
-                    q.push_back((nx, ny));
+                if let Some(cell) = self.goal_dist_to_goal.get_mut(nidx) {
+                    if *cell > nd {
+                        *cell = nd;
+                        q.push_back((nx, ny));
+                    }
                 }
             }
 
@@ -431,9 +444,11 @@ impl MazeGame {
                 let ny = y + 1;
                 let nidx = (ny as usize) * w + (nx as usize);
                 let nd = base_d.saturating_add(1);
-                if self.goal_dist_to_goal[nidx] > nd {
-                    self.goal_dist_to_goal[nidx] = nd;
-                    q.push_back((nx, ny));
+                if let Some(cell) = self.goal_dist_to_goal.get_mut(nidx) {
+                    if *cell > nd {
+                        *cell = nd;
+                        q.push_back((nx, ny));
+                    }
                 }
             }
 
@@ -443,9 +458,11 @@ impl MazeGame {
                 let ny = y;
                 let nidx = (ny as usize) * w + (nx as usize);
                 let nd = base_d.saturating_add(1);
-                if self.goal_dist_to_goal[nidx] > nd {
-                    self.goal_dist_to_goal[nidx] = nd;
-                    q.push_back((nx, ny));
+                if let Some(cell) = self.goal_dist_to_goal.get_mut(nidx) {
+                    if *cell > nd {
+                        *cell = nd;
+                        q.push_back((nx, ny));
+                    }
                 }
             }
         }
