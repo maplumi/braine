@@ -104,8 +104,17 @@ pub(super) fn clear_persisted_stats_state(kind: GameKind) {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct PersistedSettings {
-    pub(super) reward_scale: f32,
-    pub(super) reward_bias: f32,
+    // Legacy global reward shaping (pre per-game settings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reward_scale: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reward_bias: Option<f32>,
+
+    // Per-game reward shaping (preferred).
+    #[serde(default = "default_reward_scale_by_game")]
+    pub(super) reward_scale_by_game: Vec<f32>,
+    #[serde(default = "default_reward_bias_by_game")]
+    pub(super) reward_bias_by_game: Vec<f32>,
     #[serde(default = "default_true")]
     pub(super) learning_enabled: bool,
     #[serde(default = "default_run_interval_ms")]
@@ -119,13 +128,51 @@ pub(super) struct PersistedSettings {
 impl Default for PersistedSettings {
     fn default() -> Self {
         Self {
-            reward_scale: 1.0,
-            reward_bias: 0.0,
+            reward_scale: None,
+            reward_bias: None,
+            reward_scale_by_game: default_reward_scale_by_game(),
+            reward_bias_by_game: default_reward_bias_by_game(),
             learning_enabled: default_true(),
             run_interval_ms: default_run_interval_ms(),
             trial_period_ms: default_trial_period_ms(),
             settings_advanced: false,
         }
+    }
+}
+
+fn default_reward_scale_by_game() -> Vec<f32> {
+    vec![1.0; GameKind::all().len()]
+}
+
+fn default_reward_bias_by_game() -> Vec<f32> {
+    vec![0.0; GameKind::all().len()]
+}
+
+impl PersistedSettings {
+    fn migrate_legacy(mut self) -> Self {
+        let n = GameKind::all().len();
+
+        if self.reward_scale_by_game.len() != n {
+            self.reward_scale_by_game = vec![1.0; n];
+        }
+        if self.reward_bias_by_game.len() != n {
+            self.reward_bias_by_game = vec![0.0; n];
+        }
+
+        if let Some(v) = self.reward_scale.take() {
+            let vv = v.clamp(0.0, 10.0);
+            for x in &mut self.reward_scale_by_game {
+                *x = vv;
+            }
+        }
+        if let Some(v) = self.reward_bias.take() {
+            let vv = v.clamp(-2.0, 2.0);
+            for x in &mut self.reward_bias_by_game {
+                *x = vv;
+            }
+        }
+
+        self
     }
 }
 
@@ -143,7 +190,9 @@ fn default_trial_period_ms() -> u32 {
 
 pub(super) fn load_persisted_settings() -> Option<PersistedSettings> {
     let raw = local_storage_get_string(super::LOCALSTORAGE_SETTINGS_KEY)?;
-    serde_json::from_str(&raw).ok()
+    serde_json::from_str::<PersistedSettings>(&raw)
+        .ok()
+        .map(PersistedSettings::migrate_legacy)
 }
 
 pub(super) fn save_persisted_settings(settings: &PersistedSettings) {

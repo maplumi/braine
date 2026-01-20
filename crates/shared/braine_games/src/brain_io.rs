@@ -80,6 +80,6 @@ mod tests {
         brain.commit_observation();
         let after = brain.causal_stats().base_symbols;
 
-        assert!(after >= before + 1);
+        assert!(after > before);
     }
 }

@@ -747,8 +747,27 @@ fn App() -> impl IntoView {
     let (learning_enabled, set_learning_enabled) = signal(settings0.learning_enabled);
     let (trial_period_ms, set_trial_period_ms) = signal::<u32>(settings0.trial_period_ms);
     let (run_interval_ms, set_run_interval_ms) = signal::<u32>(settings0.run_interval_ms);
-    let (reward_scale, set_reward_scale) = signal::<f32>(settings0.reward_scale);
-    let (reward_bias, set_reward_bias) = signal::<f32>(settings0.reward_bias);
+
+    // Reward shaping is per-game (scale+bias). We keep a current-game signal for UI/runtime,
+    // and store the per-game values in persisted vectors.
+    let (reward_scale_by_game, set_reward_scale_by_game) =
+        signal::<Vec<f32>>(settings0.reward_scale_by_game.clone());
+    let (reward_bias_by_game, set_reward_bias_by_game) =
+        signal::<Vec<f32>>(settings0.reward_bias_by_game.clone());
+
+    let reward_scale0 = reward_scale_by_game
+        .get_untracked()
+        .get(game_kind_index(GameKind::Spot))
+        .copied()
+        .unwrap_or(1.0);
+    let reward_bias0 = reward_bias_by_game
+        .get_untracked()
+        .get(game_kind_index(GameKind::Spot))
+        .copied()
+        .unwrap_or(0.0);
+
+    let (reward_scale, set_reward_scale) = signal::<f32>(reward_scale0);
+    let (reward_bias, set_reward_bias) = signal::<f32>(reward_bias0);
     let (exploration_eps, set_exploration_eps) = signal::<f32>(0.10);
     let (meaning_alpha, set_meaning_alpha) = signal::<f32>(8.0);
 
@@ -756,14 +775,30 @@ fn App() -> impl IntoView {
     // (We keep this narrow: only the core knobs in PersistedSettings.)
     Effect::new(move |_| {
         let s = PersistedSettings {
-            reward_scale: reward_scale.get(),
-            reward_bias: reward_bias.get(),
+            reward_scale: None,
+            reward_bias: None,
+            reward_scale_by_game: reward_scale_by_game.get(),
+            reward_bias_by_game: reward_bias_by_game.get(),
             learning_enabled: learning_enabled.get(),
             run_interval_ms: run_interval_ms.get(),
             trial_period_ms: trial_period_ms.get(),
             settings_advanced: false,
         };
         save_persisted_settings(&s);
+    });
+
+    // When the active game changes, swap the current reward shaping knobs.
+    Effect::new(move |_| {
+        let kind = game_kind.get();
+        let idx = game_kind_index(kind);
+
+        let scales = reward_scale_by_game.get();
+        let v = scales.get(idx).copied().unwrap_or(1.0);
+        set_reward_scale.set(v);
+
+        let biases = reward_bias_by_game.get();
+        let b = biases.get(idx).copied().unwrap_or(0.0);
+        set_reward_bias.set(b);
     });
 
     // Stats signals used across dashboard pages.
@@ -8082,7 +8117,14 @@ fn App() -> impl IntoView {
                                 </div>
 
                                 <div class="card">
-                                    <h3 class="card-title">"⚡ Reward Shaping"</h3>
+                                    <h3 class="card-title">
+                                        {move || {
+                                            format!(
+                                                "⚡ Reward Shaping ({})",
+                                                game_kind.get().display_name()
+                                            )
+                                        }}
+                                    </h3>
                                     <div class="row end wrap">
                                         <label class="label">
                                             <span>"Scale"</span>
@@ -8093,7 +8135,16 @@ fn App() -> impl IntoView {
                                                 prop:value=move || fmt_f32_fixed(reward_scale.get(), 2)
                                                 on:input=move |ev| {
                                                     if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_reward_scale.set(v.clamp(0.0, 10.0));
+                                                        let v = v.clamp(0.0, 10.0);
+                                                        set_reward_scale.set(v);
+
+                                                        let idx = game_kind_index(game_kind.get_untracked());
+                                                        set_reward_scale_by_game.update(|xs| {
+                                                            if xs.len() != GAME_KIND_COUNT {
+                                                                xs.resize(GAME_KIND_COUNT, 1.0);
+                                                            }
+                                                            xs[idx] = v;
+                                                        });
                                                     }
                                                 }
                                             />
@@ -8107,14 +8158,38 @@ fn App() -> impl IntoView {
                                                 prop:value=move || fmt_f32_fixed(reward_bias.get(), 2)
                                                 on:input=move |ev| {
                                                     if let Ok(v) = event_target_value(&ev).parse::<f32>() {
-                                                        set_reward_bias.set(v.clamp(-2.0, 2.0));
+                                                        let v = v.clamp(-2.0, 2.0);
+                                                        set_reward_bias.set(v);
+
+                                                        let idx = game_kind_index(game_kind.get_untracked());
+                                                        set_reward_bias_by_game.update(|xs| {
+                                                            if xs.len() != GAME_KIND_COUNT {
+                                                                xs.resize(GAME_KIND_COUNT, 0.0);
+                                                            }
+                                                            xs[idx] = v;
+                                                        });
                                                     }
                                                 }
                                             />
                                         </label>
                                         <button class="btn" on:click=move |_| {
+                                            let idx = game_kind_index(game_kind.get_untracked());
+
                                             set_reward_scale.set(1.0);
                                             set_reward_bias.set(0.0);
+
+                                            set_reward_scale_by_game.update(|xs| {
+                                                if xs.len() != GAME_KIND_COUNT {
+                                                    xs.resize(GAME_KIND_COUNT, 1.0);
+                                                }
+                                                xs[idx] = 1.0;
+                                            });
+                                            set_reward_bias_by_game.update(|xs| {
+                                                if xs.len() != GAME_KIND_COUNT {
+                                                    xs.resize(GAME_KIND_COUNT, 0.0);
+                                                }
+                                                xs[idx] = 0.0;
+                                            });
                                         }>
                                             "Reset"
                                         </button>

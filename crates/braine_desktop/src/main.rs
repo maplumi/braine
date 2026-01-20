@@ -705,6 +705,8 @@ struct DaemonGameCommon {
     #[serde(default)]
     last_reward: f32,
     #[serde(default)]
+    reward_scale: f32,
+    #[serde(default)]
     response_made: bool,
     #[serde(default)]
     trial_frame: u32,
@@ -878,6 +880,10 @@ impl DaemonGameState {
 
     fn last_reward(&self) -> f32 {
         self.common().map(|c| c.last_reward).unwrap_or(0.0)
+    }
+
+    fn reward_scale(&self) -> f32 {
+        self.common().map(|c| c.reward_scale).unwrap_or(1.0)
     }
 
     fn response_made(&self) -> bool {
@@ -2189,6 +2195,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     replay_total: snap.game.replay_total() as i32,
                     replay_trial_id: snap.game.replay_trial_id().into(),
                     last_reward: snap.game.last_reward(),
+                    reward_scale: snap.game.reward_scale(),
                     spot_is_left: snap.game.spot_is_left(),
                     response_made: snap.game.response_made(),
                     trial_frame: snap.game.trial_frame() as i32,

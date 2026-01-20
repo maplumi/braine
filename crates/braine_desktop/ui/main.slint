@@ -666,6 +666,25 @@ export component MainWindow inherits Window {
                                         }
                                     }
 
+                                    // Shared per-game reward scaling (affects learning).
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        Text { text: "Reward scale:"; color: Theme.text-secondary; vertical-alignment: center; font-size: 12px; }
+                                        Slider {
+                                            width: 220px;
+                                            minimum: 0.0;
+                                            maximum: 10.0;
+                                            value: root.game.reward-scale;
+                                            changed => { set-game-param(root.game.kind, "reward_scale", self.value); }
+                                        }
+                                        Text {
+                                            text: "" + (round(root.game.reward-scale * 100.0) / 100.0);
+                                            color: Theme.text-secondary;
+                                            vertical-alignment: center;
+                                            font-size: 12px;
+                                        }
+                                    }
+
                                     if root.effective-game-kind == "bandit": Text {
                                         text: "Bandit: Choose an arm; rewards are stochastic.";
                                         color: Theme.text-secondary;

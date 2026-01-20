@@ -779,11 +779,72 @@ struct GameCommon {
     #[serde(default)]
     last_reward: f32,
     #[serde(default)]
+    reward_scale: f32,
+    #[serde(default)]
     response_made: bool,
     #[serde(default)]
     trial_frame: u32,
     #[serde(default)]
     trial_duration: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RewardScales {
+    spot: f32,
+    bandit: f32,
+    spot_reversal: f32,
+    spotxy: f32,
+    maze: f32,
+    pong: f32,
+    text: f32,
+    replay: f32,
+}
+
+impl Default for RewardScales {
+    fn default() -> Self {
+        Self {
+            spot: 1.0,
+            bandit: 1.0,
+            spot_reversal: 1.0,
+            spotxy: 1.0,
+            maze: 1.0,
+            pong: 1.0,
+            text: 1.0,
+            replay: 1.0,
+        }
+    }
+}
+
+impl RewardScales {
+    fn get(&self, kind: &str) -> f32 {
+        match kind {
+            "spot" => self.spot,
+            "bandit" => self.bandit,
+            "spot_reversal" => self.spot_reversal,
+            "spotxy" => self.spotxy,
+            "maze" => self.maze,
+            "pong" => self.pong,
+            "text" => self.text,
+            "replay" => self.replay,
+            // Any unknown/new games default to neutral scaling.
+            _ => 1.0,
+        }
+    }
+
+    fn set(&mut self, kind: &str, value: f32) {
+        let v = value.clamp(0.0, 10.0);
+        match kind {
+            "spot" => self.spot = v,
+            "bandit" => self.bandit = v,
+            "spot_reversal" => self.spot_reversal = v,
+            "spotxy" => self.spotxy = v,
+            "maze" => self.maze = v,
+            "pong" => self.pong = v,
+            "text" => self.text = v,
+            "replay" => self.replay = v,
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -998,6 +1059,8 @@ struct DaemonState {
     trial_period_ms: u32,
     pending_neuromod: f32,
 
+    reward_scales: RewardScales,
+
     max_units_limit: usize,
 
     loaded_snapshot_stem: Option<String>,
@@ -1110,6 +1173,8 @@ impl DaemonState {
             target_fps: 60,
             trial_period_ms: 250,
             pending_neuromod: 0.0,
+
+            reward_scales: RewardScales::default(),
 
             max_units_limit: 256,
 
@@ -1474,12 +1539,14 @@ impl DaemonState {
                 &mut self.brain
             };
 
+            let game_reward_scale = self.reward_scales.get(self.game.kind());
+
             // If Pong produced a hit/miss since the last tick, immediately credit the held action.
             // This reduces the "ball hit but paddle didn't learn" effect from delayed reward.
             if allow_learning {
                 if let ActiveGame::Pong(g) = &mut self.game {
                     if let Some((reward, action, stimulus_key, _ev)) = g.take_pending_credit() {
-                        let r = reward.clamp(-1.0, 1.0);
+                        let r = (reward * game_reward_scale).clamp(-1.0, 1.0);
                         if r.abs() > 0.0 {
                             brain.note_action(action.as_str());
                             brain.note_compound_symbol(&[
@@ -1575,6 +1642,7 @@ impl DaemonState {
                     .game
                     .score_action(action_name.as_str(), self.trial_period_ms)
                 {
+                    let reward = (reward * game_reward_scale).clamp(-1.0, 1.0);
                     completed = done;
                     self.last_reward = reward;
                     scored_reward = Some(reward);
@@ -1761,6 +1829,7 @@ impl DaemonState {
             reversal_active: self.game.reversal_active(),
             chosen_action: self.game.last_action().unwrap_or("").to_string(),
             last_reward: self.last_reward,
+            reward_scale: self.reward_scales.get(self.game.kind()),
             response_made: self.game.response_made(),
             trial_frame: self.game.trial_frame(),
             trial_duration: self.trial_period_ms,
@@ -3216,6 +3285,18 @@ async fn handle_client(
             Request::GetGameParams { game } => {
                 let game = game.trim();
 
+                // Shared reward knob for all games.
+                // Applies as: reward = clamp(raw_reward * reward_scale, -1..1).
+                let reward_scale_def = || GameParamDef {
+                    key: "reward_scale".to_string(),
+                    label: "Reward scale".to_string(),
+                    description: "Scales reward before applying neuromodulation/learning (0..10)."
+                        .to_string(),
+                    min: 0.0,
+                    max: 10.0,
+                    default: 1.0,
+                };
+
                 // The daemon is the source of truth for knob definitions.
                 match game {
                     "pong" => {
@@ -3234,6 +3315,7 @@ async fn handle_client(
                         Response::GameParams {
                             game: "pong".to_string(),
                             params: vec![
+                                reward_scale_def(),
                                 GameParamDef {
                                     key: "paddle_speed".to_string(),
                                     label: "Paddle speed".to_string(),
@@ -3268,6 +3350,7 @@ async fn handle_client(
                         Response::GameParams {
                             game: "maze".to_string(),
                             params: vec![
+                                reward_scale_def(),
                                 GameParamDef {
                                     key: "difficulty".to_string(),
                                     label: "Difficulty".to_string(),
@@ -3292,6 +3375,7 @@ async fn handle_client(
                         Response::GameParams {
                             game: "spotxy".to_string(),
                             params: vec![
+                                reward_scale_def(),
                                 GameParamDef {
                                     key: "grid_n".to_string(),
                                     label: "Grid size".to_string(),
@@ -3316,7 +3400,7 @@ async fn handle_client(
                     }
                     _ => Response::GameParams {
                         game: game.to_string(),
-                        params: Vec::new(),
+                        params: vec![reward_scale_def()],
                     },
                 }
             }
@@ -3348,78 +3432,88 @@ async fn handle_client(
                             game
                         ),
                     }
+                } else if key == "reward_scale" {
+                        s.reward_scales.set(game, value);
+                        s.pending_neuromod = 0.0;
+                        s.last_reward = 0.0;
+                        Response::Success {
+                            message: format!(
+                                "Set {game}.{key} = {:.3}",
+                                s.reward_scales.get(game)
+                            ),
+                        }
                 } else {
                     match &mut s.game {
-                        ActiveGame::Pong(g) => match g.set_param(key, value) {
-                            Ok(_) => Response::Success {
-                                message: format!("Set {game}.{key} = {value}"),
+                            ActiveGame::Pong(g) => match g.set_param(key, value) {
+                                Ok(_) => Response::Success {
+                                    message: format!("Set {game}.{key} = {value}"),
+                                },
+                                Err(e) => Response::Error { message: e },
                             },
-                            Err(e) => Response::Error { message: e },
-                        },
-                        ActiveGame::Maze(g) => match key {
-                            "difficulty" => {
-                                let d = braine_games::maze::MazeDifficulty::from_param(value);
-                                g.set_difficulty(d);
-                                s.ensure_maze_io();
-                                s.pending_neuromod = 0.0;
-                                s.last_reward = 0.0;
-                                Response::Success {
-                                    message: format!("Set {game}.{key} = {}", d.name()),
-                                }
-                            }
-                            "episodes_per_maze" => {
-                                let n = value.round().clamp(1.0, 1000.0) as u32;
-                                g.set_episodes_per_maze(n);
-                                s.pending_neuromod = 0.0;
-                                s.last_reward = 0.0;
-                                Response::Success {
-                                    message: format!("Set {game}.{key} = {n}"),
-                                }
-                            }
-                            _ => Response::Error {
-                                message: format!(
-                                    "Unknown Maze param '{key}'. Use difficulty (0=easy,1=medium,2=hard) | episodes_per_maze (1..1000)"
-                                ),
-                            },
-                        },
-                        ActiveGame::SpotXY(g) => {
-                            // SpotXY tunable params: grid_n, eval.
-                            match key {
-                                "grid_n" => {
-                                    let n = value.round().clamp(0.0, 8.0) as u32;
-                                    // Adapt existing grid state to target size.
-                                    while g.grid_n() < n {
-                                        g.increase_grid();
+                            ActiveGame::Maze(g) => match key {
+                                "difficulty" => {
+                                    let d = braine_games::maze::MazeDifficulty::from_param(value);
+                                    g.set_difficulty(d);
+                                    s.ensure_maze_io();
+                                    s.pending_neuromod = 0.0;
+                                    s.last_reward = 0.0;
+                                    Response::Success {
+                                        message: format!("Set {game}.{key} = {}", d.name()),
                                     }
-                                    while g.grid_n() > n {
-                                        g.decrease_grid();
-                                    }
-                                    s.ensure_spotxy_io();
+                                }
+                                "episodes_per_maze" => {
+                                    let n = value.round().clamp(1.0, 1000.0) as u32;
+                                    g.set_episodes_per_maze(n);
                                     s.pending_neuromod = 0.0;
                                     s.last_reward = 0.0;
                                     Response::Success {
                                         message: format!("Set {game}.{key} = {n}"),
                                     }
                                 }
-                                "eval" => {
-                                    let eval = value >= 0.5;
-                                    g.set_eval_mode(eval);
-                                    s.pending_neuromod = 0.0;
-                                    s.last_reward = 0.0;
-                                    Response::Success {
-                                        message: format!("Set {game}.{key} = {eval}"),
-                                    }
-                                }
                                 _ => Response::Error {
                                     message: format!(
-                                        "Unknown SpotXY param '{key}'. Use grid_n | eval"
+                                        "Unknown Maze param '{key}'. Use difficulty (0=easy,1=medium,2=hard) | episodes_per_maze (1..1000)"
                                     ),
                                 },
+                            },
+                            ActiveGame::SpotXY(g) => {
+                                // SpotXY tunable params: grid_n, eval.
+                                match key {
+                                    "grid_n" => {
+                                        let n = value.round().clamp(0.0, 8.0) as u32;
+                                        // Adapt existing grid state to target size.
+                                        while g.grid_n() < n {
+                                            g.increase_grid();
+                                        }
+                                        while g.grid_n() > n {
+                                            g.decrease_grid();
+                                        }
+                                        s.ensure_spotxy_io();
+                                        s.pending_neuromod = 0.0;
+                                        s.last_reward = 0.0;
+                                        Response::Success {
+                                            message: format!("Set {game}.{key} = {n}"),
+                                        }
+                                    }
+                                    "eval" => {
+                                        let eval = value >= 0.5;
+                                        g.set_eval_mode(eval);
+                                        s.pending_neuromod = 0.0;
+                                        s.last_reward = 0.0;
+                                        Response::Success {
+                                            message: format!("Set {game}.{key} = {eval}"),
+                                        }
+                                    }
+                                    _ => Response::Error {
+                                        message: format!(
+                                            "Unknown SpotXY param '{key}'. Use grid_n | eval"
+                                        ),
+                                    },
+                                }
                             }
-                        }
-                        _ => Response::Error {
-                            message: format!("No tunable params implemented for game '{game}'"),
-                        },
+                            _ => Response::Error {
+                                message: format!("No tunable params implemented for game '{game}'"),
+                            },
                     }
                 }
             }
