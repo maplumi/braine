@@ -51,11 +51,13 @@ pub async fn init_gpu_context(max_units: usize) -> Result<(), String> {
     #[cfg(target_arch = "wasm32")]
     {
         // If already initialized (success or failure), return current state.
-        if let Some(res) = GPU_CTX.with(|cell| cell.get()) {
-            return match res {
+        if let Some(existing) = GPU_CTX.with(|cell| {
+            cell.get().map(|res| match res {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e.clone()),
-            };
+            })
+        }) {
+            return existing;
         }
 
         let ctx_res = GpuContext::new_async(max_units).await;
