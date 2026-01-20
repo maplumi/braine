@@ -82,6 +82,8 @@ pub(super) struct PersistedStatsState {
     pub(super) choice_events: Vec<String>,
     pub(super) last_action: String,
     pub(super) last_reward: f32,
+    #[serde(default)]
+    pub(super) last_raw_reward: f32,
 }
 
 pub(super) fn load_persisted_stats_state(kind: GameKind) -> Option<PersistedStatsState> {

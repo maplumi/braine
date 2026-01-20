@@ -31,6 +31,7 @@ pub(super) struct TickConfig {
 pub(super) struct TickOutput {
     pub(super) last_action: String,
     pub(super) reward: f32,
+    pub(super) raw_reward: f32,
 }
 
 pub(super) enum TickResult {
@@ -302,6 +303,7 @@ impl AppRuntime {
         TickResult::Advanced(Some(TickOutput {
             last_action: action,
             reward: shaped_reward,
+            raw_reward: reward,
         }))
     }
 

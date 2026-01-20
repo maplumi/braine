@@ -806,6 +806,7 @@ fn App() -> impl IntoView {
     let (recent_rate, set_recent_rate) = signal::<f32>(0.0);
     let (last_action, set_last_action) = signal(String::new());
     let (last_reward, set_last_reward) = signal::<f32>(0.0);
+    let (last_raw_reward, set_last_raw_reward) = signal::<f32>(0.0);
 
     // Analytics panel subtab.
     let (analytics_panel, set_analytics_panel) = signal(AnalyticsPanel::Reward);
@@ -1559,6 +1560,7 @@ fn App() -> impl IntoView {
                         choice_events: choice_events.with_value(|v| v.clone()),
                         last_action: last_action.get_untracked(),
                         last_reward: last_reward.get_untracked(),
+                        last_raw_reward: last_raw_reward.get_untracked(),
                     };
                     save_persisted_stats_state(kind, &state);
                 }
@@ -1613,6 +1615,7 @@ fn App() -> impl IntoView {
                 choice_events: choice_events.with_value(|v| v.clone()),
                 last_action: last_action.get_untracked(),
                 last_reward: last_reward.get_untracked(),
+                last_raw_reward: last_raw_reward.get_untracked(),
             };
             save_persisted_stats_state(kind, &state);
         }
@@ -1630,6 +1633,7 @@ fn App() -> impl IntoView {
                 set_choices_version.update(|v| *v = v.wrapping_add(1));
                 set_last_action.set(state.last_action);
                 set_last_reward.set(state.last_reward);
+                set_last_raw_reward.set(state.last_raw_reward);
             } else {
                 runtime.update_value(|r| r.game.set_stats(braine_games::stats::GameStats::new()));
                 perf_history.update_value(|h| h.clear());
@@ -1639,6 +1643,7 @@ fn App() -> impl IntoView {
                 set_choices_version.update(|v| *v = v.wrapping_add(1));
                 set_last_action.set(String::new());
                 set_last_reward.set(0.0);
+                set_last_raw_reward.set(0.0);
             }
         }
     });
@@ -1760,6 +1765,7 @@ fn App() -> impl IntoView {
                         let last_action = out.last_action.clone();
                         set_last_action.set(last_action.clone());
                         set_last_reward.set(out.reward);
+                        set_last_raw_reward.set(out.raw_reward);
 
                         // Update choice history (cap to 200)
                         choice_events.update_value(|v| {
@@ -2085,6 +2091,7 @@ fn App() -> impl IntoView {
         set_steps.set(0);
         set_last_action.set(String::new());
         set_last_reward.set(0.0);
+        set_last_raw_reward.set(0.0);
         set_learned_at_trial.set(None);
         set_mastered_at_trial.set(None);
         set_learning_milestone.set("Starting...".to_string());
@@ -2257,6 +2264,7 @@ fn App() -> impl IntoView {
             set_steps.set(0);
             set_last_action.set(String::new());
             set_last_reward.set(0.0);
+            set_last_raw_reward.set(0.0);
             set_learned_at_trial.set(None);
             set_mastered_at_trial.set(None);
             set_learning_milestone.set("Starting...".to_string());
@@ -2455,6 +2463,7 @@ fn App() -> impl IntoView {
                             set_steps.set(0);
                             set_last_action.set(String::new());
                             set_last_reward.set(0.0);
+                            set_last_raw_reward.set(0.0);
                             refresh_ui_from_runtime();
                             set_idb_loaded.set(true);
                             set_brain_dirty.set(false);
@@ -2518,6 +2527,7 @@ fn App() -> impl IntoView {
                             set_steps.set(0);
                             set_last_action.set(String::new());
                             set_last_reward.set(0.0);
+                            set_last_raw_reward.set(0.0);
                             refresh_ui_from_runtime();
                             set_idb_loaded.set(true);
                             set_brain_dirty.set(false);
@@ -2622,6 +2632,7 @@ fn App() -> impl IntoView {
                             set_steps.set(0);
                             set_last_action.set(String::new());
                             set_last_reward.set(0.0);
+                            set_last_raw_reward.set(0.0);
                             refresh_ui_from_runtime();
 
                             if autosave {
@@ -5140,9 +5151,9 @@ fn App() -> impl IntoView {
                                                 </span>
                                                 <span style=move || format!(
                                                     "padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 800; background: {}; color: #fff;",
-                                                    if last_reward.get() > 0.0 { "#22c55e" } else if last_reward.get() < 0.0 { "#ef4444" } else { "#64748b" }
+                                                    if last_raw_reward.get() > 0.0 { "#22c55e" } else if last_raw_reward.get() < 0.0 { "#ef4444" } else { "#64748b" }
                                                 )>
-                                                    {move || if last_reward.get() > 0.0 { "✓ Correct" } else if last_reward.get() < 0.0 { "✗ Wrong" } else { "—" }}
+                                                    {move || if last_raw_reward.get() > 0.0 { "✓ Correct" } else if last_raw_reward.get() < 0.0 { "✗ Wrong" } else { "—" }}
                                                 </span>
                                             </div>
                                         </div>
@@ -5181,7 +5192,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::Spot.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={} ",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -5319,7 +5330,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::Bandit.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={} ",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -5445,7 +5456,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::SpotReversal.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={}",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -5571,7 +5582,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::SpotXY.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={}",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -5679,7 +5690,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::Maze.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={}",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -5897,7 +5908,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::Pong.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={}",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -5996,7 +6007,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::Sequence.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={}",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -6108,7 +6119,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::Text.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={}",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -6216,7 +6227,7 @@ fn App() -> impl IntoView {
                                                 </div>
                                                 <div style="flex: 1;"></div>
                                                 <div style=move || {
-                                                    let r = last_reward.get();
+                                                    let r = last_raw_reward.get();
                                                     let (bg, fg) = if r > 0.0 {
                                                         ("rgba(34, 197, 94, 0.18)", "#4ade80")
                                                     } else if r < 0.0 {
@@ -6229,7 +6240,7 @@ fn App() -> impl IntoView {
                                                     )
                                                 }>
                                                     {move || {
-                                                        let r = last_reward.get();
+                                                        let r = last_raw_reward.get();
                                                         if r > 0.0 { "✓ Correct" } else if r < 0.0 { "✗ Wrong" } else { "—" }
                                                     }}
                                                 </div>
@@ -6258,7 +6269,7 @@ fn App() -> impl IntoView {
                                             <h3 class="card-title">"Reward & Signals"</h3>
                                             <pre class="codeblock">{GameKind::Replay.reward_info()}</pre>
                                             <div class="subtle" style="margin-top: 8px; line-height: 1.5;">
-                                                "Global shaping: shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
+                                                "Reward shaping (per-game): shaped = ((raw + bias) × scale) clamped to [−5, +5]"<br/>
                                                 {move || format!(
                                                     "Current: bias={}, scale={}",
                                                     fmt_f32_signed_fixed(reward_bias.get(), 2),
@@ -8199,7 +8210,9 @@ fn App() -> impl IntoView {
                                             <strong>"Formula:"</strong>
                                             " shaped = clamp((raw + bias) × scale, −5..5)"
                                         </p>
-                                        <p class="subtle">"Game scoring/stats still use the raw reward sign."</p>
+                                        <p class="subtle">
+                                            "Learning uses shaped reward; accuracy stats use the raw reward sign."
+                                        </p>
                                     </div>
                                 </div>
                             </div>
