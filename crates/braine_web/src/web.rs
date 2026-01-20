@@ -2767,9 +2767,6 @@ fn App() -> impl IntoView {
 
     let spotxy_anim_started = StoredValue::new(false);
     Effect::new(move |_| {
-        let Some(canvas) = canvas_ref.get() else {
-            return;
-        };
         if spotxy_anim_started.get_value() {
             return;
         }
@@ -2792,6 +2789,14 @@ fn App() -> impl IntoView {
             let v = spotxy_render_version.get_value();
             if v != *last_drawn_version.borrow() {
                 *last_drawn_version.borrow_mut() = v;
+
+                let Some(canvas) = canvas_ref.get() else {
+                    // Canvas not mounted (game not visible); keep the RAF loop alive.
+                    if let Some(cb) = f.borrow().as_ref() {
+                        let _ = window_raf.request_animation_frame(cb.as_ref().unchecked_ref());
+                    }
+                    return;
+                };
 
                 let grid_n = spotxy_grid_n.get_untracked();
                 let accent = if spotxy_eval.get_untracked() {
@@ -2840,9 +2845,6 @@ fn App() -> impl IntoView {
 
     let maze_anim_started = StoredValue::new(false);
     Effect::new(move |_| {
-        let Some(canvas) = maze_canvas_ref.get() else {
-            return;
-        };
         if maze_anim_started.get_value() {
             return;
         }
@@ -2865,6 +2867,13 @@ fn App() -> impl IntoView {
             let v = maze_render_version.get_value();
             if v != *last_drawn_version.borrow() {
                 *last_drawn_version.borrow_mut() = v;
+
+                let Some(canvas) = maze_canvas_ref.get() else {
+                    if let Some(cb) = f.borrow().as_ref() {
+                        let _ = window_raf.request_animation_frame(cb.as_ref().unchecked_ref());
+                    }
+                    return;
+                };
 
                 let s = maze_state.get_untracked();
                 let action = last_action.get_untracked();
@@ -2899,9 +2908,6 @@ fn App() -> impl IntoView {
     // when the brain tick / UI refresh is lower than the display FPS.
     let pong_anim_started = StoredValue::new(false);
     Effect::new(move |_| {
-        let Some(canvas) = pong_canvas_ref.get() else {
-            return;
-        };
         if pong_anim_started.get_value() {
             return;
         }
@@ -2923,6 +2929,14 @@ fn App() -> impl IntoView {
         let g = f.clone();
 
         *g.borrow_mut() = Some(Closure::wrap(Box::new(move |ts_ms: f64| {
+            let Some(canvas) = pong_canvas_ref.get() else {
+                // Canvas not mounted (game not visible); keep the RAF loop alive.
+                if let Some(cb) = f.borrow().as_ref() {
+                    let _ = window_raf.request_animation_frame(cb.as_ref().unchecked_ref());
+                }
+                return;
+            };
+
             // Compute dt
             let dt_s: f32 = {
                 let mut last = last_ts_ms.borrow_mut();

@@ -202,6 +202,9 @@ pub(super) fn draw_pong(
 
     let w = canvas.width() as f64;
     let h = canvas.height() as f64;
+    if w <= 1.0 || h <= 1.0 {
+        return Ok(());
+    }
 
     // Dark gradient background
     ctx.set_fill_style_str("#0a0f1a");
