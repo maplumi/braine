@@ -2,13 +2,34 @@
 // Color palette and styling constants
 
 export global Theme {
-    out property <color> bg-dark: #0d0d10;
-    out property <color> bg-panel: #1a1a1f;
-    out property <color> border: #333340;
-    out property <color> text-primary: #ffffff;
-    out property <color> text-secondary: #888899;
-    out property <color> accent-blue: #4080aa;
-    out property <color> accent-green: #40aa60;
-    out property <color> accent-red: #aa4040;
-    out property <color> accent-yellow: #aaaa40;
+    // Keep naming aligned with existing desktop code, but base values on the web UI tokens
+    // in `crates/braine_web/app.css`.
+
+    // Theme mode (web parity: light/dark toggle).
+    in-out property <bool> is-light: false;
+
+    // Web-like tokens
+    out property <color> bg: is-light ? #f6f8ff : #0b1020;
+    out property <color> panel: is-light ? #ffffff : #111a33;
+    out property <color> panel-2: is-light ? #f0f4ff : #0e1730;
+    out property <color> text: is-light ? #111827 : #e8ecff;
+    out property <color> muted: is-light ? #4b5563 : #aab4e6;
+    out property <color> accent: is-light ? #2563eb : #7aa2ff;
+    out property <color> accent-2: is-light ? #16a34a : #4ade80;
+    out property <color> danger: is-light ? #e11d48 : #fb7185;
+    // Borders/lines need to remain visible on very dark backgrounds.
+    out property <color> border: is-light ? #2563eb66 : #7aa2ff66;
+
+    out property <length> radius: 14px;
+    out property <length> radius-sm: 10px;
+
+    // Backwards-compatible aliases used throughout the current Slint UI.
+    out property <color> bg-dark: bg;
+    out property <color> bg-panel: panel;
+    out property <color> text-primary: text;
+    out property <color> text-secondary: muted;
+    out property <color> accent-blue: accent;
+    out property <color> accent-green: accent-2;
+    out property <color> accent-red: danger;
+    out property <color> accent-yellow: #f59e0b;
 }

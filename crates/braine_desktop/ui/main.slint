@@ -6,7 +6,7 @@ import { VerticalBox, HorizontalBox, Button, Slider, CheckBox, TabWidget, GroupB
 // Import modular components
 import { Theme } from "theme.slint";
 import { HudData, LearningState, BrainStats, UnitPoint, ActionScore, MeaningEdges, SnapshotItem, MeaningData, MeaningHistDot, GameState, GraphNodeDot, GraphEdgeSeg, MazeWallSeg } from "types.slint";
-import { SpotCanvas, BanditCanvas, PongCanvas, SpotXYCanvas, MazeCanvas } from "canvases.slint";
+import { SpotCanvas, BanditCanvas, PongCanvas, SpotXYCanvas, MazeCanvas, TextCanvas, ReplayCanvas } from "canvases.slint";
 import { GameHeader, HudPanel, LearningPanel, BrainPanel } from "panels.slint";
 import { AboutPanel } from "about.slint";
 
@@ -40,6 +40,64 @@ component TierPill inherits Rectangle {
     }
 }
 
+component SidebarItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 36px;
+    border-radius: Theme.radius-sm;
+    background: enabled ? (active ? Theme.panel-2 : transparent) : #ffffff08;
+    border-width: enabled && active ? 1px : 0px;
+    border-color: Theme.border;
+    opacity: enabled ? 1.0 : 0.6;
+
+    TouchArea {
+        enabled: parent.enabled;
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.label;
+        color: root.active ? Theme.text-primary : Theme.text-secondary;
+        font-size: 13px;
+        font-weight: root.active ? 700 : 600;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+    }
+}
+
+component NavTab inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+
+    height: 34px;
+    min-width: 84px;
+    border-radius: Theme.radius-sm;
+    background: root.active ? Theme.panel-2 : transparent;
+    border-width: root.active ? 1px : 0px;
+    border-color: Theme.border;
+
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    Text {
+        text: root.label;
+        color: root.active ? Theme.accent-blue : Theme.text-secondary;
+        font-size: 13px;
+        font-weight: root.active ? 700 : 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Main Window
 // ═══════════════════════════════════════════════════════════════════════════
@@ -50,19 +108,10 @@ export component MainWindow inherits Window {
     preferred-height: 740px;
     min-width: 860px;
     min-height: 600px;
-    background: Theme.bg-dark;
+    background: Theme.bg;
 
-    // Ensure standard widgets (including TabWidget tab labels) use a dark palette.
-    // We do this with a one-shot timer because global properties are assigned via
-    // imperative `=` (not `:` bindings) in Slint.
-    Timer {
-        interval: 1ms;
-        running: true;
-        triggered => {
-            Palette.color-scheme = ColorScheme.dark;
-            self.stop();
-        }
-    }
+    // Note: We avoid mutating `Palette.color-scheme` from Slint event handlers
+    // because it can trigger re-entrant renderer borrows on some backends.
     
     // State from Rust
     in property <HudData> hud;
@@ -193,6 +242,10 @@ export component MainWindow inherits Window {
     callback graph-request(string, int, int, bool);
     callback graph-hover(float, float);
     callback view-mode-changed(string);
+
+    // Native window controls (for custom top bar)
+    callback window-minimize();
+    callback window-toggle-maximize();
 
     callback replay-load-dataset(string);
     callback replay-load-sample();
@@ -345,140 +398,254 @@ export component MainWindow inherits Window {
         }
     
         VerticalBox {
-            padding: 8px;
-            spacing: 8px;
-            
-            // Top toolbar
-            HorizontalBox {
-                spacing: 8px;
-                height: 36px;
-                
-                Button {
-                    text: running ? "⏹ Stop" : "▶ Start";
-                    clicked => {
-                        running = !running;
-                        running-changed(running);
-                    }
-                }
+            padding: 0px;
+            spacing: 0px;
 
-                Text { text: "Game:"; color: Theme.text-secondary; vertical-alignment: center; }
-                Button {
-                    text: (root.effective-game-kind == "bandit") ? "Bandit" :
-                          (root.effective-game-kind == "spot_reversal") ? "Spot Reversal" :
-                          (root.effective-game-kind == "spotxy") ? "SpotXY" :
-                          (root.effective-game-kind == "maze") ? "Maze" :
-                          (root.effective-game-kind == "pong") ? "Pong" :
-                          (root.effective-game-kind == "text") ? "Text" :
-                          (root.effective-game-kind == "replay") ? "Replay" :
-                          "Spot";
-                    enabled: !running;
-                    clicked => {
-                        root.selected-game-kind = (root.selected-game-kind == "spot") ? "bandit" :
-                                                  (root.selected-game-kind == "bandit") ? "spot_reversal" :
-                                                  (root.selected-game-kind == "spot_reversal") ? "spotxy" :
-                                                  (root.selected-game-kind == "spotxy") ? "maze" :
-                                                  (root.selected-game-kind == "maze") ? "pong" :
-                                                  (root.selected-game-kind == "pong") ? "text" :
-                                                  (root.selected-game-kind == "text") ? "replay" :
-                                                  "spot";
+            // Web-like topbar
+            Rectangle {
+                height: 52px;
+                background: Theme.bg-panel;
+                border-width: 0px;
 
-                        // Pong is sensitive to control cadence. If the user hasn't already chosen
-                        // a relatively fast trial period, switch to a more controllable default.
-                        if (root.selected-game-kind == "pong" && root.trial-period-ms > 200) {
-                            root.trial-period-ms = 100;
-                            root.set-trial-period-ms(100);
-                        }
-
-                        if (root.selected-game-kind == "maze" && root.trial-period-ms > 200) {
-                            root.trial-period-ms = 90;
-                            root.set-trial-period-ms(90);
-                        }
-
-                        game-changed(root.selected-game-kind);
-                    }
-                }
-                
-                Rectangle { horizontal-stretch: 1; }
-
-                if root.experts-status != "": Button {
-                    text: (root.view-mode == "active_expert") ? "View: Active Expert" : "View: Parent";
-                    clicked => {
-                        root.view-mode = (root.view-mode == "active_expert") ? "parent" : "active_expert";
-                        root.view-mode-changed(root.view-mode);
-                    }
-                }
-
-                // Prevent long status strings from pushing controls past the right edge.
-                if root.experts-status != "": Rectangle {
-                    width: 260px;
-                    height: 20px;
-                    clip: true;
-                    background: transparent;
-
-                    Text {
-                        width: parent.width;
-                        height: parent.height;
-                        text: root.experts-status;
-                        color: Theme.text-secondary;
-                        vertical-alignment: center;
-                        horizontal-alignment: left;
-                        font-size: 12px;
-                    }
-                }
-
-                if root.brain-stats.execution-tier != "": Rectangle {
-                    height: 22px;
-                    border-radius: 11px;
-                    background: #4080aa20;
-                    border-width: 1px;
-                    border-color: #4080aa66;
+                VerticalBox {
+                    spacing: 0px;
 
                     HorizontalBox {
-                        padding-left: 8px;
-                        padding-right: 6px;
-                        spacing: 6px;
+                        height: parent.height - 1px;
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
+
+                    Text {
+                        text: "Braine";
+                        color: Theme.accent-blue;
+                        font-size: 18px;
+                        font-weight: 800;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: (root.brain-stats.execution-tier != "") ? ("Tier: " + root.brain-stats.execution-tier) : "";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                        if running: Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: Theme.accent-green;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                    Button {
+                        text: Theme.is-light ? "☀ Light" : "🌙 Dark";
+                        clicked => {
+                            Theme.is-light = !Theme.is-light;
+                        }
+                    }
+
+                    Button {
+                        text: running ? "⏹ Stop" : "▶ Start";
+                        clicked => {
+                            running = !running;
+                            running-changed(running);
+                        }
+                    }
+
+                    Button {
+                        text: paused ? "▶ Resume UI" : "⏸ Pause UI";
+                        clicked => { paused = !paused; }
+                        enabled: running;
+                    }
+
+                    Button {
+                        text: "Min";
+                        clicked => { root.window-minimize(); }
+                    }
+
+                    Button {
+                        text: "Max";
+                        clicked => { root.window-toggle-maximize(); }
+                    }
+
+                        if root.brain-stats.execution-tier != "": Rectangle {
+                            height: 22px;
+                            border-radius: 11px;
+                            background: Theme.panel-2;
+                            border-width: 1px;
+                            border-color: Theme.border;
+
+                        HorizontalBox {
+                            padding-left: 8px;
+                            padding-right: 6px;
+                            spacing: 6px;
+
+                            TierPill {
+                                label: "CPU";
+                                active:
+                                    (root.brain-stats.execution-tier-selected == "scalar" || root.brain-stats.execution-tier-selected == "Scalar") ||
+                                    (root.brain-stats.execution-tier-selected == "" && (root.brain-stats.execution-tier == "scalar" || root.brain-stats.execution-tier == "Scalar"));
+                                active-color: Theme.accent-blue;
+                                clicked => { root.set-execution-tier("scalar"); }
+                            }
+                            TierPill {
+                                label: "GPU";
+                                active:
+                                    (root.brain-stats.execution-tier-selected == "gpu" || root.brain-stats.execution-tier-selected == "Gpu") ||
+                                    (root.brain-stats.execution-tier-selected == "" && (root.brain-stats.execution-tier == "gpu" || root.brain-stats.execution-tier == "Gpu"));
+                                active-color: Theme.accent-green;
+                                clicked => { root.set-execution-tier("gpu"); }
+                            }
+                        }
+                    }
+
+                        if root.experts-status != "": Rectangle {
+                            width: 320px;
+                            height: 20px;
+                            clip: true;
+                            background: transparent;
 
                         Text {
-                            text: (root.brain-stats.execution-tier-selected != "" && root.brain-stats.execution-tier-effective != "") ?
-                                  ("Tier: sel=" + root.brain-stats.execution-tier-selected + " eff=" + root.brain-stats.execution-tier-effective) :
-                                  ("Tier: " + root.brain-stats.execution-tier);
-                            color: Theme.text-primary;
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.experts-status;
+                            color: Theme.text-secondary;
                             vertical-alignment: center;
+                            horizontal-alignment: left;
                             font-size: 12px;
                         }
+                    }
+                    }
 
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+            }
 
-                        TierPill {
-                            label: "CPU";
-                            active:
-                                (root.brain-stats.execution-tier-selected == "scalar" || root.brain-stats.execution-tier-selected == "Scalar") ||
-                                (root.brain-stats.execution-tier-selected == "" && (root.brain-stats.execution-tier == "scalar" || root.brain-stats.execution-tier == "Scalar"));
-                            active-color: Theme.accent-blue;
-                            clicked => { root.set-execution-tier("scalar"); }
+            // Main shell: sidebar + center + right panels
+            HorizontalBox {
+                spacing: 0px;
+                vertical-stretch: 1;
+
+                // Sidebar (web-style)
+                Rectangle {
+                    width: 260px;
+                    background: Theme.bg-panel;
+                    border-width: 0px;
+
+                    HorizontalBox {
+                        spacing: 0px;
+
+                        VerticalBox {
+                            padding: 12px;
+                            spacing: 10px;
+
+                        SidebarItem {
+                            label: "Docs / About";
+                            enabled: true;
+                            clicked => { right_tabs.current-index = 8; }
                         }
-                        TierPill {
-                            label: "GPU";
-                            active:
-                                (root.brain-stats.execution-tier-selected == "gpu" || root.brain-stats.execution-tier-selected == "Gpu") ||
-                                (root.brain-stats.execution-tier-selected == "" && (root.brain-stats.execution-tier == "gpu" || root.brain-stats.execution-tier == "Gpu"));
-                            active-color: Theme.accent-green;
-                            clicked => { root.set-execution-tier("gpu"); }
+
+                        Text { text: "Games"; color: Theme.text-secondary; font-size: 12px; }
+
+                        // Disable switching while running (daemon enforces stop-first).
+                        SidebarItem {
+                            label: "🎯  Spot";
+                            enabled: !running;
+                            active: root.effective-game-kind == "spot";
+                            clicked => { root.selected-game-kind = "spot"; game-changed(root.selected-game-kind); }
+                        }
+                        SidebarItem {
+                            label: "🎰  Bandit";
+                            enabled: !running;
+                            active: root.effective-game-kind == "bandit";
+                            clicked => { root.selected-game-kind = "bandit"; game-changed(root.selected-game-kind); }
+                        }
+                        SidebarItem {
+                            label: "🔄  Reversal";
+                            enabled: !running;
+                            active: root.effective-game-kind == "spot_reversal";
+                            clicked => { root.selected-game-kind = "spot_reversal"; game-changed(root.selected-game-kind); }
+                        }
+                        SidebarItem {
+                            label: "📍  SpotXY";
+                            enabled: !running;
+                            active: root.effective-game-kind == "spotxy";
+                            clicked => { root.selected-game-kind = "spotxy"; game-changed(root.selected-game-kind); }
+                        }
+                        SidebarItem {
+                            label: "🧭  Maze";
+                            enabled: !running;
+                            active: root.effective-game-kind == "maze";
+                            clicked => {
+                                root.selected-game-kind = "maze";
+                                if (root.trial-period-ms > 200) {
+                                    root.trial-period-ms = 90;
+                                    root.set-trial-period-ms(90);
+                                }
+                                game-changed(root.selected-game-kind);
+                            }
+                        }
+                        SidebarItem {
+                            label: "🏓  Pong";
+                            enabled: !running;
+                            active: root.effective-game-kind == "pong";
+                            clicked => {
+                                root.selected-game-kind = "pong";
+                                if (root.trial-period-ms > 200) {
+                                    root.trial-period-ms = 100;
+                                    root.set-trial-period-ms(100);
+                                }
+                                game-changed(root.selected-game-kind);
+                            }
+                        }
+                        SidebarItem {
+                            label: "📝  Text";
+                            enabled: !running;
+                            active: root.effective-game-kind == "text";
+                            clicked => { root.selected-game-kind = "text"; game-changed(root.selected-game-kind); }
+                        }
+                        SidebarItem {
+                            label: "📼  Replay";
+                            enabled: !running;
+                            active: root.effective-game-kind == "replay";
+                            clicked => { root.selected-game-kind = "replay"; game-changed(root.selected-game-kind); }
+                        }
+
+                        Rectangle { vertical-stretch: 1; background: transparent; }
+
+                            if root.experts-status != "": Button {
+                                text: (root.view-mode == "active_expert") ? "View: Active Expert" : "View: Parent";
+                                clicked => {
+                                    root.view-mode = (root.view-mode == "active_expert") ? "parent" : "active_expert";
+                                    root.view-mode-changed(root.view-mode);
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 1px;
+                            background: Theme.border;
                         }
                     }
                 }
-                
-                Button {
-                    text: paused ? "▶ Resume UI" : "⏸ Pause UI";
-                    clicked => { paused = !paused; }
-                    enabled: running;
-                }
-            }
-            
-            // Main content
-            HorizontalBox {
-                spacing: 8px;
-                vertical-stretch: 1;
+
+                // Center: game canvas + HUD
+                Rectangle {
+                    background: Theme.bg;
+                    horizontal-stretch: 1;
+                    border-width: 0px;
+
+                    VerticalBox {
+                        padding: 10px;
+                        spacing: 8px;
+                        vertical-stretch: 1;
                 
                 // Left: Game canvas
                 VerticalBox {
@@ -546,7 +713,15 @@ export component MainWindow inherits Window {
                         game: root.game;
                         vertical-stretch: 1;
                     }
-                    if root.effective-game-kind != "spotxy" && root.effective-game-kind != "maze" && root.effective-game-kind != "pong" && root.effective-game-kind != "bandit": SpotCanvas {
+                    if root.effective-game-kind == "text": TextCanvas {
+                        game: root.game;
+                        vertical-stretch: 1;
+                    }
+                    if root.effective-game-kind == "replay": ReplayCanvas {
+                        game: root.game;
+                        vertical-stretch: 1;
+                    }
+                    if root.effective-game-kind != "spotxy" && root.effective-game-kind != "maze" && root.effective-game-kind != "pong" && root.effective-game-kind != "bandit" && root.effective-game-kind != "text" && root.effective-game-kind != "replay": SpotCanvas {
                         game: root.game;
                         vertical-stretch: 1;
                     }
@@ -558,13 +733,77 @@ export component MainWindow inherits Window {
                         min-height: 120px;
                     }
                 }
-                
-                // Right: Control panels (tabs)
-                TabWidget {
-                    horizontal-stretch: 2;
+                    }
+                }
+
+                // Right: Control panels (tabs) - kept as-is for now
+                Rectangle {
+                    width: 440px;
                     vertical-stretch: 1;
+                    background: Theme.bg-panel;
+                    border-width: 0px;
+
+                    VerticalBox {
+                        spacing: 0px;
+
+                        // Web-style primary navigation for the right panel.
+                        // Two-row layout so tabs are never clipped/hidden.
+                        Rectangle {
+                            height: 84px;
+                            horizontal-stretch: 1;
+                            background: transparent;
+
+                            VerticalBox {
+                                x: 10px;
+                                y: 8px;
+                                width: parent.width - 20px;
+                                spacing: 6px;
+
+                                // current-index mapping (0-based):
+                                // 0 Learning, 1 Game Settings, 2 Brain, 3 Storage, 4 Advisor, 5 Brain Plot, 6 Meaning, 7 Graph, 8 About, 9 Inferencing
+                                HorizontalBox {
+                                    spacing: 6px;
+                                    NavTab { label: "BrainViz"; active: right_tabs.current-index == 6; clicked => { right_tabs.current-index = 6; } }
+                                    NavTab { label: "Inspect"; active: right_tabs.current-index == 2; clicked => { right_tabs.current-index = 2; } }
+                                    NavTab { label: "Learning"; active: right_tabs.current-index == 0; clicked => { right_tabs.current-index = 0; } }
+                                    NavTab { label: "Settings"; active: right_tabs.current-index == 1; clicked => { right_tabs.current-index = 1; } }
+                                    NavTab { label: "Storage"; active: right_tabs.current-index == 3; clicked => { right_tabs.current-index = 3; } }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                }
+
+                                HorizontalBox {
+                                    spacing: 6px;
+                                    NavTab { label: "Advisor"; active: right_tabs.current-index == 4; clicked => { right_tabs.current-index = 4; } }
+                                    NavTab { label: "Plot"; active: right_tabs.current-index == 5; clicked => { right_tabs.current-index = 5; } }
+                                    NavTab { label: "Graph"; active: right_tabs.current-index == 7; clicked => { right_tabs.current-index = 7; } }
+                                    NavTab { label: "About"; active: right_tabs.current-index == 8; clicked => { right_tabs.current-index = 8; } }
+                                    NavTab { label: "Infer"; active: right_tabs.current-index == 9; clicked => { right_tabs.current-index = 9; } }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.border; }
+
+                        // Hide the built-in TabWidget tab bar so the custom NavTab row is
+                        // the single source of truth (web parity). We do this by clipping
+                        // and shifting the TabWidget up by a fixed amount.
+                        // TODO: Replace TabWidget with explicit pages once parity work matures.
+                        right_tabs_view := Rectangle {
+                            horizontal-stretch: 1;
+                            vertical-stretch: 1;
+                            clip: true;
+                            background: transparent;
+
+                            property <length> hidden-tabbar-height: 44px;
+
+                            right_tabs := TabWidget {
+                                x: 0px;
+                                y: -right_tabs_view.hidden-tabbar-height;
+                                width: parent.width;
+                                height: parent.height + right_tabs_view.hidden-tabbar-height;
                     
-                    Tab {
+                                Tab {
                         title: "Learning";
                         ScrollView {
                             horizontal-stretch: 1;
@@ -1300,7 +1539,7 @@ export component MainWindow inherits Window {
                                     Rectangle {
                                         height: 110px;
                                         horizontal-stretch: 1;
-                                        background: Theme.bg-dark;
+                                        background: Theme.panel-2;
                                         border-width: 1px;
                                         border-color: Theme.border;
 
@@ -1319,7 +1558,7 @@ export component MainWindow inherits Window {
                                     Rectangle {
                                         height: 110px;
                                         horizontal-stretch: 1;
-                                        background: Theme.bg-dark;
+                                        background: Theme.panel-2;
                                         border-width: 1px;
                                         border-color: Theme.border;
 
@@ -1435,7 +1674,7 @@ export component MainWindow inherits Window {
                                     Rectangle {
                                         height: 360px;
                                         horizontal-stretch: 1;
-                                        background: Theme.bg-dark;
+                                        background: Theme.panel-2;
                                         border-width: 1px;
                                         border-color: Theme.border;
 
@@ -1568,92 +1807,95 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    Tab {
-                        title: "About";
-                        AboutPanel { }
-                    }
-                    
-                    Tab {
-                        title: "Inferencing";
-                        TabWidget {
-                            horizontal-stretch: 1;
-                            vertical-stretch: 1;
-
-                            Tab {
-                                title: "Prediction";
-                                ScrollView {
-                                    Rectangle {
-                                        background: Theme.bg-panel;
-                                        horizontal-stretch: 1;
-                                        VerticalBox {
-                                            padding: 12px;
-                                            spacing: 8px;
-                                            Text { text: "Prediction"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
-                                            Text { text: "UI scaffold: expose sequence/next-step prediction tasks here."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
-                                        }
-                                    }
+                                Tab {
+                                    title: "About";
+                                    AboutPanel { }
                                 }
-                            }
 
-                            Tab {
-                                title: "Classification";
-                                ScrollView {
-                                    Rectangle {
-                                        background: Theme.bg-panel;
+                                Tab {
+                                    title: "Inferencing";
+                                    TabWidget {
                                         horizontal-stretch: 1;
-                                        VerticalBox {
-                                            padding: 12px;
-                                            spacing: 8px;
-                                            Text { text: "Classification"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
-                                            Text { text: "UI scaffold: map observations to labels; track accuracy and confusion."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        vertical-stretch: 1;
+
+                                        Tab {
+                                            title: "Prediction";
+                                            ScrollView {
+                                                Rectangle {
+                                                    background: Theme.bg-panel;
+                                                    horizontal-stretch: 1;
+                                                    VerticalBox {
+                                                        padding: 12px;
+                                                        spacing: 8px;
+                                                        Text { text: "Prediction"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                                        Text { text: "UI scaffold: expose sequence/next-step prediction tasks here."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                                    }
+                                                }
+                                            }
                                         }
-                                    }
-                                }
-                            }
 
-                            Tab {
-                                title: "Scoring / Ranking";
-                                ScrollView {
-                                    Rectangle {
-                                        background: Theme.bg-panel;
-                                        horizontal-stretch: 1;
-                                        VerticalBox {
-                                            padding: 12px;
-                                            spacing: 8px;
-                                            Text { text: "Scoring / Ranking"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
-                                            Text { text: "UI scaffold: display action scores, candidate rankings, and calibration."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        Tab {
+                                            title: "Classification";
+                                            ScrollView {
+                                                Rectangle {
+                                                    background: Theme.bg-panel;
+                                                    horizontal-stretch: 1;
+                                                    VerticalBox {
+                                                        padding: 12px;
+                                                        spacing: 8px;
+                                                        Text { text: "Classification"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                                        Text { text: "UI scaffold: map observations to labels; track accuracy and confusion."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                                    }
+                                                }
+                                            }
                                         }
-                                    }
-                                }
-                            }
 
-                            Tab {
-                                title: "Control";
-                                ScrollView {
-                                    Rectangle {
-                                        background: Theme.bg-panel;
-                                        horizontal-stretch: 1;
-                                        VerticalBox {
-                                            padding: 12px;
-                                            spacing: 8px;
-                                            Text { text: "Control & Action Selection"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
-                                            Text { text: "UI scaffold: configure exploration, policies, and closed-loop control."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        Tab {
+                                            title: "Scoring / Ranking";
+                                            ScrollView {
+                                                Rectangle {
+                                                    background: Theme.bg-panel;
+                                                    horizontal-stretch: 1;
+                                                    VerticalBox {
+                                                        padding: 12px;
+                                                        spacing: 8px;
+                                                        Text { text: "Scoring / Ranking"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                                        Text { text: "UI scaffold: display action scores, candidate rankings, and calibration."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                                    }
+                                                }
+                                            }
                                         }
-                                    }
-                                }
-                            }
 
-                            Tab {
-                                title: "Decision Making";
-                                ScrollView {
-                                    Rectangle {
-                                        background: Theme.bg-panel;
-                                        horizontal-stretch: 1;
-                                        VerticalBox {
-                                            padding: 12px;
-                                            spacing: 8px;
-                                            Text { text: "Decision Making / Problem Solving"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
-                                            Text { text: "UI scaffold: integrate experts + nesting for recursive problem solving."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                        Tab {
+                                            title: "Control";
+                                            ScrollView {
+                                                Rectangle {
+                                                    background: Theme.bg-panel;
+                                                    horizontal-stretch: 1;
+                                                    VerticalBox {
+                                                        padding: 12px;
+                                                        spacing: 8px;
+                                                        Text { text: "Control & Action Selection"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                                        Text { text: "UI scaffold: configure exploration, policies, and closed-loop control."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Tab {
+                                            title: "Decision Making";
+                                            ScrollView {
+                                                Rectangle {
+                                                    background: Theme.bg-panel;
+                                                    horizontal-stretch: 1;
+                                                    VerticalBox {
+                                                        padding: 12px;
+                                                        spacing: 8px;
+                                                        Text { text: "Decision Making / Problem Solving"; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                                                        Text { text: "UI scaffold: integrate experts + nesting for recursive problem solving."; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }

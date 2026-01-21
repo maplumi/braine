@@ -39,3 +39,47 @@ Right now `braine_web` is optimized for **edge-first learning in a browser** (fa
 - Add a lightweight “inspect” panel in web (top-k meaning edges; basic unit activity stats).
 - Add a graph snapshot endpoint in the daemon that can be streamed efficiently, then decide whether the web should consume it (requires a web-safe transport).
 - Keep desktop as the “deep introspection” client; keep web as the “portable learning demo” client.
+
+## Desktop UI: web-parity layout target
+
+This section defines what “desktop UI looks exactly like web UI” means in terms of **layout and interaction patterns**.
+It is intentionally UI-only: it does not change the service boundary (desktop talks to the daemon; web runs in-process).
+
+### Layout structure (desktop)
+
+Target the web shell structure:
+
+- **Topbar** (fixed height)
+	- Brand (“Braine”), connection/status text, running live indicator.
+	- Theme toggle (dark/light).
+	- Start/Stop and Pause controls.
+	- Execution-tier display + quick CPU/GPU toggles.
+- **Sidebar** (left, fixed width ~260px)
+	- Docs/About entry.
+	- Game list with icons and active highlight.
+	- Disable game switching while running (daemon enforces stop-first).
+- **Main split** (fills remaining space)
+	- **Center**: active game canvas + HUD/summary.
+	- **Right**: settings/inspect panels.
+
+Desktop does not need mobile responsiveness, but should match spacing, typography weight, and “card” styling.
+
+### Navigation model
+
+Web groups the UI as top-level tabs (BrainViz / Inspect / Learning / Settings). Desktop can keep deeper tooling, but should:
+
+- expose the web-equivalent tabs as the primary navigation, and
+- keep advanced tabs either collapsed under an “Advanced” section or a secondary TabWidget.
+
+### Styling parity (tokens)
+
+Align desktop styling with the web tokens (from `crates/braine_web/app.css`):
+
+- background (`--bg`), panel (`--panel`, `--panel-2`)
+- text (`--text`, `--muted`)
+- accents (`--accent`, `--accent-2`, `--danger`)
+- border (`--border`)
+- radius (`--radius`, `--radius-sm`)
+
+Desktop should implement these as Slint `global Theme` properties so all panels share the same look.
+

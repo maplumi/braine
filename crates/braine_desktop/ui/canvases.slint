@@ -21,7 +21,8 @@ export component SpotCanvas inherits Rectangle {
         x: parent.width / 2 - 1px;
         width: 2px;
         height: parent.height;
-        background: #ffffff20;
+        background: Theme.border;
+        opacity: 0.65;
     }
     
     // Left label
@@ -110,7 +111,8 @@ export component BanditCanvas inherits Rectangle {
         x: parent.width / 2 - 1px;
         width: 2px;
         height: parent.height;
-        background: #ffffff14;
+        background: Theme.border;
+        opacity: 0.55;
     }
 
     Text {
@@ -401,25 +403,25 @@ export component MazeCanvas inherits Rectangle {
         property <float> mh: max(2, game.maze-h) * 1.0;
         property <length> cell_px: min(field.width / mw, field.height / mh);
 
-        for s in maze-wall-segs: Path {
-            commands:
-                "M "
-                + (s.x1 * ((parent.width) / 1px))
-                + " "
-                + (s.y1 * ((parent.height) / 1px))
-                + " L "
-                + (s.x2 * ((parent.width) / 1px))
-                + " "
-                + (s.y2 * ((parent.height) / 1px));
-            viewbox-x: 0;
-            viewbox-y: 0;
-            viewbox-width: parent.width / 1px;
-            viewbox-height: parent.height / 1px;
-            fill: transparent;
-            stroke: #7aa2ff;
-            stroke-width: max(1px, parent.cell_px * 0.10);
-            stroke-line-cap: square;
-            opacity: 0.70;
+        // Wall segments (higher contrast).
+        // We render these as thin rectangles for reliability across backends.
+        property <length> wall_thickness: max(2px, cell_px * 0.16);
+
+        for s in maze-wall-segs: Rectangle {
+            background: Theme.text-primary;
+            opacity: 0.85;
+
+            property <float> dx: abs(s.x2 - s.x1);
+            property <float> dy: abs(s.y2 - s.y1);
+            property <bool> horiz: dx >= dy;
+            property <float> x_min: min(s.x1, s.x2);
+            property <float> y_min: min(s.y1, s.y2);
+
+            x: horiz ? (x_min * parent.width) : (s.x1 * parent.width - parent.wall_thickness / 2);
+            y: horiz ? (s.y1 * parent.height - parent.wall_thickness / 2) : (y_min * parent.height);
+
+            width: horiz ? max(1px, dx * parent.width) : parent.wall_thickness;
+            height: horiz ? parent.wall_thickness : max(1px, dy * parent.height);
         }
     }
 
@@ -461,7 +463,7 @@ export component MazeCanvas inherits Rectangle {
         Text {
             x: 10px;
             y: 3px;
-            text: "mode=" + game.maze-mode + " steps=" + game.maze-steps;
+            text: "mode=" + game.maze-mode + " steps=" + game.maze-steps + " walls=" + maze-wall-segs.length;
             color: Theme.text-primary;
             font-size: 12px;
         }
@@ -480,6 +482,142 @@ export component MazeCanvas inherits Rectangle {
         y: parent.height - 40px;
         width: parent.width;
         text: "Use arrows / WASD to navigate";
+        color: Theme.text-primary;
+        font-size: 14px;
+        horizontal-alignment: center;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Text Canvas (next-token regime)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component TextCanvas inherits Rectangle {
+    in property <GameState> game;
+
+    background: Theme.bg-dark;
+    border-color: Theme.border;
+    border-width: 2px;
+
+    Rectangle {
+        x: 14px;
+        y: 14px;
+        width: parent.width - 28px;
+        height: parent.height - 28px;
+        background: #00000022;
+        border-color: Theme.border;
+        border-width: 1px;
+        border-radius: 10px;
+    }
+
+    Text {
+        x: 18px;
+        y: 18px;
+        text: "Text (next-token)";
+        color: Theme.text-secondary;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    Text {
+        x: 0px;
+        y: parent.height * 0.35 - 22px;
+        width: parent.width;
+        text: (game.text-token != "") ? ("token = " + game.text-token) : "token = (waiting)";
+        color: Theme.text-primary;
+        font-size: 18px;
+        font-weight: 700;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        x: 0px;
+        y: parent.height * 0.35 + 10px;
+        width: parent.width;
+        text: (game.text-target-next != "") ? ("target_next = " + game.text-target-next) : "target_next = (unknown)";
+        color: Theme.text-secondary;
+        font-size: 14px;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        x: 0px;
+        y: parent.height - 64px;
+        width: parent.width;
+        text: "regime=" + game.text-regime + "  vocab=" + game.text-vocab-size + "  outcomes=" + game.text-outcomes + "  shift_every=" + game.text-shift-every;
+        color: Theme.text-secondary;
+        font-size: 12px;
+        horizontal-alignment: center;
+    }
+
+    if !game.response-made: Text {
+        x: 0px;
+        y: parent.height - 40px;
+        width: parent.width;
+        text: "Use A/D (left/right) to choose a token.";
+        color: Theme.text-primary;
+        font-size: 14px;
+        horizontal-alignment: center;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Replay Canvas (dataset-driven evaluation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export component ReplayCanvas inherits Rectangle {
+    in property <GameState> game;
+
+    background: Theme.bg-dark;
+    border-color: Theme.border;
+    border-width: 2px;
+
+    Rectangle {
+        x: 14px;
+        y: 14px;
+        width: parent.width - 28px;
+        height: parent.height - 28px;
+        background: #00000022;
+        border-color: Theme.border;
+        border-width: 1px;
+        border-radius: 10px;
+    }
+
+    Text {
+        x: 18px;
+        y: 18px;
+        text: "Replay";
+        color: Theme.text-secondary;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    Text {
+        x: 0px;
+        y: parent.height * 0.35 - 16px;
+        width: parent.width;
+        text: (game.replay-dataset != "") ? ("dataset = " + game.replay-dataset) : "dataset = (none)";
+        color: Theme.text-primary;
+        font-size: 16px;
+        font-weight: 700;
+        horizontal-alignment: center;
+    }
+
+    Text {
+        x: 0px;
+        y: parent.height * 0.35 + 12px;
+        width: parent.width;
+        text: "trial " + (game.replay-index + 1) + "/" + game.replay-total + ((game.replay-trial-id != "") ? ("  id=" + game.replay-trial-id) : "");
+        color: Theme.text-secondary;
+        font-size: 13px;
+        horizontal-alignment: center;
+    }
+
+    if !game.response-made: Text {
+        x: 0px;
+        y: parent.height - 40px;
+        width: parent.width;
+        text: "Use A/D to respond (left/right).";
         color: Theme.text-primary;
         font-size: 14px;
         horizontal-alignment: center;

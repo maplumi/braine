@@ -28,7 +28,7 @@ export component AboutPanel inherits Rectangle {
             }
             
             Text {
-                text: "© 2024-2026 Maplumi Labs. Developer: Elvis Ayiemba";
+                text: "2024-2026 Maplumi Labs. Developer: Elvis Ayiemba";
                 color: Theme.text-secondary;
                 font-size: 12px;
             }
@@ -61,7 +61,7 @@ export component AboutPanel inherits Rectangle {
             }
             
             Text {
-                text: "• Online, continual learning — Most ML systems require offline batch training; Braine learns in real-time from streaming experience.\n\n• Credit assignment without gradients — Using local Hebbian-like rules + neuromodulation instead of backprop through time.\n\n• Catastrophic forgetting — Exploring mechanisms like dreaming, consolidation, and causal memory to preserve learned behaviors.\n\n• Sample efficiency — Learning useful behaviors from tens/hundreds of trials rather than millions.\n\n• Emergent representations — Symbols and concepts arise from interaction, not pre-engineered features.";
+                text: "- Online, continual learning: learns in real-time from streaming experience.\n\n- Credit assignment without gradients: local Hebbian-like rules + neuromodulation (no backprop).\n\n- Catastrophic forgetting: mechanisms like dreaming/consolidation and causal memory.\n\n- Sample efficiency: learn useful behaviors from tens/hundreds of trials.\n\n- Emergent representations: symbols arise from interaction, not hand-engineered features.";
                 color: Theme.text-primary;
                 font-size: 13px;
                 wrap: word-wrap;
@@ -85,6 +85,142 @@ export component AboutPanel inherits Rectangle {
             }
             
             Rectangle { height: 1px; background: Theme.border; }
+
+            // Quick start
+            Text {
+                text: "Quick start (local)";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            Text {
+                text:
+                    "Desktop UI (daemon client):\n"
+                    + "• Start daemon:  cargo run -p brained\n"
+                    + "• Start UI:      cargo run -p braine_desktop\n\n"
+                    + "Web UI (browser runtime):\n"
+                    + "• cd crates/braine_web && trunk serve --address 127.0.0.1 --port 8080\n\n"
+                    + "Tip: If the UI shows 'connection refused', start `brained` first.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // Architecture / boundary
+            Text {
+                text: "Architecture (service boundary)";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            Text {
+                text:
+                    "Braine is a continuously running substrate. The system is intentionally split:\n\n"
+                    + "• brained (daemon): owns the long-lived Brain state, task loop, persistence.\n"
+                    + "• braine_desktop (this app): UI client that polls state and sends commands.\n"
+                    + "• braine_cli: small client for automation/debugging.\n"
+                    + "• braine_web: browser-hosted UI that runs a Brain in-process (no daemon).\n\n"
+                    + "Important: Braine is not an LLM and must not be shaped like one. Learning is local and online; inference reads the learned dynamics.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // Protocol
+            Text {
+                text: "Protocol (desktop ↔ daemon)";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            Text {
+                text:
+                    "The desktop talks to the daemon over TCP using newline-delimited JSON on 127.0.0.1:9876.\n\n"
+                    + "Common operations:\n"
+                    + "• GetState: fetches the full UI snapshot (stats, HUD, plots, storage).\n"
+                    + "• Start / Stop: runs or pauses the task loop (Stop persists).\n"
+                    + "• SetGame: switches the active game (requires Stop first).\n"
+                    + "• GetGameParams / SetGameParam: game knob schema and updates.\n"
+                    + "• ReplayGetDataset / ReplaySetDataset: configure evaluation datasets.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // Games & controls
+            Text {
+                text: "Games & controls";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            Text {
+                text:
+                    "All games are closed-loop: stimulus → dynamics → action → reward → commit observation.\n\n"
+                    + "Spot: left/right stimulus; choose LEFT(A) or RIGHT(D).\n"
+                    + "Reversal: same as Spot but contingency flips; requires context tracking.\n"
+                    + "Bandit: stochastic reward; learn expected value of A vs B.\n"
+                    + "SpotXY: position stimulus on a grid (or binary mode); learn mapping to actions.\n"
+                    + "Maze: navigation in a grid; use arrows/WASD.\n"
+                    + "Pong: reactive control; typically actions are up/down/stay (depends on mode).\n"
+                    + "Text: next-token regime; choose between available actions (often left/right) while the token stream shifts.\n"
+                    + "Replay: dataset-driven evaluation; trials are provided from a replay dataset.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // Persistence
+            Text {
+                text: "Persistence";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            Text {
+                text:
+                    "The daemon persists the Brain image so learning carries across restarts.\n"
+                    + "• Stop / Shutdown triggers a save.\n"
+                    + "• There is also autosave logic in the daemon.\n"
+                    + "If you want a clean slate, delete the saved brain image and restart the daemon.";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // Troubleshooting
+            Text {
+                text: "Troubleshooting";
+                color: Theme.accent-blue;
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            Text {
+                text:
+                    "• Can't switch games: Stop first (daemon enforces this).\n"
+                    + "• Desktop can't connect: ensure brained is running on 127.0.0.1:9876.\n"
+                    + "• Linux runtime deps: some systems need libxkbcommon-x11 for the window backend.\n"
+                    + "• Replay shows empty dataset: set a dataset via the replay controls (or update the dataset JSON).";
+                color: Theme.text-primary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
             
             // Similar Systems
             Text {
@@ -95,7 +231,7 @@ export component AboutPanel inherits Rectangle {
             }
             
             Text {
-                text: "• HTM (Hierarchical Temporal Memory) — Numenta's neocortex-inspired model with sparse distributed representations.\n\n• Spiking Neural Networks (SNNs) — Neuromorphic hardware like Intel Loihi, IBM TrueNorth using spike-timing plasticity.\n\n• Reservoir Computing / Echo State Networks — Recurrent dynamics with a trained readout layer.\n\n• Liquid State Machines — Similar to reservoirs but with spiking neurons.\n\n• Active Inference / Free Energy Principle — Friston's framework for perception and action via prediction error minimization.\n\nBraine differs by combining: (1) oscillatory sparse coding, (2) pure local learning, (3) explicit causal/meaning memory, and (4) interactive games for grounded evaluation.";
+                text: "- HTM (Hierarchical Temporal Memory): sparse distributed representations.\n\n- Spiking neural networks: STDP-like plasticity on neuromorphic hardware.\n\n- Reservoir computing / Echo State Networks: recurrent dynamics with readout.\n\n- Liquid State Machines: spiking reservoirs.\n\n- Active inference / Free Energy: perception and action framed as minimizing prediction error.\n\nBraine differs by combining oscillatory sparse coding, pure local learning, explicit causal/meaning memory, and interactive games for grounded evaluation.";
                 color: Theme.text-primary;
                 font-size: 13px;
                 wrap: word-wrap;
@@ -139,7 +275,7 @@ export component AboutPanel inherits Rectangle {
             
             // Research Disclaimer
             Text {
-                text: "⚠️ Research Disclaimer";
+                text: "Research Disclaimer";
                 color: Theme.accent-yellow;
                 font-size: 16px;
                 font-weight: 600;

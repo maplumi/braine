@@ -1444,7 +1444,28 @@ impl DaemonClient {
 
 fn main() -> Result<(), slint::PlatformError> {
     let ui = MainWindow::new()?;
+    // Default to maximized (not fullscreen) so the OS taskbar remains visible.
+    ui.window().set_maximized(true);
     let client = Rc::new(DaemonClient::new());
+
+    // Native window controls exposed in the custom top bar.
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_minimize(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.window().set_minimized(true);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_window_toggle_maximize(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let want_maximized = !ui.window().is_maximized();
+                ui.window().set_maximized(want_maximized);
+            }
+        });
+    }
 
     // Apply persisted execution-tier preference early (best-effort).
     if let Some(tier) = load_exec_tier_pref() {
