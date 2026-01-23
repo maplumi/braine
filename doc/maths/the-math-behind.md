@@ -317,11 +317,11 @@ $$
  w_{ij} \leftarrow (1-f)\,w_{ij}
 $$
 
-### 5.2 Engram edges (sensor \leftrightarrow concept)
+### 5.2 Engram edges (sensor \leftrightarrow validated concept)
 Special-case edges between:
 
 - sensor units (members of any sensor group)
-- concept units (reserved but not in any sensor/action group)
+- **validated** concept units (reserved but not in any sensor/action group; marked validated through positive reinforcement)
 
 For such edges, if $|w_{ij}| < \epsilon$ after decay, the weight is clamped to a minimal trace:
 
@@ -329,7 +329,7 @@ $$
  w_{ij} \leftarrow \mathrm{sign}(w_{ij})\,\epsilon
 $$
 
-This implements a “savings” effect: re-learning can be faster than learning from zero.
+This implements a "savings" effect: re-learning can be faster than learning from zero. Only applied to concepts that have been reinforced to prevent memory bloat from spurious weak links.
 
 ### 5.3 Pruning
 For all other edges:

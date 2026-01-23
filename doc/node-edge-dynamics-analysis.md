@@ -18,7 +18,7 @@
 - All weights decay: `w *= (1 - forget_rate)` 
 - Default forget_rate: 0.0005 (very slow decay)
 - Pruning: if `|w| < prune_below` (default 0.01), connection is removed
-- Engram protection: sensor↔concept edges maintain minimal trace (never fully pruned)
+- Engram protection: sensor↔validated concept edges maintain minimal trace (never fully pruned)
 
 **Causal Memory** (`CausalMemory`):
 - Separate symbolic memory tracking temporal co-occurrence

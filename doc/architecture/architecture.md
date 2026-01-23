@@ -189,9 +189,10 @@ For signals like `spot_left` / `spot_right`, think of the Frame as providing a *
 ### “Muscle memory” / savings
 
 The substrate has forgetting and pruning, but we want re-learning to be faster for previously-seen stimuli.
-To support this, we keep a weak non-zero trace for **sensor↔concept** links created by imprinting:
+To support this, we keep a weak non-zero trace for **sensor↔validated concept** links:
 
 - Those links can decay, but they are not pruned to zero.
+- Only concepts that have been reinforced maintain engrams to prevent memory bloat.
 - Effect: after a stimulus disappears for a long time, the association may weaken, but on re-exposure it can “snap back” faster because the engram still exists.
 
 ## 4) Causality and meaning (minimal)
