@@ -21,10 +21,10 @@
 - Engram protection: sensor↔validated concept edges maintain minimal trace (never fully pruned)
 
 **Causal Memory** (`CausalMemory`):
-- Separate symbolic memory tracking temporal co-occurrence
+- Separate symbolic memory tracking temporal relationships
 - Decay: `count *= (1 - causal_decay)` each observation
-- Directed edges: from previous symbols → current symbols
-- Co-occurrence edges: same-tick symbol pairs
+- **Transition edges**: directed edges from previous symbols → current symbols (used for causal_strength)
+- **Co-occurrence edges**: same-tick symbol pairs (correlation, not used for causal_strength)
 
 ### 2. Unit Structure (Current)
 

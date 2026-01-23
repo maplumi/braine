@@ -173,11 +173,11 @@ sequenceDiagram
 flowchart TD
     subgraph Detection["Novelty Detection"]
         S[Stimulus arrives]
-        C1{Existing strength<br/>< 3.0?}
+        C1{Connected to<br/>< 2 concepts?}
     end
     
     S --> C1
-    C1 -->|No| Skip[Already known<br/>Skip imprinting]
+    C1 -->|No| Skip[Already integrated<br/>Skip imprinting]
     C1 -->|Yes| Find
     
     subgraph Formation["Concept Formation"]

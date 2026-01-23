@@ -353,11 +353,9 @@ Given a sensor group $G$ and stimulus strength $\sigma$:
 Imprinting is skipped if:
 
 - $\sigma < 0.4$, or
-- existing outgoing strength from the group is already large:
+- sensor units already connect to $\geq 2$ distinct concepts:
 
-$$
-\sum_{i\in G} \sum_{j \in \mathcal{N}(i)} |w_{ij}| > 3.0
-$$
+Count unique concepts $c$ where $\exists i\in G$ with $\mathcal{N}(i)\ni c$ and $|w_{ic}| > 0.1$ and $c$ is reserved (not a sensor).
 
 Otherwise, choose a “quiet” unit $c$ (low $|a_c|$) not in $G$, reserve it as a concept, and add couplings:
 
@@ -500,9 +498,13 @@ $$
 Where:
 
 $$
-P(b\mid a) \approx \mathrm{clip}_{[0,1]}\Big(\frac{C_{a\to b}}{B_a}\Big),\quad
+P(b\mid a) \approx \mathrm{clip}_{[0,1]}\Big(\frac{C_{a\to b}^{\mathrm{trans}} + 1}{B_a + 1}\Big),\quad
 P(b) \approx \mathrm{clip}_{[0,1]}\Big(\frac{B_b}{\sum_x B_x}\Big)
 $$
+
+Here $C_{a\to b}^{\mathrm{trans}}$ is the count of **directed transitions** from $a$ to $b$ (not same-tick co-occurrences).
+
+The Laplace smoothing (+1) prevents explosion when $B_a$ is small, while maintaining statistical validity.
 
 Interpretation:
 - $S(a,b)>0$ means $a$ increases likelihood of $b$.
