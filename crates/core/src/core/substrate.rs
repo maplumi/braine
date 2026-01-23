@@ -4422,6 +4422,7 @@ impl Brain {
     #[cfg(feature = "simd")]
     fn step_dynamics_simd(&mut self) {
         let inhibition = self.compute_inhibition();
+        let n = self.units.len();
 
         // Accumulate influences (sparse, hard to vectorize efficiently).
         let mut influence_amp = vec![0.0f32; n];
