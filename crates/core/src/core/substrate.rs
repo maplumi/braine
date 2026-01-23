@@ -121,6 +121,10 @@ pub struct BrainConfig {
 
     pub noise_amp: f32,
     pub noise_phase: f32,
+    /// Cubic amplitude saturation strength. When >0, adds a smooth -beta * amp^3
+    /// term to the amplitude derivative so attractors do not rely solely on
+    /// hard clipping. Typical small values: 0.05..0.5.
+    pub amp_saturation_beta: f32,
 
     /// Phase coupling mode for dynamics.
     ///
@@ -337,6 +341,7 @@ impl Default for BrainConfig {
             base_freq: 1.0,
             noise_amp: 0.02,
             noise_phase: 0.01,
+            amp_saturation_beta: 0.1,
             phase_coupling_mode: 1,
             phase_coupling_k: 2.0,
             global_inhibition: 0.2,
@@ -2443,6 +2448,7 @@ impl Brain {
             let base_freq = storage::read_f32_le(&mut c)?;
             let noise_amp = storage::read_f32_le(&mut c)?;
             let noise_phase = storage::read_f32_le(&mut c)?;
+            let amp_saturation_beta = read_f32_default(&mut c, 0.1);
 
             // Phase coupling fields were introduced in a later layout.
             let (phase_coupling_mode, phase_coupling_k) = if expect_phase_fields {
@@ -2535,6 +2541,7 @@ impl Brain {
                 base_freq,
                 noise_amp,
                 noise_phase,
+                amp_saturation_beta,
                 phase_coupling_mode,
                 phase_coupling_k,
                 global_inhibition,
@@ -4333,8 +4340,9 @@ impl Brain {
 
             let input = self.pending_input[i];
             let damp = u.decay * u.amp;
-            let d_amp =
-                (u.bias + input + influence_amp - inhibition - damp + noise_a) * self.cfg.dt;
+            let satur = -self.cfg.amp_saturation_beta * u.amp.powi(3);
+            let d_amp = (u.bias + input + influence_amp - inhibition - damp + satur + noise_a)
+                * self.cfg.dt;
             let d_phase = (self.cfg.base_freq + influence_phase + noise_p) * self.cfg.dt;
 
             next_amp[i] = (u.amp + d_amp).clamp(-2.0, 2.0);
@@ -4421,6 +4429,7 @@ impl Brain {
         let dt = f32x4::splat(self.cfg.dt);
         let base_freq = f32x4::splat(self.cfg.base_freq);
         let inhibition_v = f32x4::splat(inhibition);
+        let beta_v = f32x4::splat(self.cfg.amp_saturation_beta);
         let min_clamp = f32x4::splat(-2.0);
         let max_clamp = f32x4::splat(2.0);
         let pi = f32x4::splat(std::f32::consts::PI);
@@ -4455,7 +4464,8 @@ impl Brain {
             ]);
 
             let damp = decay * amp;
-            let d_amp = (bias + input + inf_a - inhibition_v - damp + n_a) * dt;
+            let satur = -beta_v * amp * amp * amp;
+            let d_amp = (bias + input + inf_a - inhibition_v - damp + satur + n_a) * dt;
             let d_phase = (base_freq + inf_p + n_p) * dt;
 
             let new_amp = (amp + d_amp).max(min_clamp).min(max_clamp);
@@ -4571,7 +4581,9 @@ impl Brain {
                 let (noise_a, noise_p) = noise[i];
                 let input = pending_input[i];
                 let damp = u.decay * u.amp;
-                let d_amp = (u.bias + input + influence_amp - inhibition - damp + noise_a) * cfg.dt;
+                let satur = -cfg.amp_saturation_beta * u.amp.powi(3);
+                let d_amp =
+                    (u.bias + input + influence_amp - inhibition - damp + satur + noise_a) * cfg.dt;
                 let d_phase = (cfg.base_freq + influence_phase + noise_p) * cfg.dt;
 
                 (
