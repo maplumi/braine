@@ -257,7 +257,7 @@ Let eligibility decay be $\rho_e$ = `eligibility_decay` and eligibility gain be 
 Define a soft-thresholded co-activity magnitude (using the activity trace when enabled):
 
 $$
-c_{ij}(t) = \max(0, a_i^{tr}(t) - \theta)\,\max(0, a_j^{tr}(t) - \theta)
+c_{ij}(t) = \sqrt{\max(0, a_i^{tr}(t) - \theta)\,\max(0, a_j^{tr}(t) - \theta)}
 $$
 
 Compute phase alignment $\ell_{ij}(t) = \mathrm{align}(\phi_i(t),\phi_j(t))$ and define a correlation term:

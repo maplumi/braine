@@ -5943,8 +5943,10 @@ impl Brain {
                 };
 
                 // Co-activity magnitude (soft-thresholded). softness=0 keeps hard ReLU.
-                let co = smooth_relu(a_amp - thr, self.cfg.coactive_softness)
+                // Apply sqrt to bound the multiplicative term and prevent eligibility saturation.
+                let co_raw = smooth_relu(a_amp - thr, self.cfg.coactive_softness)
                     * smooth_relu(b_amp - thr, self.cfg.coactive_softness);
+                let co = co_raw.sqrt();
 
                 let de = gain * co * corr;
                 let e = &mut self.eligibility[idx];
