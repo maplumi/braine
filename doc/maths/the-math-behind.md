@@ -406,7 +406,7 @@ This changes resource usage over time because $N$ grows.
 For an action group $A_k$ with unit set $\mathcal{A}_k$:
 
 $$
-\mathrm{score}_k^\mathrm{habit} = \sum_{i\in \mathcal{A}_k} a_i
+\mathrm{score}_k^\mathrm{habit} = \sum_{i\in \mathcal{A}_k} \max(0, a_i)
 $$
 
 The deterministic policy chooses $\arg\max_k \mathrm{score}_k$.

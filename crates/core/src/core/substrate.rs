@@ -4968,7 +4968,7 @@ impl Brain {
 
     /// Select an action based on current unit activations.
     ///
-    /// Returns the action name and its score (sum of unit amplitudes).
+    /// Returns the action name and its score (sum of positive unit amplitudes).
     ///
     /// # Arguments
     /// * `policy` - Selection strategy (deterministic or epsilon-greedy)
@@ -4989,7 +4989,7 @@ impl Brain {
             .map(|g| {
                 (
                     g.name.clone(),
-                    g.units.iter().map(|&id| self.units[id].amp).sum(),
+                    g.units.iter().map(|&id| self.units[id].amp.max(0.0)).sum(),
                 )
             })
             .collect();
