@@ -38,9 +38,10 @@ pub struct CausalStats {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct EdgeStats {
-    // Exponentially decayed co-occurrence counts.
-    // This is a very cheap proxy for temporal causality on edge devices.
-    count: f32,
+    // Exponentially decayed transition counts (directed edges from prev to current).
+    transition_count: f32,
+    // Exponentially decayed co-occurrence counts (same-tick undirected edges).
+    cooccur_count: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +98,8 @@ impl CausalMemory {
             *v *= 1.0 - self.decay;
         }
         for e in self.edges.values_mut() {
-            e.count *= 1.0 - self.decay;
+            e.transition_count *= 1.0 - self.decay;
+            e.cooccur_count *= 1.0 - self.decay;
         }
 
         // Keep memory bounded: occasionally remove near-zero entries.
@@ -117,7 +119,7 @@ impl CausalMemory {
         for &a in &self.prev_symbols {
             for &b in current_symbols {
                 let key = pack(a, b);
-                self.edges.entry(key).or_default().count += 1.0;
+                self.edges.entry(key).or_default().transition_count += 1.0;
                 self.last_directed_edge_updates += 1;
             }
         }
@@ -132,8 +134,8 @@ impl CausalMemory {
                 }
                 let k1 = pack(a, b);
                 let k2 = pack(b, a);
-                self.edges.entry(k1).or_default().count += 0.5;
-                self.edges.entry(k2).or_default().count += 0.5;
+                self.edges.entry(k1).or_default().cooccur_count += 0.5;
+                self.edges.entry(k2).or_default().cooccur_count += 0.5;
                 self.last_cooccur_edge_updates += 2;
             }
         }
@@ -169,7 +171,8 @@ impl CausalMemory {
             *v *= 1.0 - self.decay;
         }
         for e in self.edges.values_mut() {
-            e.count *= 1.0 - self.decay;
+            e.transition_count *= 1.0 - self.decay;
+            e.cooccur_count *= 1.0 - self.decay;
         }
 
         if (self.observe_count & 0xFF) == 0 {
@@ -187,7 +190,7 @@ impl CausalMemory {
         for &a in &self.prev_symbols {
             for &b in current_symbols {
                 let key = pack(a, b);
-                self.edges.entry(key).or_default().count += 1.0;
+                self.edges.entry(key).or_default().transition_count += 1.0;
                 self.last_directed_edge_updates += 1;
             }
         }
@@ -207,7 +210,7 @@ impl CausalMemory {
                 for &a in prev {
                     for &b in current_symbols {
                         let key = pack(a, b);
-                        self.edges.entry(key).or_default().count += weight;
+                        self.edges.entry(key).or_default().transition_count += weight;
                         self.last_directed_edge_updates += 1;
                     }
                 }
@@ -223,8 +226,8 @@ impl CausalMemory {
                 }
                 let k1 = pack(a, b);
                 let k2 = pack(b, a);
-                self.edges.entry(k1).or_default().count += 0.5;
-                self.edges.entry(k2).or_default().count += 0.5;
+                self.edges.entry(k1).or_default().cooccur_count += 0.5;
+                self.edges.entry(k2).or_default().cooccur_count += 0.5;
                 self.last_cooccur_edge_updates += 2;
             }
         }
@@ -245,7 +248,8 @@ impl CausalMemory {
         });
         self.base_total = new_total.max(0.0);
 
-        self.edges.retain(|_, e| e.count > threshold);
+        self.edges
+            .retain(|_, e| e.transition_count > threshold || e.cooccur_count > threshold);
 
         // Floating-point drift can accumulate after many retains.
         // Re-anchor occasionally; this is still amortized and keeps invariants tight.
@@ -264,6 +268,8 @@ impl CausalMemory {
     }
 
     /// A cheap "causal strength" score: P(B|A) - P(B)
+    /// - Uses only transition edges (not co-occurrence) to avoid mixing correlation and causation.
+    /// - Applies Laplace smoothing (add-1) to prevent division by small counts.
     /// - Positive means A increases likelihood of B.
     /// - Near zero means little relationship.
     pub fn causal_strength(&self, a: SymbolId, b: SymbolId) -> f32 {
@@ -274,14 +280,21 @@ impl CausalMemory {
             return 0.0;
         }
 
-        let edge = self.edges.get(&pack(a, b)).map(|e| e.count).unwrap_or(0.0);
+        // Use only transition edges, not co-occurrence edges
+        let transition_edge = self
+            .edges
+            .get(&pack(a, b))
+            .map(|e| e.transition_count)
+            .unwrap_or(0.0);
 
-        // Approximate conditional probability and base probability.
-        let p_b_given_a = (edge / base_a).clamp(0.0, 1.0);
+        // Apply Laplace smoothing (add-1 prior) to prevent explosion with small counts
+        let alpha = 1.0;
+        let smoothed_p_b_given_a = ((transition_edge + alpha) / (base_a + alpha)).clamp(0.0, 1.0);
+
         let total: f32 = self.base_total.max(1.0);
         let p_b = (base_b / total).clamp(0.0, 1.0);
 
-        (p_b_given_a - p_b).clamp(-1.0, 1.0)
+        (smoothed_p_b_given_a - p_b).clamp(-1.0, 1.0)
     }
 
     /// Merge edges from another memory into this one.
@@ -298,7 +311,9 @@ impl CausalMemory {
 
         for (&key, stats) in other.edges.iter() {
             let entry = self.edges.entry(key).or_default();
-            entry.count = (1.0 - rate) * entry.count + rate * stats.count;
+            entry.transition_count =
+                (1.0 - rate) * entry.transition_count + rate * stats.transition_count;
+            entry.cooccur_count = (1.0 - rate) * entry.cooccur_count + rate * stats.cooccur_count;
         }
     }
 
@@ -465,7 +480,8 @@ impl CausalMemory {
         storage::write_u32_le(w, self.edges.len() as u32)?;
         for (&key, stats) in self.edges.iter() {
             storage::write_u64_le(w, key)?;
-            storage::write_f32_le(w, stats.count)?;
+            storage::write_f32_le(w, stats.transition_count)?;
+            storage::write_f32_le(w, stats.cooccur_count)?;
         }
 
         storage::write_u32_le(w, self.prev_symbols.len() as u32)?;
@@ -494,8 +510,15 @@ impl CausalMemory {
         let mut edges: HashMap<u64, EdgeStats> = HashMap::with_capacity(edge_n);
         for _ in 0..edge_n {
             let key = storage::read_u64_le(r)?;
-            let count = storage::read_f32_le(r)?;
-            edges.insert(key, EdgeStats { count });
+            let transition_count = storage::read_f32_le(r)?;
+            let cooccur_count = storage::read_f32_le(r)?;
+            edges.insert(
+                key,
+                EdgeStats {
+                    transition_count,
+                    cooccur_count,
+                },
+            );
         }
 
         let prev_n = storage::read_u32_le(r)? as usize;
