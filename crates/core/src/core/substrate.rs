@@ -5929,17 +5929,17 @@ impl Brain {
 
                 let align = phase_alignment(a_phase, self.units[target].phase);
 
-                // Smooth blend between a small anti-alignment term and alignment.
+                // Smooth blend between no eligibility (misaligned) and alignment.
                 // softness=0 keeps the legacy hard gate.
                 let corr = if self.cfg.phase_gate_softness <= 0.0 {
                     if align > phase_thr {
                         align
                     } else {
-                        -0.05
+                        0.0
                     }
                 } else {
                     let sigma = sigmoid((align - phase_thr) / self.cfg.phase_gate_softness);
-                    (1.0 - sigma) * (-0.05) + sigma * align
+                    sigma * align
                 };
 
                 // Co-activity magnitude (soft-thresholded). softness=0 keeps hard ReLU.

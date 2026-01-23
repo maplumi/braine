@@ -265,7 +265,7 @@ Compute phase alignment $\ell_{ij}(t) = \mathrm{align}(\phi_i(t),\phi_j(t))$ and
 $$
 \mathrm{corr}_{ij}(t) = \begin{cases}
 \ell_{ij}(t) & \text{if } \ell_{ij}(t) > \kappa \\
--0.05 & \text{otherwise}
+0 & \text{otherwise}
 \end{cases}
 $$
 
