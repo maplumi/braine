@@ -120,7 +120,9 @@ Every step, each unit updates its amplitude and phase based on:
 
 4. **Global inhibition**: Competition for activity
    ```
-   inhibition = avg(all amplitudes) × inhibition_strength
+   // inhibition_mode: 0=signed mean, 1=mean abs, 2=rectified mean
+   avg_activity = compute_avg_based_on_mode(all amplitudes)
+   inhibition = avg_activity × inhibition_strength
    input -= inhibition
    ```
 
@@ -136,10 +138,15 @@ Every step, each unit updates its amplitude and phase based on:
 
 The final update:
 ```rust
-amp[j] += input × dt
+// Soft cubic saturation term (-beta * amp^3) reduces reliance on hard clamp
+amp[j] += (input + -beta * amp[j]*amp[j]*amp[j]) × dt
 amp[j] = clamp(amp[j], -2.0, +2.0)
 phase[j] += (base_freq + amp[j] × freq_coupling) × dt
 ```
+
+Notes:
+- A smooth cubic restoring term $-\beta\,\mathrm{amp}^3$ (config `amp_saturation_beta`, default 0.1)
+    is applied inside the amplitude derivative. Recommended tuning: 0.02–0.3.
 
 This creates **rich recurrent dynamics**:
 - Stable patterns (attractors) emerge from repeated experiences

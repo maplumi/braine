@@ -9,6 +9,7 @@ pub enum ParamSection {
     Plasticity,
     Salience,
     PruningThresholds,
+    Inhibition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +96,11 @@ pub fn sections_ordered() -> Vec<SectionSpec> {
             title: "Pruning & Connection Thresholds",
             blurb: "Minimum thresholds for forming associations and maintaining weak connections over time.",
         },
+        SectionSpec {
+            section: ParamSection::Inhibition,
+            title: "Inhibition Mode",
+            blurb: "How global inhibition is computed from network activity. Affects competition and stability.",
+        },
     ]
 }
 
@@ -146,6 +152,36 @@ pub fn param_specs() -> Vec<ParamSpec> {
             recommended: Some(RecommendedRange { min: 0.02, max: 0.20 }),
             when_to_change: "Increase if too many units activate simultaneously; decrease if network activity becomes too sparse or silent.",
             risk: Risk::High,
+            advanced: false,
+        },
+        ParamSpec {
+            key: "amp_saturation_beta",
+            label: "Amplitude Saturation (beta)",
+            section: ParamSection::Dynamics,
+            description: "Smooth cubic saturation strength applied as -beta * amp^3 to the amplitude derivative. Provides soft attractor formation and reduces reliance on hard clipping.",
+            units: None,
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
+            default: d.amp_saturation_beta,
+            recommended: Some(RecommendedRange { min: 0.02, max: 0.3 }),
+            when_to_change: "Increase if dynamics rail at the clipping bounds or become brittle with larger N; decrease for gentler saturation.",
+            risk: Risk::Medium,
+            advanced: true,
+        },
+        ParamSpec {
+            key: "inhibition_mode",
+            label: "Inhibition Mode",
+            section: ParamSection::Inhibition,
+            description: "How global inhibition is computed: 0=signed mean (legacy, can cancel), 1=mean absolute (|a|), 2=rectified mean (max(0,a)). Use 1 or 2 for robust competition.",
+            units: None,
+            min: 0.0,
+            max: 2.0,
+            step: 1.0,
+            default: d.inhibition_mode as f32,
+            recommended: Some(RecommendedRange { min: 1.0, max: 2.0 }),
+            when_to_change: "Switch to 1 or 2 if you see runaway activity pockets or sensitivity to sign conventions.",
+            risk: Risk::Medium,
             advanced: false,
         },
 

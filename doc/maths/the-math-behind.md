@@ -109,11 +109,11 @@ $$
 
 ### 3.2 Global inhibition (competition)
 
-Define mean amplitude:
+Define mean amplitude (mode-dependent):
 
-$$
-\bar{a}(t) = \frac{1}{N} \sum_{k=0}^{N-1} a_k(t)
-$$
+- **Signed mean (mode 0, legacy)**: $\bar{a}(t) = \frac{1}{N} \sum_{k=0}^{N-1} a_k(t)$
+- **Mean absolute (mode 1)**: $\bar{a}(t) = \frac{1}{N} \sum_{k=0}^{N-1} |a_k(t)|$
+- **Rectified mean (mode 2)**: $\bar{a}(t) = \frac{1}{N} \sum_{k=0}^{N-1} \max(0, a_k(t))$
 
 Global inhibition term:
 
@@ -122,6 +122,11 @@ I(t) = g \cdot \bar{a}(t)
 $$
 
 where $g$ is `global_inhibition`.
+
+**Notes on inhibition modes**:
+- Signed mean (legacy) can cancel out when positive/negative activity balances, leading to runaway pockets.
+- Mean absolute treats all activity as magnitude, robust but may suppress useful inhibitory structure.
+- Rectified mean only counts excitatory activity (positive amplitudes), aligns with salience/homeostasis conventions.
 
 ### 3.3 Sparse neighbor influence
 For unit $i$:
@@ -167,6 +172,20 @@ $$
 \Delta a_i(t) = \big(b_i + u_i(t) + A_i(t) - I(t) - D_i(t) + \xi^a_i(t)\big)\,\Delta t
 $$
 
+The implementation additionally includes a smooth cubic saturation term to provide
+soft restoring forces that avoid relying solely on hard clipping. Denote the
+saturation parameter $\beta\ge 0$ (`amp_saturation_beta`):
+
+$$
+S_i(t) = -\beta\,a_i(t)^3
+$$
+
+and the amplitude increment becomes
+
+$$
+\Delta a_i(t) = \big(b_i + u_i(t) + A_i(t) - I(t) - D_i(t) + S_i(t) + \xi^a_i(t)\big)\,\Delta t
+$$
+
 Phase increment:
 
 $$
@@ -181,6 +200,14 @@ $$
  \phi_i(t+1) &= \text{wrap}\big(\phi_i(t) + \Delta\phi_i(t)\big)
 \end{aligned}
 $$
+
+Notes:
+- The added cubic term $-\beta a^3$ produces a smooth attractor structure
+  (interior fixed points) when $\beta>0$, reducing brittleness introduced by
+  hard clipping. Typical recommended values: $\beta\in[0.02,0.3]$; the code
+  default is $0.1$.
+- Clipping to $[-2,2]$ is retained as a safety bound but is no longer the
+  primary mechanism that creates stable attractors.
 
 ### 3.5 Salience (importance trace)
 Salience uses the coactivity threshold $\theta$ = `coactive_threshold`.
