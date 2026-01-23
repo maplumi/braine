@@ -6278,7 +6278,23 @@ impl Brain {
             }
         }
 
-        if existing_strength > 3.0 {
+        // Detect novelty by checking whether sensor units have sufficient connections
+        // to existing concepts. Count concepts with meaningful connections (>0.1).
+        let mut connected_concepts = std::collections::HashSet::new();
+        for &id in group_units {
+            for (target, weight) in self.neighbors(id) {
+                if self.reserved.get(target).copied().unwrap_or(false)
+                    && !self.group_member.get(target).copied().unwrap_or(false)
+                    && weight.abs() > 0.1
+                {
+                    connected_concepts.insert(target);
+                }
+            }
+        }
+
+        // Allow imprinting if connected to fewer than 2 concepts, or if total strength is low.
+        // This prevents stalling while allowing multiple concepts per sensor pattern.
+        if connected_concepts.len() >= 2 && existing_strength > 3.0 {
             return;
         }
 
