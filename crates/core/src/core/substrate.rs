@@ -139,6 +139,13 @@ pub struct BrainConfig {
     // Competition: subtract proportional inhibition from all units.
     pub global_inhibition: f32,
 
+    /// Inhibition mode: how to compute the global inhibition signal.
+    ///
+    /// 0 = signed mean (legacy; can cancel out)
+    /// 1 = mean absolute amplitude (|a|)
+    /// 2 = rectified mean (max(0, a))
+    pub inhibition_mode: u8,
+
     // Local learning/forgetting.
     pub hebb_rate: f32,
     pub forget_rate: f32,
@@ -345,6 +352,7 @@ impl Default for BrainConfig {
             phase_coupling_mode: 1,
             phase_coupling_k: 2.0,
             global_inhibition: 0.2,
+            inhibition_mode: 0,
             hebb_rate: 0.08,
             forget_rate: 0.0005,
             prune_below: 0.01,
@@ -2336,6 +2344,7 @@ impl Brain {
         storage::write_u32_le(w, self.cfg.phase_coupling_mode as u32)?;
         storage::write_f32_le(w, self.cfg.phase_coupling_k)?;
         storage::write_f32_le(w, self.cfg.global_inhibition)?;
+        storage::write_u32_le(w, self.cfg.inhibition_mode as u32)?;
         storage::write_f32_le(w, self.cfg.hebb_rate)?;
         storage::write_f32_le(w, self.cfg.forget_rate)?;
         storage::write_f32_le(w, self.cfg.prune_below)?;
@@ -2460,6 +2469,7 @@ impl Brain {
             };
 
             let global_inhibition = storage::read_f32_le(&mut c)?;
+            let inhibition_mode = read_u32_default(&mut c, 0) as u8;
             let hebb_rate = storage::read_f32_le(&mut c)?;
             let forget_rate = storage::read_f32_le(&mut c)?;
             let prune_below = storage::read_f32_le(&mut c)?;
@@ -2545,6 +2555,7 @@ impl Brain {
                 phase_coupling_mode,
                 phase_coupling_k,
                 global_inhibition,
+                inhibition_mode,
                 hebb_rate,
                 forget_rate,
                 prune_below,
@@ -4311,10 +4322,32 @@ impl Brain {
         }
     }
 
+    /// Compute global inhibition signal based on inhibition_mode.
+    fn compute_inhibition(&self) -> f32 {
+        let avg = match self.cfg.inhibition_mode {
+            0 => {
+                // Signed mean (legacy)
+                self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32
+            }
+            1 => {
+                // Mean absolute amplitude
+                self.units.iter().map(|u| u.amp.abs()).sum::<f32>() / self.units.len() as f32
+            }
+            2 => {
+                // Rectified mean (max(0, a))
+                self.units.iter().map(|u| u.amp.max(0.0)).sum::<f32>() / self.units.len() as f32
+            }
+            _ => {
+                // Default to signed mean
+                self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32
+            }
+        };
+        self.cfg.global_inhibition * avg
+    }
+
     /// Scalar (baseline) dynamics update.
     fn step_dynamics_scalar(&mut self) {
-        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32;
-        let inhibition = self.cfg.global_inhibition * avg_amp;
+        let inhibition = self.compute_inhibition();
 
         let mut next_amp = vec![0.0; self.units.len()];
         let mut next_phase = vec![0.0; self.units.len()];
@@ -4388,9 +4421,7 @@ impl Brain {
     /// neighbor accumulation scalar (irregular memory access patterns).
     #[cfg(feature = "simd")]
     fn step_dynamics_simd(&mut self) {
-        let n = self.units.len();
-        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / n as f32;
-        let inhibition = self.cfg.global_inhibition * avg_amp;
+        let inhibition = self.compute_inhibition();
 
         // Accumulate influences (sparse, hard to vectorize efficiently).
         let mut influence_amp = vec![0.0f32; n];
@@ -4536,8 +4567,7 @@ impl Brain {
     /// Parallel dynamics update using rayon.
     #[cfg(feature = "parallel")]
     fn step_dynamics_parallel(&mut self) {
-        let avg_amp = self.units.iter().map(|u| u.amp).sum::<f32>() / self.units.len() as f32;
-        let inhibition = self.cfg.global_inhibition * avg_amp;
+        let inhibition = self.compute_inhibition();
 
         // Pre-generate noise (RNG is not thread-safe).
         let noise: Vec<(f32, f32)> = (0..self.units.len())
