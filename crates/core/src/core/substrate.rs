@@ -136,6 +136,12 @@ pub struct BrainConfig {
     /// Gain used for tanh phase coupling mode.
     pub phase_coupling_k: f32,
 
+    /// Gain factor applied to phase coupling influence.
+    ///
+    /// Separates phase coupling strength from amplitude coupling strength.
+    /// Typical values: 0.1..1.0 (lower than amplitude weights).
+    pub phase_coupling_gain: f32,
+
     // Competition: subtract proportional inhibition from all units.
     pub global_inhibition: f32,
 
@@ -351,6 +357,7 @@ impl Default for BrainConfig {
             amp_saturation_beta: 0.1,
             phase_coupling_mode: 1,
             phase_coupling_k: 2.0,
+            phase_coupling_gain: 1.0,
             global_inhibition: 0.2,
             inhibition_mode: 0,
             hebb_rate: 0.08,
@@ -2281,9 +2288,12 @@ impl Brain {
             + 4  // base_freq
             + 4  // noise_amp
             + 4  // noise_phase
+            + 4  // amp_saturation_beta
             + 4  // phase_coupling_mode
             + 4  // phase_coupling_k
+            + 4  // phase_coupling_gain
             + 4  // global_inhibition
+            + 4  // inhibition_mode
             + 4  // hebb_rate
             + 4  // forget_rate
             + 4  // prune_below
@@ -2341,8 +2351,10 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.base_freq)?;
         storage::write_f32_le(w, self.cfg.noise_amp)?;
         storage::write_f32_le(w, self.cfg.noise_phase)?;
+        storage::write_f32_le(w, self.cfg.amp_saturation_beta)?;
         storage::write_u32_le(w, self.cfg.phase_coupling_mode as u32)?;
         storage::write_f32_le(w, self.cfg.phase_coupling_k)?;
+        storage::write_f32_le(w, self.cfg.phase_coupling_gain)?;
         storage::write_f32_le(w, self.cfg.global_inhibition)?;
         storage::write_u32_le(w, self.cfg.inhibition_mode as u32)?;
         storage::write_f32_le(w, self.cfg.hebb_rate)?;
@@ -2468,6 +2480,8 @@ impl Brain {
                 (0u8, 2.0)
             };
 
+            let phase_coupling_gain = read_f32_default(&mut c, 1.0);
+
             let global_inhibition = storage::read_f32_le(&mut c)?;
             let inhibition_mode = read_u32_default(&mut c, 0) as u8;
             let hebb_rate = storage::read_f32_le(&mut c)?;
@@ -2554,6 +2568,7 @@ impl Brain {
                 amp_saturation_beta,
                 phase_coupling_mode,
                 phase_coupling_k,
+                phase_coupling_gain,
                 global_inhibition,
                 inhibition_mode,
                 hebb_rate,
@@ -4360,8 +4375,9 @@ impl Brain {
             for (target, weight) in self.neighbors(i) {
                 let v = &self.units[target];
                 influence_amp += weight * v.amp;
-                influence_phase +=
-                    weight * phase_coupling_term(angle_diff(v.phase, u.phase), &self.cfg);
+                influence_phase += weight
+                    * self.cfg.phase_coupling_gain
+                    * phase_coupling_term(angle_diff(v.phase, u.phase), &self.cfg);
             }
 
             let noise_a = self
@@ -4433,8 +4449,9 @@ impl Brain {
             for (target, weight) in self.neighbors(i) {
                 let v = &self.units[target];
                 influence_amp[i] += weight * v.amp;
-                influence_phase[i] +=
-                    weight * phase_coupling_term(angle_diff(v.phase, u_phase), &self.cfg);
+                influence_phase[i] += weight
+                    * self.cfg.phase_coupling_gain
+                    * phase_coupling_term(angle_diff(v.phase, u_phase), &self.cfg);
             }
         }
 
@@ -4605,8 +4622,9 @@ impl Brain {
                     let weight = connections.weights[idx];
                     let v = &units[target];
                     influence_amp += weight * v.amp;
-                    influence_phase +=
-                        weight * phase_coupling_term(angle_diff(v.phase, u.phase), cfg);
+                    influence_phase += weight
+                        * cfg.phase_coupling_gain
+                        * phase_coupling_term(angle_diff(v.phase, u.phase), cfg);
                 }
 
                 let (noise_a, noise_p) = noise[i];

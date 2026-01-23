@@ -141,7 +141,7 @@ Phase influence (bounded coupling):
 
 Let $\delta_{ij}(t) = \Delta(\phi_j(t),\phi_i(t))$.
 
-The phase coupling uses a mode and gain (`phase_coupling_mode`, `phase_coupling_k`):
+The phase coupling uses a mode, gain, and overall strength (`phase_coupling_mode`, `phase_coupling_k`, `phase_coupling_gain`):
 
 - legacy linear (mode 0): $f(\delta) = \delta$
 - sinusoidal (mode 1): $f(\delta) = \sin(\delta)$
@@ -150,8 +150,10 @@ The phase coupling uses a mode and gain (`phase_coupling_mode`, `phase_coupling_
 Then:
 
 $$
-P_i(t) = \sum_{j \in \mathcal{N}(i)} w_{ij}(t)\, f\big(\delta_{ij}(t)\big)
+P_i(t) = \sum_{j \in \mathcal{N}(i)} w_{ij}(t)\,\gamma_\phi\, f\big(\delta_{ij}(t)\big)
 $$
+
+where $\gamma_\phi$ is `phase_coupling_gain` (default 1.0).
 
 ### 3.4 Discrete-time update
 Parameters:
