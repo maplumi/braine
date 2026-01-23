@@ -4764,6 +4764,7 @@ impl Brain {
             base_freq: self.cfg.base_freq,
             inhibition,
             unit_count: n as u32,
+            amp_saturation_beta: self.cfg.amp_saturation_beta,
         };
 
         // Try GPU, fallback to scalar if unavailable or on error.
@@ -4952,6 +4953,7 @@ impl Brain {
             base_freq: self.cfg.base_freq,
             inhibition,
             unit_count: n as u32,
+            amp_saturation_beta: self.cfg.amp_saturation_beta,
         };
 
         let started = crate::gpu::with_gpu_context(max_units, |ctx| {

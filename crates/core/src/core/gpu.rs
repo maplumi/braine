@@ -152,6 +152,7 @@ pub struct GpuParams {
     pub base_freq: f32,
     pub inhibition: f32,
     pub unit_count: u32,
+    pub amp_saturation_beta: f32,
 }
 
 /// Influence data computed on CPU (sparse graph traversal is CPU-bound).
@@ -794,6 +795,7 @@ struct Params {
     base_freq: f32,
     inhibition: f32,
     unit_count: u32,
+    amp_saturation_beta: f32,
 }
 
 @group(0) @binding(0) var<storage, read> units_in: array<Unit>;
@@ -830,7 +832,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let input = inputs[i].value;
 
     let damp = u.decay * u.amp;
-    let d_amp = (u.bias + input + inf.amp - params.inhibition - damp + inf.noise_amp) * params.dt;
+    let satur = -params.amp_saturation_beta * u.amp * u.amp * u.amp;
+    let d_amp = (u.bias + input + inf.amp - params.inhibition - damp + satur + inf.noise_amp) * params.dt;
     let d_phase = (params.base_freq + inf.phase + inf.noise_phase) * params.dt;
 
     var new_amp = u.amp + d_amp;
