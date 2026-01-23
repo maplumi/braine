@@ -211,6 +211,23 @@ Notes:
 - Clipping to $[-2,2]$ is retained as a safety bound but is no longer the
   primary mechanism that creates stable attractors.
 
+### 3.4.1 Numerical stability constraints
+The system uses explicit Euler integration, so stability depends on $\Delta t$ and parameter magnitudes.
+
+**Decay stability**: For amplitude decay $\lambda_i$ (default 0.12), require:
+
+$$
+\Delta t \cdot \lambda_i < 0.5
+$$
+
+**Coupling stability**: For maximum coupling strength $c = k \cdot w_\mathrm{max}$ where $k$ = `connectivity_per_unit` (default 12) and $w_\mathrm{max} = 0.15$, require:
+
+$$
+\Delta t \cdot c < 0.5
+$$
+
+These constraints ensure the integration remains stable across different hardware and configurations. The code validates these at `BrainConfig` creation time.
+
 ### 3.5 Salience (importance trace)
 Salience uses the coactivity threshold $\theta$ = `coactive_threshold`.
 

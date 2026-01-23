@@ -346,6 +346,7 @@ impl Default for BrainConfig {
     /// - 256 units with 12 connections each
     /// - Moderate noise for exploration
     /// - Conservative learning/forgetting rates
+    /// - dt=0.05 chosen for numerical stability (dt * max_decay < 0.5)
     fn default() -> Self {
         Self {
             unit_count: 256,
@@ -477,6 +478,17 @@ impl BrainConfig {
         }
         if self.dt <= 0.0 || self.dt > 1.0 {
             return Err("dt must be in (0, 1]");
+        }
+        // Stability constraint: dt * max_decay should be < 0.5 for numerical stability
+        // (units initialized with decay=0.12, so dt * 0.12 < 0.5)
+        if self.dt * 0.12 >= 0.5 {
+            return Err("dt too large for numerical stability (dt * max_decay >= 0.5)");
+        }
+        // Stability constraint: dt * max_coupling should be < 0.5 for numerical stability
+        // (max coupling per unit ≈ connectivity_per_unit * 0.15)
+        let max_coupling = self.connectivity_per_unit as f32 * 0.15;
+        if self.dt * max_coupling >= 0.5 {
+            return Err("dt too large for numerical stability (dt * max_coupling >= 0.5)");
         }
         if self.phase_coupling_mode > 2 {
             return Err("phase_coupling_mode must be in [0, 2]");
