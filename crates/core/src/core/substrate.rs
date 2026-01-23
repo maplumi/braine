@@ -903,6 +903,7 @@ pub struct Brain {
     // Used for fast, stable “engram” handling.
     sensor_member: Vec<bool>,
     group_member: Vec<bool>,
+    concept_validated: Vec<bool>,
 
     // If false, unit's outgoing connections do not undergo learning updates.
     // Used to protect a parent identity subset in child brains.
@@ -1136,6 +1137,7 @@ impl Brain {
         let learning_enabled = vec![true; cfg.unit_count];
         let sensor_member = vec![false; cfg.unit_count];
         let group_member = vec![false; cfg.unit_count];
+        let concept_validated = vec![false; cfg.unit_count];
 
         let unit_module = vec![NO_MODULE; cfg.unit_count];
 
@@ -1191,6 +1193,7 @@ impl Brain {
 
             sensor_member,
             group_member,
+            concept_validated,
 
             symbols,
             symbols_rev,
@@ -2203,6 +2206,7 @@ impl Brain {
             reserved,
             sensor_member: vec![false; unit_count],
             group_member: vec![false; unit_count],
+            concept_validated: vec![false; unit_count],
             learning_enabled,
             sensor_groups,
             sensor_group_index: HashMap::new(),
@@ -3860,6 +3864,12 @@ impl Brain {
         // Map reward scalar to discrete events.
         if self.neuromod > 0.2 {
             self.active_symbols.push(self.reward_pos_symbol);
+            // Validate concepts that are active during positive reinforcement.
+            for i in 0..self.units.len() {
+                if self.reserved[i] && !self.group_member[i] && self.units[i].amp > 0.1 {
+                    self.concept_validated[i] = true;
+                }
+            }
         } else if self.neuromod < -0.2 {
             self.active_symbols.push(self.reward_neg_symbol);
         }
@@ -5284,6 +5294,7 @@ impl Brain {
         self.pending_input.push(0.0);
         self.sensor_member.push(false);
         self.group_member.push(false);
+        self.concept_validated.push(false);
         self.activity_trace.push(0.0);
         self.unit_module.push(NO_MODULE);
 
@@ -5452,6 +5463,7 @@ impl Brain {
             self.pending_input.push(0.0);
             self.sensor_member.push(false);
             self.group_member.push(false);
+            self.concept_validated.push(false);
             self.activity_trace.push(0.0);
             self.unit_module.push(module);
             self.module_unit_counts_dirty = true;
@@ -6184,8 +6196,9 @@ impl Brain {
 
                 let target_is_concept = self.reserved[target] && !self.group_member[target];
                 let target_is_sensor = self.sensor_member[target];
-                let is_engram_edge = (owner_is_sensor && target_is_concept)
-                    || (owner_is_concept && target_is_sensor);
+                let is_engram_edge =
+                    (owner_is_sensor && target_is_concept && self.concept_validated[target])
+                        || (owner_is_concept && target_is_sensor && self.concept_validated[owner]);
 
                 let w = self.connections.weights[idx];
                 let abs = w.abs();
