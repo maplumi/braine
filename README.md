@@ -2,7 +2,7 @@
 
 A research prototype for a **brain-like** cognitive substrate based on **sparse local dynamics** (no matrices, no backprop, no transformers).
 
-> **⚠️ Research Disclaimer**: This system was developed with the assistance of Large Language Models (LLMs) under human guidance. It is provided as a **research demonstration** to explore biologically-inspired learning substrates. Braine is **not production-ready** and should not be used for real-world deployment, safety-critical applications, or any scenario requiring reliability guarantees.
+> **⚠️ Research Disclaimer**: This system is developed with the assistance of Large Language Models (LLMs) under human guidance. It is provided as a **research demonstration** to explore biologically-inspired learning substrates. Braine is **not production-ready** and should not be used for real-world deployment, safety-critical applications, or any scenario requiring reliability guarantees.
 
 **Terminology**: "Braine" = the system/project. "Brain" = the cognitive substrate (`Brain` struct).
 
