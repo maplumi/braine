@@ -26,6 +26,7 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 
 ### Overview
 - [How It Works](overview/how-it-works.md): comprehensive guide with detailed neurogenesis explanation
+- [What makes Braine unique](overview/uniqueness-and-related-systems.md): positioning + related system categories
 - [What LLMs don't do (yet)](overview/what-llms-dont-do-yet.md): closed-loop online learning, persistent adaptation, embodiment framing
 - [Problem sets → Trials](overview/problem-sets.md): how to transform datasets/problems into closed-loop trial streams
 
