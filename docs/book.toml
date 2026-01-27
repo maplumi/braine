@@ -1,0 +1,11 @@
+[book]
+title = "Braine"
+language = "en"
+multilingual = false
+
+# mdBook source lives under docs/src
+src = "src"
+
+[output.html]
+# mdBook's default output is already GitBook-like (sidebar + search).
+# Keep defaults and let it inherit system theme.

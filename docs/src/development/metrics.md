@@ -84,4 +84,4 @@ Current implementation provides a simple assays runner: `cargo run -- assays`
 ## Per-game definitions
 
 For what the UI/daemon metrics mean *per game* (and what “correct” represents in each task), see:
-- [doc/games/metrics-per-game.md](../games/metrics-per-game.md)
+- [Metrics per game](../games/metrics-per-game.md)

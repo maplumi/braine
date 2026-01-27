@@ -9,7 +9,7 @@ A “problem set” needs to be transformed into a stream of **trials** that loo
 4) Emit a scalar **reward/neuromodulator**.
 5) Commit or discard the observation (learning vs eval).
 
-This matches the daemon pattern described in doc/architecture/interaction.md.
+This matches the daemon pattern described in [Interaction](../architecture/interaction.md).
 
 ## Conceptual mapping
 

@@ -262,7 +262,7 @@ const VERSION_BRAINE_WEB: &str = "0.1.0";
 const VERSION_BBI_FORMAT: u32 = 2;
 
 // Long-form math spec (repo doc) embedded into the web UI.
-const DOC_THE_MATH_BEHIND: &str = include_str!("../../../doc/maths/the-math-behind.md");
+const DOC_THE_MATH_BEHIND: &str = include_str!("../../../docs/src/maths/the-math-behind.md");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Theme {
@@ -340,17 +340,9 @@ impl AboutSubTab {
     }
 
     fn all() -> &'static [AboutSubTab] {
-        &[
-            AboutSubTab::Overview,
-            AboutSubTab::Dynamics,
-            AboutSubTab::Learning,
-            AboutSubTab::Memory,
-            AboutSubTab::MathBehind,
-            AboutSubTab::Architecture,
-            AboutSubTab::Applications,
-            AboutSubTab::LlmIntegration,
-            AboutSubTab::Apis,
-        ]
+        // The full docs live in the mdBook site at /docs/.
+        // Keep the in-app page lightweight: just an overview + link out.
+        &[AboutSubTab::Overview]
     }
 }
 
@@ -4166,8 +4158,8 @@ fn App() -> impl IntoView {
                     <Show when=move || show_about_page.get()>
                         <div class="stack">
                             <div class="card">
-                                <h2 class="card-title">"Docs"</h2>
-                                <p class="subtle">"How the substrate works, plus protocol + integration notes."</p>
+                                <h2 class="card-title">"About"</h2>
+                                <p class="subtle">"Quick overview, plus a link to the full docs."</p>
 
                                 <div class="subtabs" style="margin-top: 12px;">
                                     {AboutSubTab::all()
@@ -4201,6 +4193,10 @@ fn App() -> impl IntoView {
                                                     "Braine is a continuously running dynamical system with local plasticity and a scalar reward (neuromodulator). "
                                                     "It is not an LLM: there is no backprop, no global loss, and no token prediction objective."
                                                 </p>
+                                                <div class="row wrap" style="margin-top: 12px; gap: 10px; align-items: center;">
+                                                    <a class="btn primary" href="docs/" target="_blank" rel="noopener noreferrer">"Open full docs"</a>
+                                                    <span class="subtle">"Opens /docs/ in a new tab."</span>
+                                                </div>
                                                 <p style="margin: 10px 0 0 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
                                                     {format!("braine v{} • braine_web v{} • bbi format v{}", VERSION_BRAINE, VERSION_BRAINE_WEB, VERSION_BBI_FORMAT)}
                                                 </p>
@@ -4452,7 +4448,7 @@ fn App() -> impl IntoView {
                                         <div style=STYLE_CARD>
                                             <h3 style="margin: 0 0 8px 0; font-size: 1rem; color: var(--accent);">"The Math Behind"</h3>
                                             <p style="margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.6;">
-                                                "This tab renders the repo doc at doc/maths/the-math-behind.md. "
+                                                "This tab renders the repo doc at docs/src/maths/the-math-behind.md. "
                                                 "Markdown is rendered to HTML; fenced mermaid blocks (if any) render as diagrams."
                                             </p>
                                         </div>

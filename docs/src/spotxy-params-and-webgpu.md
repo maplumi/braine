@@ -52,10 +52,10 @@ Future work:
 2. Expand GPU acceleration beyond the dense dynamics step
 3. Optionally integrate WebGPU for visualization rendering (e.g., for large graphs)
 
-See [doc/deployment-web.md](deployment-web.md) "Future Work" section for details.
+See [Deployment (web)](deployment-web.md) "Future Work" section for details.
 
 ## Deployment
-Comprehensive deployment documentation created in [doc/deployment-web.md](deployment-web.md), covering:
+Comprehensive deployment documentation created in [Deployment (web)](deployment-web.md), covering:
 - GitHub Pages hosting
 - Build/optimization steps
 - Alternative hosting options (Netlify, Vercel, self-hosted)

@@ -58,7 +58,7 @@ The daemon already speaks newline-delimited JSON over TCP. The Bridge task can b
 A key goal is to keep this API stable and small.
 
 See also:
-- [doc/architecture/daemon-protocol.md](../architecture/daemon-protocol.md)
+- [Daemon protocol](../architecture/daemon-protocol.md)
 
 Practical note: the protocol reference includes a “Copy/paste examples (NDJSON)” section for quick manual testing.
 
@@ -69,8 +69,8 @@ The dashboard for this demo should show:
 - unit/connection counts, pruning/births, saturation
 
 See:
-- [doc/development/dashboard.md](../development/dashboard.md)
-- [doc/games/metrics-per-game.md](../games/metrics-per-game.md)
+- [Dashboard](../development/dashboard.md)
+- [Metrics per game](../games/metrics-per-game.md)
 
 ## Suggested demo host (reference implementation)
 

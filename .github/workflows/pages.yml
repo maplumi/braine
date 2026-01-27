@@ -53,6 +53,11 @@ jobs:
         with:
           tool: trunk
 
+      - name: Install mdbook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
       - name: Build web app
         working-directory: crates/braine_web
         env:
@@ -60,6 +65,14 @@ jobs:
           TRUNK_PUBLIC_URL: /${{ github.event.repository.name }}/
         run: |
           trunk build --release --features gpu --public-url "$TRUNK_PUBLIC_URL"
+
+      - name: Build docs (mdBook)
+        run: |
+          mdbook build docs -d crates/braine_web/dist/docs
+
+      - name: Disable Jekyll
+        run: |
+          touch crates/braine_web/dist/.nojekyll
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

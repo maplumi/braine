@@ -141,7 +141,7 @@ If a design requires many child brains to solve a task, assume the decomposition
   - record symbols (e.g., `note_action*`, `note_pair*`, `note_compound_symbol([...])`),
   - set neuromodulator/reinforce, then `commit_observation()`.
 - Context-conditioned meaning is usually expressed via symbols like:
-  - `pair::<ctx>::<action>` (see docs in `doc/interaction.md` and usage in games/demos).
+  - `pair::<ctx>::<action>` (see docs in `docs/src/architecture/interaction.md` and usage in games/demos).
 - **SpotXY eval/holdout mode**: runs dynamics/action selection but suppresses learning writes.
   - Implemented by skipping reinforcement and calling `Brain::discard_observation()` instead of `commit_observation()`.
 

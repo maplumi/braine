@@ -155,9 +155,14 @@ pub(super) fn Sidebar(
                     }
                     on:click=move |_| open_docs.run(())
                 >
-                    <span class="sidebar-label">"Docs"</span>
+                    <span class="sidebar-label">"About"</span>
                     <span class="sidebar-ico">"ℹ️"</span>
                 </button>
+
+                <a class="sidebar-item" href="docs/" target="_blank" rel="noopener noreferrer">
+                    <span class="sidebar-label">"Docs"</span>
+                    <span class="sidebar-ico">"📚"</span>
+                </a>
             </div>
 
             <div class="sidebar-section">

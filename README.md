@@ -33,7 +33,7 @@ This project behaves like a **continuous-time recurrent substrate** with **local
 - **Overlap (spirit):** closed-loop interaction, continual adaptation, and internal structure that stabilizes into habits/attractors.
 - **Difference:** no explicit generative model, no variational inference, and no prediction-error objective is being optimized.
 
-If you want a longer version, see [doc/research/research-landscape.md](doc/research/research-landscape.md).
+If you want a longer version, see [docs/src/research/research-landscape.md](docs/src/research/research-landscape.md).
 
 ## Quick start
 
@@ -54,7 +54,7 @@ cargo build --release --target x86_64-pc-windows-gnu
 ./scripts/dev.sh
 ```
 
-Web deployment details: [doc/deployment-web.md](doc/deployment-web.md).
+Web deployment details: [docs/src/deployment-web.md](docs/src/deployment-web.md).
 
 ### Daemon + UI (Spot game)
 The daemon-based architecture runs the brain as a persistent service:
@@ -117,7 +117,7 @@ Snapshots live under the same data directory in `snapshots/`.
 After building with `./scripts/dev.sh`, the Windows installer bundle is at:
 - `dist/braine-portable.zip` — unzip and run `run_braine.bat` (starts daemon + UI)
 
-See [doc/development/packaging.md](doc/development/packaging.md) for details.
+See [docs/src/development/packaging.md](docs/src/development/packaging.md) for details.
 
 ## Feature flags
 
@@ -162,20 +162,21 @@ This is a deliberate design choice: keep the environment reward as the substrate
 Note: the desktop UI uses `slint` and is intended for interactive exploration.
 
 ## Docs
-- **New to braine?** Start with [How It Works](doc/overview/how-it-works.md) for a comprehensive guide with detailed neurogenesis explanation
-- See [doc/README.md](doc/README.md) for complete documentation index
-- Interaction + I/O: [doc/architecture/interaction.md](doc/architecture/interaction.md)
-- Graph scaling + limits: [doc/architecture/graph-visualization.md](doc/architecture/graph-visualization.md)
-- Persistence + storage adapters: [doc/architecture/brain-image.md](doc/architecture/brain-image.md)
-- Visualizer games (what each measures): [doc/games/visualizer-games.md](doc/games/visualizer-games.md)
-- Problem sets → trials: [doc/overview/problem-sets.md](doc/overview/problem-sets.md)
-- Web vs Desktop parity: [doc/development/web-desktop-parity.md](doc/development/web-desktop-parity.md)
-- Pong performance notes: [doc/games/pong-performance.md](doc/games/pong-performance.md)
-- What this does that LLMs don’t (yet): [doc/overview/what-llms-dont-do-yet.md](doc/overview/what-llms-dont-do-yet.md)
-- **Accelerated Learning**: [doc/learning/accelerated-learning.md](doc/learning/accelerated-learning.md)
+- Published docs: https://maplumi.github.io/braine/docs/
+- **New to braine?** Start with [docs/src/overview/how-it-works.md](docs/src/overview/how-it-works.md)
+- See [docs/src/README.md](docs/src/README.md) for the documentation index
+- Interaction + I/O: [docs/src/architecture/interaction.md](docs/src/architecture/interaction.md)
+- Graph scaling + limits: [docs/src/architecture/graph-visualization.md](docs/src/architecture/graph-visualization.md)
+- Persistence + storage adapters: [docs/src/architecture/brain-image.md](docs/src/architecture/brain-image.md)
+- Visualizer games (what each measures): [docs/src/games/visualizer-games.md](docs/src/games/visualizer-games.md)
+- Problem sets → trials: [docs/src/overview/problem-sets.md](docs/src/overview/problem-sets.md)
+- Web vs Desktop parity: [docs/src/development/web-desktop-parity.md](docs/src/development/web-desktop-parity.md)
+- Pong performance notes: [docs/src/games/pong-performance.md](docs/src/games/pong-performance.md)
+- What this does that LLMs don’t (yet): [docs/src/overview/what-llms-dont-do-yet.md](docs/src/overview/what-llms-dont-do-yet.md)
+- **Accelerated Learning**: [docs/src/learning/accelerated-learning.md](docs/src/learning/accelerated-learning.md)
 
 ### Web
-- Deployment + build notes: [doc/deployment-web.md](doc/deployment-web.md)
+- Deployment + build notes: [docs/src/deployment-web.md](docs/src/deployment-web.md)
 
 ### Learning actions (UI)
 The visualizer exposes a few manual “accelerators”:

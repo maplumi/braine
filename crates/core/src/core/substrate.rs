@@ -6301,7 +6301,7 @@ impl Brain {
 
         // Detect novelty by checking whether sensor units have sufficient connections
         // to existing concepts. Count concepts with meaningful connections (>0.1).
-        let mut connected_concepts = std::collections::HashSet::new();
+        let mut connected_concepts: HashSet<UnitId> = HashSet::new();
         for &id in group_units {
             for (target, weight) in self.neighbors(id) {
                 if self.reserved.get(target).copied().unwrap_or(false)

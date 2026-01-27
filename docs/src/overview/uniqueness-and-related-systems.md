@@ -113,6 +113,6 @@ When to compare
 
 ## Where to look next
 
-- Core framing: [doc/overview/how-it-works.md](how-it-works.md)
-- Research positioning: [doc/research/research-comparison.md](../research/research-comparison.md)
-- “What LLMs don’t do (yet)”: [doc/overview/what-llms-dont-do-yet.md](what-llms-dont-do-yet.md)
+- Core framing: [How It Works](how-it-works.md)
+- Research positioning: [Research comparison](../research/research-comparison.md)
+- “What LLMs don’t do (yet)”: [What LLMs don't do yet](what-llms-dont-do-yet.md)
