@@ -59,6 +59,8 @@ pub struct TextNextTokenGame {
     action_names: Vec<String>,
     sensor_names: Vec<String>,
 
+    trial_allowed_actions: Vec<String>,
+
     pub trial_frame: u32,
     pub response_made: bool,
     pub last_action: Option<String>,
@@ -116,11 +118,14 @@ impl TextNextTokenGame {
             vocab,
             action_names,
             sensor_names,
+            trial_allowed_actions: Vec::new(),
             trial_frame: 0,
             response_made: false,
             last_action: None,
             stats: GameStats::new(),
-            shift_every_outcomes: 80,
+            // Default shift cadence is intentionally slow; the CLI demo sets its own
+            // runtime parameters, and frequent shifts can mask learning in `last100`.
+            shift_every_outcomes: 400,
             outcomes: 0,
             stimulus_key: String::new(),
             trial_started_at: now,
@@ -186,6 +191,10 @@ impl TextNextTokenGame {
     }
 
     pub fn allowed_actions(&self) -> &[String] {
+        &self.trial_allowed_actions
+    }
+
+    pub fn all_action_names(&self) -> &[String] {
         &self.action_names
     }
 
@@ -256,13 +265,30 @@ impl TextNextTokenGame {
         brain.apply_stimulus(Stimulus::new(&self.current_token.sensor_name(), 1.0));
     }
 
+    /// Apply stimuli in **inference-only** mode.
+    ///
+    /// This avoids repeated imprinting when the daemon is ticking but the task
+    /// is waiting for the next trial boundary.
+    #[cfg(feature = "braine")]
+    pub fn apply_stimuli_inference(&self, brain: &mut Brain) {
+        let regime_name = if self.use_corpus1 {
+            "txt_regime_1"
+        } else {
+            "txt_regime_0"
+        };
+        brain.apply_stimulus_inference(Stimulus::new(regime_name, 0.8));
+        brain.apply_stimulus_inference(Stimulus::new(&self.current_token.sensor_name(), 1.0));
+    }
+
     pub fn score_action(&mut self, action: &str) -> Option<(f32, bool)> {
         if self.response_made {
             return None;
         }
 
         let is_correct = action == self.correct_action();
-        let reward = if is_correct { 1.0 } else { -1.0 };
+        // Keep incorrect punishment mild so exploration doesn't constantly drive strong LTD.
+        // This task is meant to measure rapid associative formation, not avoidance learning.
+        let reward = if is_correct { 1.0 } else { -0.2 };
 
         self.response_made = true;
         self.last_action = Some(action.to_string());
@@ -300,6 +326,62 @@ impl TextNextTokenGame {
             if self.use_corpus1 { 1 } else { 0 },
             self.current_token.action_name()
         );
+
+        // Present a small action set per trial (2-way choice): the correct next token + a
+        // deterministic distractor. This keeps the task learnable while still requiring a
+        // context-conditioned association from current token → next token.
+        let correct = self.correct_action();
+        let mut distractor_idx = if self.vocab.is_empty() {
+            0
+        } else {
+            // Deterministic pseudo-random, stable across runs.
+            let mix = (self.idx as u64)
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(if self.use_corpus1 { 1 } else { 0 });
+            (mix as usize) % self.vocab.len()
+        };
+
+        // Ensure distractor differs from correct action.
+        if !self.vocab.is_empty() {
+            for _ in 0..self.vocab.len() {
+                let cand = self.vocab[distractor_idx].action_name();
+                if cand != correct {
+                    break;
+                }
+                distractor_idx = (distractor_idx + 1) % self.vocab.len();
+            }
+        }
+        let distractor = if self.vocab.is_empty() {
+            "tok_UNK".to_string()
+        } else {
+            self.vocab[distractor_idx].action_name()
+        };
+
+        let distractor = if distractor == correct {
+            // Degenerate case: vocab has only the correct token. Prefer UNK if it differs.
+            let unk = TextToken::Unk.action_name();
+            if unk != correct {
+                unk
+            } else {
+                distractor
+            }
+        } else {
+            distractor
+        };
+
+        self.trial_allowed_actions.clear();
+        // Alternate ordering so the correct action is not always in slot 0.
+        if (self.idx & 1) == 0 {
+            self.trial_allowed_actions.push(correct);
+            if distractor != self.trial_allowed_actions[0] {
+                self.trial_allowed_actions.push(distractor);
+            }
+        } else {
+            self.trial_allowed_actions.push(distractor);
+            if correct != self.trial_allowed_actions[0] {
+                self.trial_allowed_actions.push(correct);
+            }
+        }
     }
 }
 
@@ -344,6 +426,16 @@ mod tests {
     #[test]
     fn always_includes_unk_token() {
         let g = TextNextTokenGame::new_with_corpora("XYZ", "", 2);
-        assert!(g.allowed_actions().iter().any(|a| a.as_str() == "tok_UNK"));
+        assert!(g.all_action_names().iter().any(|a| a.as_str() == "tok_UNK"));
+    }
+
+    #[test]
+    fn allowed_actions_include_correct_and_distractor() {
+        let g = TextNextTokenGame::new_with_corpora("AB", "AB", 8);
+        assert!(g.allowed_actions().len() >= 2);
+        assert!(g
+            .allowed_actions()
+            .iter()
+            .any(|a| a.as_str() == g.correct_action()));
     }
 }

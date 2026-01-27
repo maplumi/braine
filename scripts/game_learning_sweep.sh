@@ -14,6 +14,8 @@ SPOT_REV_SECS="${SPOT_REV_SECS:-30}"
 SPOTXY_SECS="${SPOTXY_SECS:-20}"
 MAZE_SECS="${MAZE_SECS:-60}"
 PONG_SECS="${PONG_SECS:-60}"
+TEXT_SECS="${TEXT_SECS:-20}"
+REPLAY_SECS="${REPLAY_SECS:-20}"
 
 need_bin() {
   local path="$1"
@@ -93,12 +95,14 @@ run_game spotxy 100 "$SPOTXY_SECS"
 run_game maze 50 "$MAZE_SECS"
 run_game pong 20 "$PONG_SECS"
 
-# Demos (best-effort): they may depend on local assets/datasets.
-# Leave commented by default; uncomment if you want them in the sweep.
-# "$CLI_BIN" demo replay >/dev/null
-# "$CLI_BIN" stop >/dev/null || true
-# "$CLI_BIN" demo text >/dev/null
-# "$CLI_BIN" stop >/dev/null || true
+# Text + Replay are also daemon games (newline-delimited JSON protocol), so they can be swept too.
+run_game text 40 "$TEXT_SECS"
+run_game replay 100 "$REPLAY_SECS"
+
+# Demos (best-effort): these orchestrate multi-request flows and may depend on local datasets.
+# Leave commented by default.
+# "$CLI_BIN" demo replay 500 >/dev/null
+# "$CLI_BIN" demo text 500 >/dev/null
 
 printf '%s\n' "wrote $LOG_FILE" >&2
 

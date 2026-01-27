@@ -1420,7 +1420,7 @@ impl DaemonState {
         for name in g.token_sensor_names() {
             self.brain.ensure_sensor_min_width(name, 3);
         }
-        for name in g.allowed_actions() {
+        for name in g.all_action_names() {
             self.brain.ensure_action_min_width(name, 6);
         }
     }
@@ -1585,11 +1585,19 @@ impl DaemonState {
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
                 ActiveGame::Text(g) => {
-                    g.apply_stimuli(brain);
+                    if need_action {
+                        g.apply_stimuli(brain);
+                    } else {
+                        g.apply_stimuli_inference(brain);
+                    }
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
                 ActiveGame::Replay(g) => {
-                    g.apply_stimuli(brain);
+                    if need_action {
+                        g.apply_stimuli(brain);
+                    } else {
+                        g.apply_stimuli_inference(brain);
+                    }
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
                 _ => {
@@ -1647,7 +1655,18 @@ impl DaemonState {
                         allowed[rand_idx % allowed.len()].clone()
                     }
                 } else {
-                    let ranked = brain.ranked_actions_with_meaning(context_key, self.meaning_alpha);
+                    // Some tasks (notably Text/Replay) are meaning-heavy: the same sensor/action
+                    // interface is reused across many contexts, so action selection needs enough
+                    // meaning weight to break ties early.
+                    let effective_meaning_alpha =
+                        if matches!(self.game, ActiveGame::Text(_) | ActiveGame::Replay(_)) {
+                            self.meaning_alpha.max(5.0)
+                        } else {
+                            self.meaning_alpha
+                        };
+
+                    let ranked =
+                        brain.ranked_actions_with_meaning(context_key, effective_meaning_alpha);
                     let allowed = self.game.allowed_actions();
 
                     let mut top1: Option<(String, f32)> = None;

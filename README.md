@@ -64,6 +64,39 @@ cargo run --release --bin braine-cli -- start
 cargo run --release --bin braine-cli -- save
 ```
 
+### Non-interactive learning sweep (daemon games)
+
+To sanity-check learning behavior across the daemon-run games (Spot/Bandit/SpotReversal/SpotXY/Maze/Pong/Text/Replay), use:
+
+```bash
+# debug build (fast iteration)
+bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+cat /tmp/game_learning_validation.log
+```
+
+Common knobs:
+
+```bash
+# Restart brained at the start, and shut it down at the end
+RESTART_DAEMON=1 bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+
+# Override durations (seconds) per game
+MAZE_SECS=180 PONG_SECS=180 TEXT_SECS=60 REPLAY_SECS=30 bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+```
+
+If you want a strictly non-interactive run (e.g. SSH/CI) you can run the daemon detached and point the sweep at it:
+
+```bash
+# Start daemon detached
+nohup cargo run -p brained >/tmp/brained.log 2>&1 &
+
+# Run sweep without restarting the daemon
+RESTART_DAEMON=0 bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+
+# Stop daemon when done
+cargo run --bin braine-cli -- shutdown
+```
+
 **Persistence**: Brain state auto-saves on `Stop` and persists to:
 - Linux: `~/.local/share/braine/braine.bbi`
 - Windows: `%APPDATA%\Braine\braine.bbi`

@@ -211,6 +211,19 @@ impl ReplayGame {
         }
     }
 
+    /// Apply stimuli in **inference-only** mode.
+    ///
+    /// This avoids repeated imprinting when the daemon is ticking but waiting
+    /// for the next trial boundary.
+    #[cfg(feature = "braine")]
+    pub fn apply_stimuli_inference(&self, brain: &mut Brain) {
+        if let Some(t) = self.current_trial() {
+            for s in &t.stimuli {
+                brain.apply_stimulus_inference(Stimulus::new(s.name.as_str(), s.strength));
+            }
+        }
+    }
+
     pub fn score_action(&mut self, action: &str) -> Option<(f32, bool)> {
         if self.response_made {
             return None;

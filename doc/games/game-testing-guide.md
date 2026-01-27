@@ -43,6 +43,37 @@ Pong is particularly sensitive to control cadence. If hit-rate looks capped, try
 
 See [pong-performance.md](pong-performance.md).
 
+## Automated sweep (non-interactive)
+
+For repeatable validation across the daemon games, use the sweep script:
+
+```bash
+bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+cat /tmp/game_learning_validation.log
+```
+
+By default, the script will try to start `brained` if it can’t connect via the CLI.
+You can also force a restart (useful when iterating on daemon code):
+
+```bash
+RESTART_DAEMON=1 bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+```
+
+Per-game durations can be overridden via env vars:
+
+```bash
+SPOT_SECS=15 BANDIT_SECS=15 SPOT_REV_SECS=30 SPOTXY_SECS=20 MAZE_SECS=180 PONG_SECS=180 TEXT_SECS=60 REPLAY_SECS=30 \
+  bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+```
+
+For a strictly non-interactive/remote run, start the daemon detached and keep `RESTART_DAEMON=0`:
+
+```bash
+nohup cargo run -p brained >/tmp/brained.log 2>&1 &
+RESTART_DAEMON=0 bash scripts/game_learning_sweep.sh /tmp/game_learning_validation.log
+cargo run --bin braine-cli -- shutdown
+```
+
 ## Game checklists
 
 ### Spot
