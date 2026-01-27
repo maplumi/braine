@@ -48,6 +48,8 @@ pub struct PongGame {
     event_flash_ticks: u8,
     pending_credit: Option<PongCredit>,
 
+    held_action_context: Option<String>,
+
     last_step_at: Instant,
 }
 
@@ -101,11 +103,19 @@ impl PongGame {
             event_flash_ticks: 0,
             pending_credit: None,
 
+            held_action_context: None,
+
             last_step_at: now,
         };
         g.sim.reset_point();
         g.refresh_stimulus_key();
         g
+    }
+
+    fn credit_stimulus_key(&self) -> String {
+        self.held_action_context
+            .clone()
+            .unwrap_or_else(|| self.stimulus_key.clone())
     }
 
     pub fn hits(&self) -> u32 {
@@ -236,7 +246,11 @@ impl PongGame {
                     self.pending_credit = Some(PongCredit {
                         reward,
                         action: a,
-                        stimulus_key: self.stimulus_key.clone(),
+                        // Credit the context under which the held action was chosen.
+                        // Using the *current* stimulus key can corrupt meaning associations
+                        // because the ball state can drift substantially between action
+                        // selection and hit/miss impact.
+                        stimulus_key: self.credit_stimulus_key(),
                         event: ev,
                     });
                 }
@@ -374,11 +388,13 @@ impl PongGame {
         // This stays within small bounds so hit/miss remains the primary learning signal.
         if self.sim.ball_visible() && self.sim.state.ball_vx < 0.0 {
             let proximity = (1.0 - self.sim.state.ball_x).clamp(0.0, 1.0);
-            let hh = self.sim.params.paddle_half_height.max(1.0e-6);
-            let err = (self.sim.state.ball_y - self.sim.state.paddle_y).abs();
-            let norm = (err / (hh * 1.5)).clamp(0.0, 1.0);
-            let aligned = 1.0 - norm; // 0..1
-            reward += (aligned - 0.5) * 2.0 * (0.03 * proximity);
+            if let Some(target_y) = self.sim.predict_primary_y_at_paddle() {
+                let hh = self.sim.params.paddle_half_height.max(1.0e-6);
+                let err = (target_y - self.sim.state.paddle_y).abs();
+                let norm = (err / (hh * 1.5)).clamp(0.0, 1.0);
+                let aligned = 1.0 - norm; // 0..1
+                reward += (aligned - 0.5) * 2.0 * (0.03 * proximity);
+            }
         }
 
         // Small movement penalty to reduce thrash.
@@ -387,6 +403,9 @@ impl PongGame {
         }
 
         // Apply action: move paddle.
+        // Store the context under which this held action was chosen so later hit/miss
+        // rewards reinforce the right context-action pair.
+        self.held_action_context = Some(self.stimulus_key.clone());
         let dt = (trial_period_ms.clamp(10, 60_000) as f32) / 1000.0;
         let a = match action {
             "up" => PongAction::Up,
@@ -432,5 +451,35 @@ impl PongGame {
         };
 
         self.stimulus_key = format!("pong_app_{bucket}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pong_delayed_credit_uses_action_context() {
+        let mut g = PongGame::new();
+
+        // Force a predictable approaching-ball state so the stimulus key is stable.
+        g.sim.state.ball_x = 0.6;
+        g.sim.state.ball_y = 0.0;
+        g.sim.state.ball_vx = -0.75;
+        g.sim.state.ball_vy = 0.0;
+        g.sim.state.paddle_y = 0.0;
+        g.refresh_stimulus_key();
+
+        let key_before = g.stimulus_key.clone();
+        let _ = g
+            .score_action("stay", 20)
+            .expect("score_action should accept stay");
+
+        assert_eq!(g.held_action_context.as_deref(), Some(key_before.as_str()));
+
+        // Even if the live stimulus key changes later (e.g., on a physics tick),
+        // delayed credit should keep using the action-selection context.
+        g.stimulus_key = "pong_hidden".to_string();
+        assert_eq!(g.credit_stimulus_key(), key_before);
     }
 }

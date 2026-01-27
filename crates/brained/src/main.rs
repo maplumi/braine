@@ -809,8 +809,8 @@ impl Default for RewardScales {
             spotxy: 1.0,
             // Maze/Pong use small dense shaping terms; scale up so typical per-step
             // rewards exceed the learning deadband and actually commit plasticity.
-            maze: 3.0,
-            pong: 3.0,
+            maze: 5.0,
+            pong: 5.0,
             text: 1.0,
             replay: 1.0,
         }
@@ -1405,6 +1405,16 @@ impl DaemonState {
             "maze_mode_hard",
             "maze_bump",
             "maze_reached_goal",
+            "maze_moved",
+            "maze_timeout",
+            "maze_last_action_none",
+            "maze_last_action_up",
+            "maze_last_action_right",
+            "maze_last_action_down",
+            "maze_last_action_left",
+            "maze_visit_b0",
+            "maze_visit_b1",
+            "maze_visit_b2",
         ] {
             self.brain.ensure_sensor_min_width(name, 2);
         }
@@ -1655,15 +1665,14 @@ impl DaemonState {
                         allowed[rand_idx % allowed.len()].clone()
                     }
                 } else {
-                    // Some tasks (notably Text/Replay) are meaning-heavy: the same sensor/action
-                    // interface is reused across many contexts, so action selection needs enough
-                    // meaning weight to break ties early.
-                    let effective_meaning_alpha =
-                        if matches!(self.game, ActiveGame::Text(_) | ActiveGame::Replay(_)) {
-                            self.meaning_alpha.max(5.0)
-                        } else {
-                            self.meaning_alpha
-                        };
+                    // Some tasks are meaning-heavy: the same action interface is reused across
+                    // many contexts, so action selection needs enough meaning weight to break
+                    // ties early.
+                    let effective_meaning_alpha = match self.game {
+                        ActiveGame::Text(_) | ActiveGame::Replay(_) => self.meaning_alpha.max(5.0),
+                        ActiveGame::Maze(_) | ActiveGame::Pong(_) => self.meaning_alpha.max(5.0),
+                        _ => self.meaning_alpha,
+                    };
 
                     let ranked =
                         brain.ranked_actions_with_meaning(context_key, effective_meaning_alpha);

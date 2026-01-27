@@ -836,7 +836,6 @@ impl MazeGame {
     }
 
     fn refresh_stimulus_key(&mut self) {
-        let walls = self.sim.grid.walls(self.sim.player_x, self.sim.player_y) & 0x0F;
         let dx = (self.sim.goal_x as i32 - self.sim.player_x as i32).signum();
         let dy = (self.sim.goal_y as i32 - self.sim.player_y as i32).signum();
         let dx_tag = if dx < 0 {
@@ -861,10 +860,11 @@ impl MazeGame {
         let dist01 = (dist as f32) / (denom as f32);
         let bucket = (dist01 * 4.0).floor().clamp(0.0, 3.0) as u32;
 
+        // Keep the meaning context compact. Wall bits are already available via
+        // sensor channels, and including them here fragments meaning memory.
         self.stimulus_key = format!(
-            "maze_{}_w{:01x}_{}{}_b{}",
+            "maze_{}_{}{}_b{}",
             self.difficulty.name(),
-            walls,
             dx_tag,
             dy_tag,
             bucket,
