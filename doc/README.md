@@ -2,6 +2,13 @@
 
 This folder documents the **braine** research project: a minimal, brain-like cognitive substrate built from **local scalar dynamics** (no matrices, no backprop, no transformers).
 
+**Name meaning**: Braine = **Biologically-Rooted Adaptive Intelligent Neural Engine**.
+
+- **Biologically-Rooted**: local learning rules + sparse recurrent dynamics (no backprop, no global loss).
+- **Adaptive**: learns online from interaction, with persistence and safe forgetting.
+- **Intelligent**: selects actions under reward/salience to improve behavior over time.
+- **Neural Engine**: a reusable substrate that runs many tasks via a common stimulus/action/reward interface.
+
 ## Goals
 - Build a system that learns continuously from interaction (not text prediction).
 - **Ultra-low-power / edge-first**: sparse local updates, bounded memory, and natural forgetting.

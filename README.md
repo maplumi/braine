@@ -1,8 +1,15 @@
-# Braine
+# Braine — Biologically-Rooted Adaptive Intelligent Neural Engine
 
 A research prototype for a **brain-like** cognitive substrate based on **sparse local dynamics** (no matrices, no backprop, no transformers).
 
 > **⚠️ Research Disclaimer**: This system is developed with the assistance of Large Language Models (LLMs) under human guidance. It is provided as a **research demonstration** to explore biologically-inspired learning substrates. Braine is **not production-ready** and should not be used for real-world deployment, safety-critical applications, or any scenario requiring reliability guarantees.
+
+**Name meaning**: Braine = **Biologically-Rooted Adaptive Intelligent Neural Engine**.
+
+- **Biologically-Rooted**: local learning rules + sparse recurrent dynamics (no backprop, no global loss).
+- **Adaptive**: learns online from interaction, with persistence and safe forgetting.
+- **Intelligent**: selects actions under reward/salience to improve behavior over time.
+- **Neural Engine**: a reusable substrate that runs many tasks via a common stimulus/action/reward interface.
 
 **Terminology**: "Braine" = the system/project. "Brain" = the cognitive substrate (`Brain` struct).
 

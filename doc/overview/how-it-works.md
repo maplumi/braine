@@ -17,6 +17,13 @@ This document provides a comprehensive explanation of how the braine cognitive s
 
 Braine is a **brain-like cognitive substrate** designed for continuous learning from interaction. Unlike neural networks trained with backpropagation or large language models that predict text, braine:
 
+**Name meaning**: Braine = **Biologically-Rooted Adaptive Intelligent Neural Engine**.
+
+- **Biologically-Rooted**: local learning rules + sparse recurrent dynamics (no backprop, no global loss).
+- **Adaptive**: learns online from interaction, with persistence and safe forgetting.
+- **Intelligent**: selects actions under reward/salience to improve behavior over time.
+- **Neural Engine**: a reusable substrate that runs many tasks via a common stimulus/action/reward interface.
+
 - **Learns online**: Updates happen immediately from experience, not from batch training
 - **Uses local rules**: No global optimization or gradients—learning is purely local
 - **Grows dynamically**: Can add new capacity (neurogenesis) when needed
