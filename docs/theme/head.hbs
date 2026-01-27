@@ -1,3 +1,15 @@
+<!-- MathJax config: enable inline $...$ and display $$...$$ -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [['$','$'], ['\\(','\\)']],
+      displayMath: [['$$','$$'], ['\\[','\\]']],
+      processEscapes: true,
+      processEnvironments: true
+    }
+  });
+</script>
+
 <!-- Mermaid support for mdBook: render ```mermaid code fences as diagrams -->
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script>
