@@ -216,8 +216,15 @@ impl PongGame {
             self.event_flash_ticks = 3;
 
             match ev {
-                PongEvent::Hit => self.hits = self.hits.saturating_add(1),
-                PongEvent::Miss => self.misses = self.misses.saturating_add(1),
+                PongEvent::Hit => {
+                    self.hits = self.hits.saturating_add(1);
+                    // Treat each hit/miss as a supervised "trial" for reporting.
+                    self.stats.record_trial(true);
+                }
+                PongEvent::Miss => {
+                    self.misses = self.misses.saturating_add(1);
+                    self.stats.record_trial(false);
+                }
                 PongEvent::None => {}
             }
 
@@ -244,7 +251,6 @@ impl PongGame {
         if elapsed >= trial_period {
             // Allow exactly one action per timestep.
             self.response_made = false;
-            self.last_action = None;
             self.trial_started_at = now;
         }
 
@@ -353,6 +359,8 @@ impl PongGame {
             return None;
         }
 
+        // NOTE: Pong's true objective is hit/miss events; we track those in `update_timing()`.
+        // This keeps the `acc/last100` metric aligned with reward.
         let is_correct = action == self.correct_action();
         let mut reward: f32 = 0.0;
 
@@ -391,49 +399,38 @@ impl PongGame {
 
         self.response_made = true;
         self.last_action = Some(action.to_string());
-        self.stats.record_trial(is_correct);
 
-        // Each action is treated as one “trial” step.
-        Some((reward.clamp(-1.0, 1.0), true))
+        // Each action is a control step; treat hit/miss as the real trial boundary.
+        let _ = is_correct;
+        Some((reward.clamp(-1.0, 1.0), false))
     }
 
     fn refresh_stimulus_key(&mut self) {
-        let bins = self.ball_x_names.len().max(2) as u32;
-        let bx = PongSim::bin_01(self.sim.state.ball_x, bins);
-        let by = PongSim::bin_signed(self.sim.state.ball_y, bins);
-        let py = PongSim::bin_signed(self.sim.state.paddle_y, bins);
-        let vis = if self.sim.ball_visible() { "v" } else { "h" };
-        let vx = if self.sim.state.ball_vx >= 0.0 {
-            "p"
+        // Keep the meaning context compact and decision-relevant.
+        // Full continuous state remains available via sensor channels.
+        if !self.sim.ball_visible() {
+            self.stimulus_key = "pong_hidden".to_string();
+            return;
+        }
+
+        if self.sim.state.ball_vx >= 0.0 {
+            self.stimulus_key = "pong_away".to_string();
+            return;
+        }
+
+        let target_y = self
+            .sim
+            .predict_primary_y_at_paddle()
+            .unwrap_or(self.sim.state.paddle_y);
+        let dy = target_y - self.sim.state.paddle_y;
+        let bucket = if dy > 0.12 {
+            "up"
+        } else if dy < -0.12 {
+            "down"
         } else {
-            "n"
-        };
-        let vy = if self.sim.state.ball_vy >= 0.0 {
-            "p"
-        } else {
-            "n"
+            "stay"
         };
 
-        if self.sim.distractor_enabled() {
-            let b2x = PongSim::bin_01(self.sim.state.ball2_x, bins);
-            let b2y = PongSim::bin_signed(self.sim.state.ball2_y, bins);
-            let vis2 = if self.sim.ball2_visible() { "v" } else { "h" };
-            let vx2 = if self.sim.state.ball2_vx >= 0.0 {
-                "p"
-            } else {
-                "n"
-            };
-            let vy2 = if self.sim.state.ball2_vy >= 0.0 {
-                "p"
-            } else {
-                "n"
-            };
-            self.stimulus_key = format!(
-                "pong_b{bins:02}_vis{vis}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}_b2vis{vis2}_b2x{b2x:02}_b2y{b2y:02}_b2vx{vx2}_b2vy{vy2}"
-            );
-        } else {
-            self.stimulus_key =
-                format!("pong_b{bins:02}_vis{vis}_bx{bx:02}_by{by:02}_py{py:02}_vx{vx}_vy{vy}");
-        }
+        self.stimulus_key = format!("pong_app_{bucket}");
     }
 }

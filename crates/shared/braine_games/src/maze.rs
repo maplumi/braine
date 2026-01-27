@@ -296,7 +296,8 @@ impl MazeGame {
 
             goal_dist_to_goal: Vec::new(),
 
-            episodes_per_maze: 8,
+            // Keep the maze stable longer to reduce non-stationarity for learning.
+            episodes_per_maze: 64,
             episode_idx: 0,
             action_names: vec![
                 "up".to_string(),
@@ -860,38 +861,13 @@ impl MazeGame {
         let dist01 = (dist as f32) / (denom as f32);
         let bucket = (dist01 * 4.0).floor().clamp(0.0, 3.0) as u32;
 
-        let idx = (self.sim.player_y as usize) * (self.sim.grid.w() as usize)
-            + (self.sim.player_x as usize);
-        let visits = self.visit_counts.get(idx).copied().unwrap_or(0);
-        let vb = if visits == 0 {
-            0
-        } else if visits == 1 {
-            1
-        } else {
-            2
-        };
-
-        let last = self
-            .last_action
-            .as_deref()
-            .and_then(MazeAction::from_action_str)
-            .map(|a| match a {
-                MazeAction::Up => 'U',
-                MazeAction::Right => 'R',
-                MazeAction::Down => 'D',
-                MazeAction::Left => 'L',
-            })
-            .unwrap_or('0');
-
         self.stimulus_key = format!(
-            "maze_{}_w{:01x}_{}{}_b{}_v{}_a{}",
+            "maze_{}_w{:01x}_{}{}_b{}",
             self.difficulty.name(),
             walls,
             dx_tag,
             dy_tag,
             bucket,
-            vb,
-            last
         );
     }
 }
@@ -904,7 +880,8 @@ impl Default for MazeGame {
 
 fn maze_dims(d: MazeDifficulty) -> (u32, u32) {
     match d {
-        MazeDifficulty::Easy => (7, 7),
+        // Smaller mazes allow successful episodes early, making reward dense enough for learning.
+        MazeDifficulty::Easy => (5, 5),
         MazeDifficulty::Medium => (11, 11),
         MazeDifficulty::Hard => (17, 17),
     }

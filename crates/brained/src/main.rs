@@ -807,8 +807,10 @@ impl Default for RewardScales {
             bandit: 1.0,
             spot_reversal: 1.0,
             spotxy: 1.0,
-            maze: 1.0,
-            pong: 1.0,
+            // Maze/Pong use small dense shaping terms; scale up so typical per-step
+            // rewards exceed the learning deadband and actually commit plasticity.
+            maze: 3.0,
+            pong: 3.0,
             text: 1.0,
             replay: 1.0,
         }
