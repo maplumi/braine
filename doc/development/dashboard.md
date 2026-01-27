@@ -70,6 +70,9 @@ For daemon-backed clients, the dashboard only needs:
   - brain diagnostics
   - active game kind + a few game-specific state fields
 
+Protocol reference:
+- [doc/architecture/daemon-protocol.md](../architecture/daemon-protocol.md)
+
 For the web app, mirror the same struct shape so the UI can be shared conceptually (even if the internal sources differ).
 
 ## Related docs

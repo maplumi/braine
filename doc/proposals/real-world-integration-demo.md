@@ -57,6 +57,9 @@ The daemon already speaks newline-delimited JSON over TCP. The Bridge task can b
 
 A key goal is to keep this API stable and small.
 
+See also:
+- [doc/architecture/daemon-protocol.md](../architecture/daemon-protocol.md)
+
 ## Observability
 
 The dashboard for this demo should show:
