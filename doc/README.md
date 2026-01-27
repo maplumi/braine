@@ -51,6 +51,7 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 ### Games & Testing
 - [Visualizer Games](games/visualizer-games.md): how to run each game + what it measures
 - [Game Testing Guide](games/game-testing-guide.md): measuring brain capabilities with each game
+- [Per-game metrics (HUD + runtime)](games/metrics-per-game.md): what each metric means per game
 - [Capabilities Checklist](games/capabilities-checklist.md): testable criteria for what braine should do
 - [Experiments](games/experiments.md): experiment log template + current backlog
 - [Pong performance notes](games/pong-performance.md): why hit-rate can look capped and what to try
@@ -61,10 +62,12 @@ This folder documents the **braine** research project: a minimal, brain-like cog
 ### Development
 - [Packaging](development/packaging.md): how to build and package for distribution
 - [Metrics](development/metrics.md): simple capability measurements to track progress
+- [Dashboard MVP spec](development/dashboard.md): minimal observability surface for learning
 
 ### Proposals & Roadmaps
 - [Enhancement Proposal](proposals/enhancement-proposal.md): brain image + visualizer redesign proposals
 - [Graph Visualization Roadmap](proposals/graph-visualization-roadmap.md): future visualization features
+- [Real-world integration demo (proposal)](proposals/real-world-integration-demo.md): minimal streaming I/O + reward contract
 
 ## Reproducible assays
 - Run the current assays with: `cargo run -- assays`
