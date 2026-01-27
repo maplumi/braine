@@ -273,24 +273,24 @@ Let eligibility decay be $\rho_e$ = `eligibility_decay` and eligibility gain be 
 
 Define a soft-thresholded co-activity magnitude (using the activity trace when enabled):
 
-$$
+<script type="math/tex; mode=display">
 c_{ij}(t) = \sqrt{\max(0, a_i^{tr}(t) - \theta)\,\max(0, a_j^{tr}(t) - \theta)}
-$$
+</script>
 
 Compute phase alignment $\ell_{ij}(t) = \mathrm{align}(\phi_i(t),\phi_j(t))$ and define a correlation term:
 
-$$
+<script type="math/tex; mode=display">
 \mathrm{corr}_{ij}(t) = \begin{cases}
 \ell_{ij}(t) & \text{if } \ell_{ij}(t) > \kappa \\
 0 & \text{otherwise}
 \end{cases}
-$$
+</script>
 
 Eligibility updates (with per-step decay and bounded accumulation) are:
 
-$$
+<script type="math/tex; mode=display">
 e_{ij}(t+1) = \mathrm{clip}_{[-2,2]}\Big((1-\rho_e)\,e_{ij}(t) + \gamma_e\,c_{ij}(t)\,\mathrm{corr}_{ij}(t)\Big)
-$$
+</script>
 
 ### 4.2 Neuromodulated commit (deadband-gated)
 
@@ -298,23 +298,23 @@ Let neuromodulator be $m(t)$ = `neuromod` and define a deadband $d$ = `learning_
 
 Weights update only when:
 
-$$
+<script type="math/tex; mode=display">
 |m(t)| > d
-$$
+</script>
 
 When committing, the signed neuromodulator scales the eligible change (negative values drive LTD):
 
-$$
+<script type="math/tex; mode=display">
 \Delta w_{ij}(t) = \mathrm{clip}_{[-0.25,0.25]}\big(\eta\,m(t)\,e_{ij}(t)\big)
-$$
+</script>
 
 Optionally, a per-step plasticity budget can cap total committed change (approximately an L1 cap across all $|\Delta w|$).
 
 Weight update:
 
-$$
+<script type="math/tex; mode=display">
  w_{ij}(t+1) = \mathrm{clip}_{[-1.5,1.5]}\big(w_{ij}(t) + \Delta w_{ij}(t)\big)
-$$
+</script>
 
 Notes / gaps:
 - This is “Hebbian-like” but does **not** multiply by $a_i a_j$ explicitly; it uses a hard threshold + phase alignment.
