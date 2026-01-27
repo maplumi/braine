@@ -11,3 +11,6 @@ src = "src"
 
 # Remove chapter numbering like "1." in the sidebar.
 no-section-label = true
+
+# Render LaTeX-style math in markdown ($...$ and $$...$$).
+mathjax-support = true
