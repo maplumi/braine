@@ -1,0 +1,24 @@
+<!-- Mermaid support for mdBook: render ```mermaid code fences as diagrams -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    // mdBook renders fenced blocks as: <pre><code class="language-..."></code></pre>
+    // Convert mermaid code blocks into <div class="mermaid">...</div>
+    const blocks = document.querySelectorAll("pre > code.language-mermaid");
+    for (const code of blocks) {
+      const pre = code.parentElement;
+      if (!pre) continue;
+
+      const wrapper = document.createElement("div");
+      wrapper.className = "mermaid";
+      wrapper.textContent = code.textContent || "";
+      pre.replaceWith(wrapper);
+    }
+
+    if (window.mermaid) {
+      mermaid.initialize({ startOnLoad: false });
+      // Render any mermaid containers we just created
+      mermaid.run({ querySelector: ".mermaid" });
+    }
+  });
+</script>
