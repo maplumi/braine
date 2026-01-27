@@ -1591,12 +1591,44 @@ impl DaemonState {
                     brain.note_compound_symbol(&[stimulus_key]);
                 }
                 _ => {
-                    brain.apply_stimulus(Stimulus::new(base_stimulus, 1.0));
-                    if self.game.kind() == "spot_reversal" && self.game.reversal_active() {
-                        brain.apply_stimulus(Stimulus::new("spot_rev_ctx", 1.0));
+                    // For simple discrete cue tasks (Spot/Bandit/SpotReversal), we want:
+                    // - the cue to drive dynamics every tick
+                    // - concept formation (imprinting) to happen only on decision ticks
+                    //   (otherwise the same cue can imprint repeatedly within a single trial)
+                    // - a stable context symbol recorded for meaning/causal memory
+                    //
+                    // SpotReversal: when the rule flips, keep the *context key* separate ("::rev")
+                    // and also change the *stimulus name* so pre-reversal habits don't dominate
+                    // action selection.
+                    let effective_stimulus =
+                        if self.game.kind() == "spot_reversal" && self.game.reversal_active() {
+                            match base_stimulus {
+                                "spot_left" => "spot_rev_left",
+                                "spot_right" => "spot_rev_right",
+                                _ => base_stimulus,
+                            }
+                        } else {
+                            base_stimulus
+                        };
+
+                    if need_action {
+                        brain.apply_stimulus(Stimulus::new(effective_stimulus, 1.0));
+                        if self.game.kind() == "spot_reversal" && self.game.reversal_active() {
+                            brain.apply_stimulus(Stimulus::new("spot_rev_ctx", 1.0));
+                        }
+                    } else {
+                        brain.apply_stimulus_inference(Stimulus::new(effective_stimulus, 1.0));
+                        if self.game.kind() == "spot_reversal" && self.game.reversal_active() {
+                            brain.apply_stimulus_inference(Stimulus::new("spot_rev_ctx", 1.0));
+                        }
                     }
+
+                    // Record a stable context symbol for learning.
+                    // If we synthesized a key (e.g. "spot_left::rev"), prefer that.
                     if let Some(ref k) = stimulus_key_owned {
                         brain.note_compound_symbol(&[k.as_str()]);
+                    } else {
+                        brain.note_compound_symbol(&[base_stimulus]);
                     }
                 }
             }

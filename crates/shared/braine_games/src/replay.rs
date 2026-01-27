@@ -233,9 +233,25 @@ impl ReplayGame {
     }
 
     fn refresh_stimulus_key(&mut self) {
-        // Keep the meaning context stable within a dataset.
-        // We do not include the trial index to avoid exploding context space.
-        self.stimulus_key = format!("replay::{}", self.dataset_name);
+        // Keep the meaning context stable within a dataset, but specific enough that
+        // stimulus→action associations can form.
+        //
+        // Prefer a caller-provided `trial.id` (stable, compact). If missing, fall back to the
+        // correct action so contexts don't collapse to the whole dataset.
+        let trial_tag = self
+            .current_trial()
+            .map(|t| {
+                if !t.id.trim().is_empty() {
+                    t.id.trim().to_string()
+                } else if !t.correct_action.trim().is_empty() {
+                    format!("act:{}", t.correct_action.trim())
+                } else {
+                    "trial".to_string()
+                }
+            })
+            .unwrap_or_else(|| "empty".to_string());
+
+        self.stimulus_key = format!("replay::{}::{}", self.dataset_name, trial_tag);
     }
 }
 

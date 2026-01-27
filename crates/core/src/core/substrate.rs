@@ -4003,8 +4003,8 @@ impl Brain {
         let mut best: Option<(String, f32)> = None;
         for g in &self.action_groups {
             let a = self.symbol_id(&g.name)?;
-            let score = self.causal.causal_strength(a, self.reward_pos_symbol)
-                - self.causal.causal_strength(a, self.reward_neg_symbol);
+            let score = self.causal.association_strength(a, self.reward_pos_symbol)
+                - self.causal.association_strength(a, self.reward_neg_symbol);
             if best.as_ref().map(|b| score > b.1).unwrap_or(true) {
                 best = Some((g.name.clone(), score));
             }
@@ -4050,14 +4050,21 @@ impl Brain {
             };
 
             let meaning = if let Some(aid) = self.symbol_id(&g.name) {
-                let global = self.causal.causal_strength(aid, self.reward_pos_symbol)
-                    - self.causal.causal_strength(aid, self.reward_neg_symbol);
+                let global = self
+                    .causal
+                    .association_strength(aid, self.reward_pos_symbol)
+                    - self
+                        .causal
+                        .association_strength(aid, self.reward_neg_symbol);
 
                 let conditional = if stimulus_id.is_some() {
                     if let Some(pid) = self.compound_symbol_id(&["pair", stimulus, g.name.as_str()])
                     {
-                        self.causal.causal_strength(pid, self.reward_pos_symbol)
-                            - self.causal.causal_strength(pid, self.reward_neg_symbol)
+                        self.causal
+                            .association_strength(pid, self.reward_pos_symbol)
+                            - self
+                                .causal
+                                .association_strength(pid, self.reward_neg_symbol)
                     } else {
                         0.0
                     }
@@ -7954,5 +7961,79 @@ mod tests {
         let diag = brain.diagnostics();
         assert!(diag.unit_count >= 64, "Should have at least initial units");
         assert!(diag.connection_count > 0, "Should have connections");
+    }
+    #[test]
+    fn spot_like_task_learns_high_accuracy() {
+        use super::{Brain, BrainConfig, Stimulus};
+
+        let mut brain = Brain::new(BrainConfig {
+            unit_count: 160,
+            connectivity_per_unit: 8,
+            seed: Some(123),
+            ..Default::default()
+        });
+
+        // Two cues, two actions.
+        brain.define_sensor("spot_left", 4);
+        brain.define_sensor("spot_right", 4);
+        brain.define_action("left", 6);
+        brain.define_action("right", 6);
+
+        let mut correct = 0u32;
+        let trials = 300u32;
+        let meaning_alpha = 1.0;
+
+        // Deterministic alternating curriculum: L, R, L, R...
+        for t in 0..trials {
+            let stim = if (t & 1) == 0 {
+                "spot_left"
+            } else {
+                "spot_right"
+            };
+            let correct_action = if stim == "spot_left" { "left" } else { "right" };
+
+            // Drive dynamics without imprinting, record context + pair symbol explicitly.
+            brain.apply_stimulus_inference(Stimulus::new(stim, 1.0));
+            brain.note_compound_symbol(&[stim]);
+            brain.step();
+
+            // Deterministic epsilon-greedy exploration to guarantee both actions are sampled.
+            // This avoids a cold-start issue where a fully-greedy policy never discovers the
+            // correct mapping.
+            let eps = if t < 120 { 0.30 } else { 0.02 };
+            let explore =
+                ((t.wrapping_mul(1103515245).wrapping_add(12345)) & 0xFFFF) as f32 / 65535.0 < eps;
+
+            let chosen = if explore {
+                // Deterministic pseudo-random choice, independent of correctness.
+                let bit = ((t.wrapping_mul(1103515245).wrapping_add(12345)) >> 8) & 1;
+                if bit == 0 {
+                    "left".to_string()
+                } else {
+                    "right".to_string()
+                }
+            } else {
+                let ranked = brain.ranked_actions_with_meaning(stim, meaning_alpha);
+                ranked
+                    .into_iter()
+                    .find(|(name, _score)| name == "left" || name == "right")
+                    .map(|(name, _)| name)
+                    .unwrap_or_else(|| "left".to_string())
+            };
+
+            let reward = if chosen == correct_action { 1.0 } else { -1.0 };
+            if reward > 0.0 {
+                correct += 1;
+            }
+
+            brain.note_action(&chosen);
+            brain.note_compound_symbol(&["pair", stim, chosen.as_str()]);
+            brain.set_neuromodulator(reward);
+            brain.reinforce_action(chosen.as_str(), reward);
+            brain.commit_observation();
+        }
+
+        let acc = (correct as f32) / (trials as f32);
+        assert!(acc > 0.90, "expected >0.90 accuracy, got {acc:.3}");
     }
 }

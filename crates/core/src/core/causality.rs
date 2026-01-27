@@ -297,6 +297,38 @@ impl CausalMemory {
         (smoothed_p_b_given_a - p_b).clamp(-1.0, 1.0)
     }
 
+    /// A pragmatic "association strength" score: P(B|A) - P(B)
+    /// - Uses transition edges **plus** same-tick co-occurrence.
+    /// - This is useful for immediate-feedback signals (like reward) that often
+    ///   co-occur with the action/context on the same committed boundary.
+    /// - Still uses Laplace smoothing to avoid small-count instability.
+    pub fn association_strength(&self, a: SymbolId, b: SymbolId) -> f32 {
+        let base_a = *self.base.get(&a).unwrap_or(&0.0);
+        let base_b = *self.base.get(&b).unwrap_or(&0.0);
+
+        if base_a <= 0.001 {
+            return 0.0;
+        }
+
+        let (transition_edge, cooccur_edge) = self
+            .edges
+            .get(&pack(a, b))
+            .map(|e| (e.transition_count, e.cooccur_count))
+            .unwrap_or((0.0, 0.0));
+
+        // Co-occurrence is added as an immediate-association signal.
+        // Keep weights simple; downstream consumers can tune their own alphas.
+        let combined = transition_edge + cooccur_edge;
+
+        let alpha = 1.0;
+        let smoothed_p_b_given_a = ((combined + alpha) / (base_a + alpha)).clamp(0.0, 1.0);
+
+        let total: f32 = self.base_total.max(1.0);
+        let p_b = (base_b / total).clamp(0.0, 1.0);
+
+        (smoothed_p_b_given_a - p_b).clamp(-1.0, 1.0)
+    }
+
     /// Merge edges from another memory into this one.
     /// `rate` controls how much of the other's counts are blended in.
     pub fn merge_from(&mut self, other: &CausalMemory, rate: f32) {

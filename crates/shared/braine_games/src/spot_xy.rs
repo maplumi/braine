@@ -225,8 +225,13 @@ impl SpotXYGame {
 
         match self.mode {
             SpotXYMode::BinaryX => {
-                let xbin = argmax(&self.x_act);
-                self.stimulus_key = format!("spotxy_xbin_{xbin:02}");
+                // Use a compact, learnable context key for the *rule* (sign of x).
+                // The full population code remains available via sensor channels.
+                self.stimulus_key = if self.pos_x < 0.0 {
+                    "spotxy_xneg".to_string()
+                } else {
+                    "spotxy_xpos".to_string()
+                };
                 self.correct_action = if self.pos_x < 0.0 {
                     "left".to_string()
                 } else {
@@ -338,18 +343,6 @@ fn axis_activations(v: f32, centers: &[f32], sigma: f32) -> Vec<f32> {
     }
 
     out
-}
-
-fn argmax(v: &[f32]) -> usize {
-    let mut best_i = 0usize;
-    let mut best = f32::NEG_INFINITY;
-    for (i, &x) in v.iter().enumerate() {
-        if x > best {
-            best = x;
-            best_i = i;
-        }
-    }
-    best_i
 }
 
 fn grid_bin(v: f32, n: u32) -> u32 {
