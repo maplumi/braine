@@ -811,7 +811,7 @@ fn step(&mut self) {
    - Complexity: Medium
    - Impact: Medium (saves O(units) space)
 
-6. **Intern symbols with Rc<str>** (Section 4.1)
+6. **Intern symbols with `Rc<str>`** (Section 4.1)
    - Eliminate duplication
    - Complexity: Medium
    - Impact: Medium (50% savings on symbol tables)

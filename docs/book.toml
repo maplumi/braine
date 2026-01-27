@@ -1,7 +1,6 @@
 [book]
 title = "Braine"
 language = "en"
-multilingual = false
 
 # mdBook source lives under docs/src
 src = "src"

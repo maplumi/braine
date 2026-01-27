@@ -701,7 +701,7 @@ This list is intentionally literal: it names the functions that implement each p
 - `Brain::apply_stimulus_inference` (injects $u_i(t)$ without symbol/imprinting writes)
 - `Brain::note_symbol`, `Brain::intern` (symbol table maintenance)
 - `Brain::note_action`, `Brain::note_action_index` (records action symbols)
-- `Brain::note_compound_symbol`, `Brain::note_pair_index` (records pair::<stimulus>::<action> symbols)
+- `Brain::note_compound_symbol`, `Brain::note_pair_index` (records `pair::<stimulus>::<action>` symbols)
 
 **Dynamics (state update)**
 
