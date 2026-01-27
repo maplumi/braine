@@ -158,9 +158,9 @@ where $\gamma_\phi$ is `phase_coupling_gain` (default 1.0).
 ### 3.4 Discrete-time update
 Parameters:
 
-- timestep $\Delta t$ = `dt`
-- base frequency $\omega_0$ = `base_freq`
-- noise terms: $\xi^a_i(t) \sim U[-\eta_a,\eta_a]$, $\xi^\phi_i(t) \sim U[-\eta_\phi,\eta_\phi]`
+- timestep: $\Delta t = \texttt{dt}$
+- base frequency: $\omega_0 = \texttt{base\_freq}$
+- noise terms: $\xi^a_i(t) \sim U[-\eta_a,\eta_a]$, $\xi^\phi_i(t) \sim U[-\eta_\phi,\eta_\phi]$
 
 Amplitude damping:
 

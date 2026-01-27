@@ -120,8 +120,7 @@ The core substrate exposes per-step learning monitors via:
 These values are intended for dashboards/debugging (not as control signals by default):
 
 - `plasticity_committed`: whether `abs(neuromod)` exceeded the deadband
-- `plasticity_l1`: total $
-	\sum |\Delta w|$ actually applied this step
+- `plasticity_l1`: total $\sum |\Delta w|$ actually applied this step
 - `plasticity_edges`: count of edges updated this step
 - `plasticity_budget` / `plasticity_budget_used`: budget configuration and consumption
 - `eligibility_l1`: total eligibility magnitude after update
