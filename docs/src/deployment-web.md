@@ -51,6 +51,12 @@ cd crates/braine_web
 trunk build --release --features web
 ```
 
+If you want the optional GPU execution tier (WebGPU when available, with CPU fallback):
+
+```bash
+trunk build --release --features gpu
+```
+
 This produces optimized WASM + HTML + JS in `crates/braine_web/dist/`.
 
 ### 3. (Optional) Further optimize WASM binary size
@@ -68,33 +74,21 @@ The `-Oz` flag applies aggressive size optimizations. Expect the final WASM size
 
 ### GitHub Pages
 
-1. **Enable GitHub Pages** in your repository settings:
-   - Go to **Settings → Pages**
-   - Source: **Deploy from a branch**
-   - Branch: **`gh-pages`** (or a dedicated deployment branch)
-   - Folder: `/ (root)`
+This repo is set up to deploy via **GitHub Actions** (recommended), with a single Pages artifact that contains:
 
-2. **Copy build artifacts** to a deployment branch:
-   ```bash
-   # From the repo root:
-   cd crates/braine_web
-   trunk build --release --features web
+- The web UI at `/<repo>/`
+- The mdBook docs at `/<repo>/docs/`
 
-   # Create/update deployment branch (assumes 'gh-pages' branch exists)
-   git checkout gh-pages
-   git pull origin gh-pages
-   rm -rf *  # Clear old artifacts
-   cp -r dist/* .
-   git add .
-   git commit -m "Deploy braine_web"
-   git push origin gh-pages
-   ```
+To enable it:
 
-3. **Access your site**:
-   - `https://<your-username>.github.io/<repo-name>/`
-   - (If deploying at the repo root, the URL is `https://<your-username>.github.io/<repo-name>/`)
+1. Go to **Settings → Pages**
+2. Under **Build and deployment**, set **Source** to **GitHub Actions**
 
-**Note**: GitHub Pages requires the `index.html` to be at the root of the deployment folder. The Trunk build places everything in `dist/`, so copy the contents of `dist/` (not `dist/` itself) to the deployment branch root.
+After that, pushes to `main` will build and deploy automatically.
+
+Notes:
+- Project Pages require the base path to be `/<repo>/`. The workflow sets Trunk’s `TRUNK_PUBLIC_URL` accordingly.
+- The workflow also builds mdBook into `crates/braine_web/dist/docs` so docs are served under `/docs/`.
 
 ### Netlify / Vercel / Cloudflare Pages
 

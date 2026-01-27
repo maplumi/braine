@@ -1,17 +1,21 @@
 # Summary
 
 - [Introduction](README.md)
+- [Getting Started](getting-started.md)
 - [Active / Roadmap](active.md)
 
-# Overview
+# Concepts
 
 - [How It Works](overview/how-it-works.md)
-- [Web UI About](overview/web-ui-about.md)
 - [Problem sets → Trials](overview/problem-sets.md)
 - [Uniqueness and related systems](overview/uniqueness-and-related-systems.md)
 - [What LLMs don't do yet](overview/what-llms-dont-do-yet.md)
 
-# Architecture
+# Using Braine
+
+- [Web UI About](overview/web-ui-about.md)
+
+# Architecture (deep dive)
 
 - [Architecture](architecture/architecture.md)
 - [Interaction](architecture/interaction.md)
@@ -32,11 +36,11 @@
 - [Accelerated learning](learning/accelerated-learning.md)
 - [Spatial + temporal design](learning/spatial-temporal-design.md)
 
-# Maths
+# Math
 
 - [The math behind](maths/the-math-behind.md)
 
-# Games
+# Games (assays)
 
 - [Capabilities checklist](games/capabilities-checklist.md)
 - [Experiments](games/experiments.md)
@@ -46,14 +50,14 @@
 - [Tasks learning 2026Q1](games/tasks-learning-2026q1.md)
 - [Visualizer games](games/visualizer-games.md)
 
-# Development
+# Development (practical)
 
 - [Dashboard](development/dashboard.md)
 - [Metrics](development/metrics.md)
 - [Packaging](development/packaging.md)
 - [Web/desktop parity](development/web-desktop-parity.md)
 
-# Web
+# Web (build + deploy)
 
 - [Deployment (web)](deployment-web.md)
 - [SpotXY params + WebGPU](spotxy-params-and-webgpu.md)
