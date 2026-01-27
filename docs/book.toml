@@ -8,3 +8,6 @@ src = "src"
 [output.html]
 # mdBook's default output is already GitBook-like (sidebar + search).
 # Keep defaults and let it inherit system theme.
+
+# Remove chapter numbering like "1." in the sidebar.
+no-section-label = true

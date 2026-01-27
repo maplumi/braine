@@ -1,7 +1,7 @@
 # Summary
 
 - [Introduction](README.md)
-- [Active](active.md)
+- [Active / Roadmap](active.md)
 
 # Overview
 
@@ -57,6 +57,12 @@
 
 - [Deployment (web)](deployment-web.md)
 - [SpotXY params + WebGPU](spotxy-params-and-webgpu.md)
+
+# Proposals
+
+- [Enhancement proposal](proposals/enhancement-proposal.md)
+- [Graph visualization roadmap](proposals/graph-visualization-roadmap.md)
+- [Real-world integration demo](proposals/real-world-integration-demo.md)
 
 # Research
 
