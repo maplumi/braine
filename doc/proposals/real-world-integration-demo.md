@@ -60,6 +60,8 @@ A key goal is to keep this API stable and small.
 See also:
 - [doc/architecture/daemon-protocol.md](../architecture/daemon-protocol.md)
 
+Practical note: the protocol reference includes a “Copy/paste examples (NDJSON)” section for quick manual testing.
+
 ## Observability
 
 The dashboard for this demo should show:

@@ -82,6 +82,238 @@ Introspects the daemon’s API surface (grouped by category) so clients can rend
 - Request: `{"type":"ApiCatalog"}`
 - Response: `{"type":"ApiCatalog","categories":[...]}`
 
+## Copy/paste examples (NDJSON)
+
+All examples below are **single-line JSON** messages terminated with a newline.
+
+### Quick manual check with netcat
+
+In one terminal, run the daemon:
+
+```bash
+cargo run -p brained
+```
+
+In another terminal:
+
+```bash
+nc 127.0.0.1 9876
+```
+
+Then paste a request line (press Enter) and you’ll receive one response line.
+
+### 1) Health check + basic diagnostics
+
+Request:
+
+```json
+{"type":"DiagGet"}
+```
+
+Response (shape):
+
+```json
+{"type":"Diagnostics","running":false,"frame":0,"brain_stats":{...},"storage":{...}}
+```
+
+### 2) Poll the full UI snapshot (dashboard polling)
+
+Request:
+
+```json
+{"type":"GetState"}
+```
+
+Response (shape):
+
+```json
+{"type":"State","running":true,"mode":"braine","frame":12345,"target_fps":60,"game":{...},"hud":{...},"brain_stats":{...},"storage":{...}}
+```
+
+Notes:
+- `GetState` is the “everything snapshot” used by the desktop UI.
+- For lightweight polling, `DiagGet` is smaller.
+
+### 3) Start / stop (stop persists brain)
+
+Start:
+
+```json
+{"type":"Start"}
+```
+
+Response:
+
+```json
+{"type":"Success","message":"Started"}
+```
+
+Stop (also triggers a save):
+
+```json
+{"type":"Stop"}
+```
+
+Response (success or error):
+
+```json
+{"type":"Success","message":"Stopped and saved"}
+```
+
+### 4) Switch games safely (daemon enforces “stop first”)
+
+Stop (required):
+
+```json
+{"type":"Stop"}
+```
+
+Set game:
+
+```json
+{"type":"SetGame","game":"spotxy"}
+```
+
+Response:
+
+```json
+{"type":"Success","message":"Game set to spotxy"}
+```
+
+Then start:
+
+```json
+{"type":"Start"}
+```
+
+### 5) Read / update runtime config (safe clamped)
+
+Read:
+
+```json
+{"type":"CfgGet"}
+```
+
+Response (shape):
+
+```json
+{"type":"Config","exploration_eps":0.2,"meaning_alpha":2.5,"target_fps":60,"trial_period_ms":50,"max_units_limit":4096}
+```
+
+Update (all fields optional):
+
+```json
+{"type":"CfgSet","exploration_eps":0.1,"meaning_alpha":3.0,"target_fps":60,"trial_period_ms":50,"max_units":4096}
+```
+
+Response:
+
+```json
+{"type":"Success","message":"Config updated"}
+```
+
+### 6) Change cadence (explicit endpoints)
+
+If you prefer dedicated endpoints over `CfgSet`:
+
+```json
+{"type":"SetTrialPeriodMs","ms":75}
+```
+
+```json
+{"type":"SetFramerate","fps":60}
+```
+
+Both respond with `{"type":"Success",...}` (or `Error`).
+
+### 7) Discover and set game parameters (knobs)
+
+Fetch parameter schema for a game:
+
+```json
+{"type":"GetGameParams","game":"maze"}
+```
+
+Response (shape):
+
+```json
+{"type":"GameParams","game":"maze","params":[{"key":"reward_scale","min":0.0,"max":10.0,"default":1.0}, ...]}
+```
+
+Set a knob (applies to the *active* game only):
+
+```json
+{"type":"SetGameParam","game":"maze","key":"episodes_per_maze","value":64.0}
+```
+
+Response:
+
+```json
+{"type":"Success","message":"Set maze.episodes_per_maze = 64"}
+```
+
+### 8) Save / load snapshots
+
+Save:
+
+```json
+{"type":"SaveSnapshot"}
+```
+
+Response (includes the stem in the message):
+
+```json
+{"type":"Success","message":"Snapshot saved (2026-01-27_12-34-56)"}
+```
+
+Load:
+
+```json
+{"type":"LoadSnapshot","stem":"2026-01-27_12-34-56"}
+```
+
+Response:
+
+```json
+{"type":"Success","message":"Snapshot loaded (2026-01-27_12-34-56)"}
+```
+
+### 9) Fetch graphs (substrate vs causal)
+
+Substrate graph (default kind):
+
+```json
+{"type":"GetGraph","kind":"substrate","max_nodes":128,"max_edges":512,"include_isolated":false}
+```
+
+Causal graph:
+
+```json
+{"type":"GetGraph","kind":"causal","max_nodes":128,"max_edges":512,"include_isolated":false}
+```
+
+Response (shape):
+
+```json
+{"type":"Graph","kind":"causal","nodes":[...],"edges":[...]}
+```
+
+### 10) Read-only action score breakdown (debugging meaning-conditioning)
+
+This is useful for dashboards and debugging because it never writes learning state.
+
+Request:
+
+```json
+{"type":"InferActionScores","context_key":"pair::maze::up","stimuli":[{"name":"maze_wall_n","strength":1.0}],"steps":1,"meaning_alpha":3.0}
+```
+
+Response (shape):
+
+```json
+{"type":"InferActionScores","context_key":"pair::maze::up","action_scores":[{"name":"up","habit_norm":0.0,"meaning":0.12,"score":0.12}, ...]}
+```
+
 ## Control requests
 
 ### Run control

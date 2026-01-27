@@ -73,6 +73,8 @@ For daemon-backed clients, the dashboard only needs:
 Protocol reference:
 - [doc/architecture/daemon-protocol.md](../architecture/daemon-protocol.md)
 
+Tip: the protocol doc includes a “Copy/paste examples (NDJSON)” section that’s convenient for quickly testing requests with `nc`.
+
 For the web app, mirror the same struct shape so the UI can be shared conceptually (even if the internal sources differ).
 
 ## Related docs
