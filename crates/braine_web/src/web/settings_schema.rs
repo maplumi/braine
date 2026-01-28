@@ -108,6 +108,38 @@ pub fn param_specs() -> Vec<ParamSpec> {
     let d = default_brain_config();
 
     vec![
+        // Plasticity & Learning
+        ParamSpec {
+            key: "reward_symbol_threshold",
+            label: "Reward Symbol Threshold",
+            section: ParamSection::Plasticity,
+            description: "Magnitude threshold for emitting discrete reward symbols (reward_pos / reward_neg) during commit. Lower values make dense shaping rewards form meaning/causal symbols; higher values restrict symbols to stronger rewards.",
+            units: None,
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
+            default: d.reward_symbol_threshold,
+            recommended: Some(RecommendedRange { min: 0.02, max: 0.25 }),
+            when_to_change: "Lower for dense shaping tasks (e.g. Maze) so small rewards still become symbols; raise if reward symbols fire too often and destabilize learning.",
+            risk: Risk::Medium,
+            advanced: false,
+        },
+        ParamSpec {
+            key: "concept_validate_threshold",
+            label: "Concept Validate Threshold",
+            section: ParamSection::Plasticity,
+            description: "Magnitude threshold for validating the reward component of newly formed concepts. Keeping this separate from Reward Symbol Threshold lets you allow dense reward symbols while still requiring stronger rewards to validate concepts.",
+            units: None,
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
+            default: d.concept_validate_threshold,
+            recommended: Some(RecommendedRange { min: 0.05, max: 0.40 }),
+            when_to_change: "Lower to make concepts validate more easily under small rewards; raise if the brain creates too many low-salience concepts from noisy reward.",
+            risk: Risk::Medium,
+            advanced: true,
+        },
+
         // Dynamics
         ParamSpec {
             key: "dt",

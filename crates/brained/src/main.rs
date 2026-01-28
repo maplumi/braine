@@ -12,6 +12,7 @@
 //! - MacOS: ~/Library/Application Support/Braine/
 
 use braine::storage;
+use braine::substrate::RoutingModuleSummary;
 use braine::substrate::Stimulus;
 use braine::substrate::{
     ActionScoreBreakdown, Brain, BrainConfig, BrainDelta, OwnedStimulus, RewardEdges, UnitPlotPoint,
@@ -318,11 +319,28 @@ enum Request {
         #[serde(default)]
         meaning_alpha: Option<f32>,
         #[serde(default)]
+        reward_symbol_threshold: Option<f32>,
+        #[serde(default)]
+        concept_validate_threshold: Option<f32>,
+        #[serde(default)]
         target_fps: Option<u32>,
         #[serde(default)]
         trial_period_ms: Option<u32>,
         #[serde(default)]
         max_units: Option<u32>,
+    },
+
+    // Manual gates (freeze/paralyze)
+    GatesGetModules,
+    GatesClear,
+    GatesSet {
+        /// "unit" or "module"
+        target: String,
+        /// Indices for units (usize) or module ids (u16) encoded as u32.
+        ids: Vec<u32>,
+        /// "freeze" or "paralyze"
+        gate: String,
+        enabled: bool,
     },
 
     // Synchronization (edge/child -> master)
@@ -347,6 +365,27 @@ enum Request {
         context_key: Option<String>,
         #[serde(default)]
         stimuli: Vec<OwnedStimulus>,
+        #[serde(default = "default_infer_steps")]
+        steps: u32,
+        #[serde(default)]
+        meaning_alpha: Option<f32>,
+    },
+
+    /// Run a single externally-specified trial on the *live* brain.
+    ///
+    /// This provides a programmable reward interface for experimentation.
+    /// The daemon must be stopped (`running=false`) to use this safely.
+    Trial {
+        context_key: String,
+        #[serde(default)]
+        stimuli: Vec<OwnedStimulus>,
+        #[serde(default)]
+        allowed_actions: Vec<String>,
+        #[serde(default)]
+        forced_action: Option<String>,
+        reward: f32,
+        #[serde(default = "default_true")]
+        learn: bool,
         #[serde(default = "default_infer_steps")]
         steps: u32,
         #[serde(default)]
@@ -500,9 +539,17 @@ enum Response {
     Config {
         exploration_eps: f32,
         meaning_alpha: f32,
+        #[serde(default)]
+        reward_symbol_threshold: f32,
+        #[serde(default)]
+        concept_validate_threshold: f32,
         target_fps: u32,
         trial_period_ms: u32,
         max_units_limit: u32,
+    },
+    GatesModules {
+        #[serde(default)]
+        modules: Vec<RoutingModuleSummary>,
     },
     SyncInfo {
         age_steps: u64,
@@ -521,6 +568,15 @@ enum Response {
         context_key: String,
         #[serde(default)]
         action_scores: Vec<ActionScoreBreakdown>,
+    },
+    TrialResult {
+        action: String,
+        #[serde(default)]
+        score: f32,
+        #[serde(default)]
+        reward: f32,
+        #[serde(default)]
+        learned: bool,
     },
     State(Box<StateSnapshot>),
     GameParams {
@@ -1037,6 +1093,12 @@ struct BrainStats {
     homeostasis_rate: f32,
     #[serde(default)]
     homeostasis_bias_l1: f32,
+
+    // Manual gates (freeze/paralyze)
+    #[serde(default)]
+    frozen_units: u32,
+    #[serde(default)]
+    paralyzed_units: u32,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1553,6 +1615,20 @@ impl DaemonState {
 
             let game_reward_scale = self.reward_scales.get(self.game.kind());
 
+            // Dense shaping tasks benefit from emitting reward symbols at lower magnitude,
+            // otherwise meaning/causal memory only updates on very large terminal rewards.
+            let desired_reward_symbol_threshold = match self.game {
+                ActiveGame::Maze(_) => 0.05,
+                _ => 0.2,
+            };
+            if (brain.config().reward_symbol_threshold - desired_reward_symbol_threshold).abs()
+                > 1.0e-6
+            {
+                let _ = brain.update_config(|cfg| {
+                    cfg.reward_symbol_threshold = desired_reward_symbol_threshold;
+                });
+            }
+
             // If Pong produced a hit/miss since the last tick, immediately credit the held action.
             // This reduces the "ball hit but paddle didn't learn" effect from delayed reward.
             if allow_learning {
@@ -1992,6 +2068,7 @@ impl DaemonState {
                 let effective = view_brain.effective_execution_tier();
                 let learning = view_brain.learning_stats();
                 let cfg = view_brain.config();
+                let (frozen_units, paralyzed_units) = view_brain.gate_counts();
 
                 BrainStats {
                     unit_count: diag.unit_count,
@@ -2042,6 +2119,9 @@ impl DaemonState {
                     learning_deadband: cfg.learning_deadband,
                     homeostasis_rate: cfg.homeostasis_rate,
                     homeostasis_bias_l1: learning.homeostasis_bias_l1,
+
+                    frozen_units,
+                    paralyzed_units,
                 }
             },
             unit_plot: view_brain.unit_plot_points(128),
@@ -2858,12 +2938,44 @@ async fn handle_client(
                             },
                             ApiEndpoint {
                                 request: "CfgSet".to_string(),
-                                input: "{ exploration_eps?, meaning_alpha?, target_fps?, trial_period_ms?, max_units? }"
+                                input: "{ exploration_eps?, meaning_alpha?, reward_symbol_threshold?, concept_validate_threshold?, target_fps?, trial_period_ms?, max_units? }"
                                     .to_string(),
                                 output: "{ type: Success|Error }".to_string(),
                                 description: "Update runtime knobs (safe clamped).".to_string(),
                             },
                         ],
+                    },
+                    ApiCategory {
+                        name: "Gates".to_string(),
+                        endpoints: vec![
+                            ApiEndpoint {
+                                request: "GatesGetModules".to_string(),
+                                input: "{}".to_string(),
+                                output: "{ type: GatesModules, modules: [...] }".to_string(),
+                                description: "List routing modules + unit counts (to target module ids for gates).".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "GatesSet".to_string(),
+                                input: "{ target: unit|module, ids: [...], gate: freeze|paralyze, enabled: bool }".to_string(),
+                                output: "{ type: Success|Error }".to_string(),
+                                description: "Set freeze/paralyze gates for specific units or routing modules.".to_string(),
+                            },
+                            ApiEndpoint {
+                                request: "GatesClear".to_string(),
+                                input: "{}".to_string(),
+                                output: "{ type: Success|Error }".to_string(),
+                                description: "Clear all freeze/paralyze gates.".to_string(),
+                            },
+                        ],
+                    },
+                    ApiCategory {
+                        name: "Reward".to_string(),
+                        endpoints: vec![ApiEndpoint {
+                            request: "Trial".to_string(),
+                            input: "{ context_key, stimuli: [...], allowed_actions: [...], forced_action?, reward, learn?, steps?, meaning_alpha? }".to_string(),
+                            output: "{ type: TrialResult, action, score, reward, learned }".to_string(),
+                            description: "Run one externally-defined trial with a caller-provided reward (daemon must be stopped).".to_string(),
+                        }],
                     },
                     ApiCategory {
                         name: "Synchronization".to_string(),
@@ -2972,9 +3084,12 @@ async fn handle_client(
             }
             Request::CfgGet => {
                 let s = state.read().await;
+                let cfg = s.brain.config();
                 Response::Config {
                     exploration_eps: s.exploration_eps,
                     meaning_alpha: s.meaning_alpha,
+                    reward_symbol_threshold: cfg.reward_symbol_threshold,
+                    concept_validate_threshold: cfg.concept_validate_threshold,
                     target_fps: s.target_fps,
                     trial_period_ms: s.trial_period_ms,
                     max_units_limit: s.max_units_limit as u32,
@@ -2983,6 +3098,8 @@ async fn handle_client(
             Request::CfgSet {
                 exploration_eps,
                 meaning_alpha,
+                reward_symbol_threshold,
+                concept_validate_threshold,
                 target_fps,
                 trial_period_ms,
                 max_units,
@@ -2994,6 +3111,18 @@ async fn handle_client(
                 }
                 if let Some(v) = meaning_alpha {
                     s.meaning_alpha = v.clamp(0.0, 50.0);
+                }
+                if reward_symbol_threshold.is_some() || concept_validate_threshold.is_some() {
+                    let r = reward_symbol_threshold;
+                    let c = concept_validate_threshold;
+                    let _ = s.brain.update_config(|cfg| {
+                        if let Some(v) = r {
+                            cfg.reward_symbol_threshold = v.clamp(0.0, 1.0);
+                        }
+                        if let Some(v) = c {
+                            cfg.concept_validate_threshold = v.clamp(0.0, 1.0);
+                        }
+                    });
                 }
                 if let Some(v) = target_fps {
                     s.target_fps = v.clamp(1, 240);
@@ -3011,6 +3140,75 @@ async fn handle_client(
 
                 Response::Success {
                     message: "Config updated".to_string(),
+                }
+            }
+
+            Request::GatesGetModules => {
+                let mut s = state.write().await;
+                Response::GatesModules {
+                    modules: s.brain.routing_modules_summary(),
+                }
+            }
+            Request::GatesClear => {
+                let mut s = state.write().await;
+                s.brain.clear_gates();
+                Response::Success {
+                    message: "Gates cleared".to_string(),
+                }
+            }
+            Request::GatesSet {
+                target,
+                ids,
+                gate,
+                enabled,
+            } => {
+                let mut s = state.write().await;
+
+                let target = target.to_ascii_lowercase();
+                let gate = gate.to_ascii_lowercase();
+
+                let is_unit = target == "unit" || target == "units";
+                let is_module = target == "module" || target == "modules";
+
+                let is_freeze = gate == "freeze" || gate == "frozen";
+                let is_paralyze = gate == "paralyze" || gate == "paralyzed";
+
+                if !(is_unit || is_module) {
+                    Response::Error {
+                        message: "GatesSet.target must be 'unit' or 'module'".to_string(),
+                    }
+                } else if !(is_freeze || is_paralyze) {
+                    Response::Error {
+                        message: "GatesSet.gate must be 'freeze' or 'paralyze'".to_string(),
+                    }
+                } else if is_unit {
+                    for id in ids {
+                        let u = id as usize;
+                        if is_freeze {
+                            s.brain.set_unit_frozen(u, enabled);
+                        } else {
+                            s.brain.set_unit_paralyzed(u, enabled);
+                        }
+                    }
+                    Response::Success {
+                        message: "Gates updated".to_string(),
+                    }
+                } else if ids.iter().any(|&id| id > u16::MAX as u32) {
+                    Response::Error {
+                        message: "module id out of range (must fit u16)".to_string(),
+                    }
+                } else {
+                    for id in ids {
+                        let mid = id as u16;
+                        if is_freeze {
+                            s.brain.set_module_frozen(mid, enabled);
+                        } else {
+                            s.brain.set_module_paralyzed(mid, enabled);
+                        }
+                    }
+                    Response::Success {
+                        message: "Gates updated".to_string(),
+                    }
                 }
             }
             Request::SyncGetInfo => {
@@ -3065,6 +3263,102 @@ async fn handle_client(
                             saved,
                             save_error,
                         }
+                    }
+                }
+            }
+
+            Request::Trial {
+                context_key,
+                stimuli,
+                allowed_actions,
+                forced_action,
+                reward,
+                learn,
+                steps,
+                meaning_alpha,
+            } => {
+                let mut s = state.write().await;
+
+                if s.running {
+                    Response::Error {
+                        message: "Trial requires the daemon to be stopped (running=false)".to_string(),
+                    }
+                } else {
+                    // Apply stimuli for this trial.
+                    for st in &stimuli {
+                        s.brain
+                            .apply_stimulus(Stimulus::new(st.name.as_str(), st.strength));
+                    }
+
+                    // Advance dynamics a bit (no learning occurs inside step; learning happens on commit_observation).
+                    let steps = steps.clamp(0, 64);
+                    for _ in 0..steps {
+                        s.brain.step();
+                    }
+
+                    let alpha = meaning_alpha.unwrap_or(s.meaning_alpha).clamp(0.0, 20.0);
+
+                    let breakdown = s.brain.action_score_breakdown(&context_key, alpha);
+
+                    let pick_best_allowed = |allowed: &[String], all: &[ActionScoreBreakdown]| {
+                        if allowed.is_empty() {
+                            return all
+                                .iter()
+                                .max_by(|a, b| {
+                                    a.score
+                                        .partial_cmp(&b.score)
+                                        .unwrap_or(core::cmp::Ordering::Equal)
+                                })
+                                .map(|b| (b.name.clone(), b.score));
+                        }
+
+                        let mut best: Option<(String, f32)> = None;
+                        for a in allowed {
+                            if let Some(b) = all.iter().find(|x| x.name == *a) {
+                                let cand = (b.name.clone(), b.score);
+                                if best
+                                    .as_ref()
+                                    .map(|bb| cand.1 > bb.1)
+                                    .unwrap_or(true)
+                                {
+                                    best = Some(cand);
+                                }
+                            }
+                        }
+                        best
+                    };
+
+                    let (action, score) = if let Some(forced) = forced_action {
+                        let sc = breakdown
+                            .iter()
+                            .find(|b| b.name == forced)
+                            .map(|b| b.score)
+                            .unwrap_or(0.0);
+                        (forced, sc)
+                    } else if let Some((a, sc)) = pick_best_allowed(&allowed_actions, &breakdown) {
+                        (a, sc)
+                    } else {
+                        ("idle".to_string(), 0.0)
+                    };
+
+                    // Record boundary symbols and apply reward.
+                    s.brain.note_action(action.as_str());
+                    s.brain
+                        .note_compound_symbol(&["pair", context_key.as_str(), action.as_str()]);
+                    s.brain.set_neuromodulator(reward);
+
+                    if learn {
+                        s.brain.reinforce_action(action.as_str(), reward);
+                        s.brain.commit_observation();
+                    } else {
+                        s.brain.discard_observation();
+                    }
+
+                    Response::TrialResult {
+                        action,
+                        score,
+                        reward,
+                        learned: learn,
                     }
                 }
             }

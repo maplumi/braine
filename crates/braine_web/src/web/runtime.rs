@@ -1,4 +1,4 @@
-use braine::substrate::{Brain, Stimulus};
+use braine::substrate::{Brain, OwnedStimulus, Stimulus};
 use braine_games::{
     bandit::BanditGame,
     maze::MazeGame,
@@ -13,6 +13,8 @@ use super::types::{
     GameUiSnapshot, MazeUiState, PongUiState, ReplayUiState, SequenceUiState, TextUiState,
 };
 use super::GameKind;
+
+use braine::substrate::ExecutionTier;
 
 use super::pong_web::PongWebGame;
 use super::sequence_web::SequenceWebGame;
@@ -32,6 +34,29 @@ pub(super) struct TickOutput {
     pub(super) last_action: String,
     pub(super) reward: f32,
     pub(super) raw_reward: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ManualTrialRequest {
+    pub(crate) context_key: String,
+    pub(crate) stimuli: Vec<OwnedStimulus>,
+    pub(crate) allowed_actions: Vec<String>,
+    pub(crate) forced_action: Option<String>,
+    pub(crate) reward: f32,
+    pub(crate) learn: bool,
+    pub(crate) steps: u32,
+    pub(crate) meaning_alpha: f32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ManualTrialResult {
+    Ok {
+        action: String,
+        score: f32,
+        reward: f32,
+        learned: bool,
+    },
+    Error(String),
 }
 
 pub(super) enum TickResult {
@@ -629,6 +654,123 @@ impl AppRuntime {
     pub(crate) fn rng_next_f32(&mut self) -> f32 {
         let u = (self.rng_next_u64() >> 40) as u32; // 24 bits
         (u as f32) / ((1u32 << 24) as f32)
+    }
+
+    pub(crate) fn run_manual_trial(&mut self, req: ManualTrialRequest) -> ManualTrialResult {
+        if req.context_key.trim().is_empty() {
+            return ManualTrialResult::Error("context_key is required".to_string());
+        }
+
+        // Cancel any in-flight GPU step and prevent trial from interleaving with the tick loop.
+        self.cancel_pending_tick();
+        self.pending_neuromod = 0.0;
+
+        // Ensure IO symbols exist so the injected stimuli/actions are meaningful.
+        for s in &req.stimuli {
+            self.brain.ensure_sensor_min_width(&s.name, 3);
+        }
+        for a in &req.allowed_actions {
+            if !a.trim().is_empty() {
+                self.brain.ensure_action_min_width(a, 6);
+            }
+        }
+        if let Some(a) = req.forced_action.as_deref() {
+            if !a.trim().is_empty() {
+                self.brain.ensure_action_min_width(a, 6);
+            }
+        }
+
+        // Run dynamics on CPU for predictable, synchronous trial execution.
+        let prev_tier = self.brain.effective_execution_tier();
+        self.brain.set_execution_tier(ExecutionTier::Scalar);
+
+        self.brain.set_neuromodulator(0.0);
+
+        for s in &req.stimuli {
+            self.brain
+                .apply_stimulus(Stimulus::new(&s.name, s.strength));
+        }
+        self.brain.note_compound_symbol(&[req.context_key.as_str()]);
+
+        let steps = req.steps.max(1);
+        for _ in 0..steps {
+            // On CPU tier, this should complete immediately.
+            let ok = self.brain.step_nonblocking();
+            if !ok {
+                // Restore tier before returning.
+                self.brain.set_execution_tier(prev_tier);
+                return ManualTrialResult::Error(
+                    "trial step did not complete synchronously (unexpected tier)".to_string(),
+                );
+            }
+        }
+
+        let forced_action = req
+            .forced_action
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let allowed_actions: Vec<&str> = req
+            .allowed_actions
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let ranked = self
+            .brain
+            .ranked_actions_with_meaning(req.context_key.as_str(), req.meaning_alpha);
+
+        let (action, score) = if let Some(a) = forced_action {
+            let score = ranked
+                .iter()
+                .find(|(name, _)| name == a)
+                .map(|(_, s)| *s)
+                .unwrap_or(0.0);
+            (a.to_string(), score)
+        } else if !allowed_actions.is_empty() {
+            ranked
+                .into_iter()
+                .find(|(name, _)| allowed_actions.iter().any(|a| a == name))
+                .or_else(|| allowed_actions.first().map(|a| (a.to_string(), 0.0)))
+                .unwrap_or_else(|| ("".to_string(), 0.0))
+        } else {
+            ranked
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| ("".to_string(), 0.0))
+        };
+
+        if action.trim().is_empty() {
+            self.brain.set_execution_tier(prev_tier);
+            return ManualTrialResult::Error("no action available".to_string());
+        }
+
+        self.brain.note_action(&action);
+        self.brain
+            .note_compound_symbol(&["pair", req.context_key.as_str(), action.as_str()]);
+
+        if req.learn {
+            self.brain.set_neuromodulator(req.reward);
+            self.brain.reinforce_action(&action, req.reward);
+            self.pending_neuromod = req.reward;
+            self.brain.commit_observation();
+        } else {
+            self.brain.set_neuromodulator(0.0);
+            self.pending_neuromod = 0.0;
+            self.brain.discard_observation();
+        }
+
+        // Restore tier before returning.
+        self.brain.set_execution_tier(prev_tier);
+
+        ManualTrialResult::Ok {
+            action,
+            score,
+            reward: req.reward,
+            learned: req.learn,
+        }
     }
 }
 

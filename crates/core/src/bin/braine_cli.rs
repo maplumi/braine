@@ -117,11 +117,43 @@ enum Request {
         #[serde(default)]
         meaning_alpha: Option<f32>,
         #[serde(default)]
+        reward_symbol_threshold: Option<f32>,
+        #[serde(default)]
+        concept_validate_threshold: Option<f32>,
+        #[serde(default)]
         target_fps: Option<u32>,
         #[serde(default)]
         trial_period_ms: Option<u32>,
         #[serde(default)]
         max_units: Option<u32>,
+    },
+
+    // Manual gates (freeze/paralyze)
+    GatesGetModules,
+    GatesClear,
+    GatesSet {
+        target: String,
+        ids: Vec<u32>,
+        gate: String,
+        enabled: bool,
+    },
+
+    // Programmable reward interface (external trial)
+    Trial {
+        context_key: String,
+        #[serde(default)]
+        stimuli: Vec<OwnedStimulus>,
+        #[serde(default)]
+        allowed_actions: Vec<String>,
+        #[serde(default)]
+        forced_action: Option<String>,
+        reward: f32,
+        #[serde(default)]
+        learn: bool,
+        #[serde(default)]
+        steps: u32,
+        #[serde(default)]
+        meaning_alpha: Option<f32>,
     },
 }
 
@@ -161,6 +193,63 @@ enum Response {
     ReplayDataset {
         dataset: ReplayDataset,
     },
+
+    Config {
+        exploration_eps: f32,
+        meaning_alpha: f32,
+        #[serde(default)]
+        reward_symbol_threshold: f32,
+        #[serde(default)]
+        concept_validate_threshold: f32,
+        target_fps: u32,
+        trial_period_ms: u32,
+        max_units_limit: u32,
+    },
+
+    GatesModules {
+        #[serde(default)]
+        modules: Vec<RoutingModuleSummary>,
+    },
+
+    TrialResult {
+        action: String,
+        #[serde(default)]
+        score: f32,
+        #[serde(default)]
+        reward: f32,
+        #[serde(default)]
+        learned: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct OwnedStimulus {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "default_owned_strength")]
+    strength: f32,
+}
+
+fn default_owned_strength() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RoutingModuleSummary {
+    #[serde(default)]
+    id: u16,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    unit_count: u32,
+    #[serde(default)]
+    reward_ema: f32,
+    #[serde(default)]
+    last_routed_step: u64,
+    #[serde(default)]
+    frozen_units: u32,
+    #[serde(default)]
+    paralyzed_units: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -588,6 +677,15 @@ fn usage() -> ! {
     eprintln!("  advisor apply [eps] [alpha] [ttl] [rationale...]  Apply advice (LLM -> Braine)");
     eprintln!("  replay get                   Print current replay dataset summary");
     eprintln!("  replay set <dataset.json>    Set replay dataset (stop first)");
+    eprintln!("  modules                     List routing modules (for gate targeting)");
+    eprintln!("  gates clear                 Clear all freeze/paralyze gates");
+    eprintln!("  freeze <unit|module> <id> <on|off>   Freeze dynamics-only (learning off)");
+    eprintln!("  paralyze <unit|module> <id> <on|off> Paralyze (activity + learning off)");
+    eprintln!(
+        "  trial <ctx> <reward> [k=v...] <stim...>  Run external trial (daemon must be stopped)"
+    );
+    eprintln!("                             opts: learn=true|false steps=N alpha=A action=NAME allowed=a,b,c");
+    eprintln!("                             stimuli: name or name=strength");
     eprintln!("  demo text <trials> [advisor] Run a quick text task demo and print summary");
     eprintln!("  demo replay <trials> [dataset.json] [mock_llm]  Run replay demo; optionally mimic LLM via context/apply");
     eprintln!();
@@ -821,6 +919,117 @@ fn main() {
     };
 
     let req = match cmd.as_str() {
+        "modules" => Request::GatesGetModules,
+        "gates" => {
+            if args.len() < 2 {
+                usage();
+            }
+            match args[1].as_str() {
+                "clear" => Request::GatesClear,
+                _ => make_error("gates must be: gates clear"),
+            }
+        }
+        "freeze" | "paralyze" => {
+            if args.len() < 4 {
+                make_error("usage: freeze|paralyze <unit|module> <id> <on|off>");
+            }
+            let target = args[1].clone();
+            let id: u32 = args[2]
+                .parse()
+                .unwrap_or_else(|_| make_error("id must be a u32"));
+            let enabled = match args[3].as_str() {
+                "on" => true,
+                "off" => false,
+                _ => make_error("expected on|off"),
+            };
+            let gate = if cmd == "freeze" {
+                "freeze".to_string()
+            } else {
+                "paralyze".to_string()
+            };
+            Request::GatesSet {
+                target,
+                ids: vec![id],
+                gate,
+                enabled,
+            }
+        }
+        "trial" => {
+            if args.len() < 3 {
+                make_error("usage: trial <ctx> <reward> [k=v...] <stim...>");
+            }
+            let context_key = args[1].clone();
+            let reward: f32 = args[2]
+                .parse()
+                .unwrap_or_else(|_| make_error("reward must be a float"));
+
+            let mut learn: bool = true;
+            let mut steps: u32 = 1;
+            let mut meaning_alpha: Option<f32> = None;
+            let mut forced_action: Option<String> = None;
+            let mut allowed_actions: Vec<String> = Vec::new();
+            let mut stimuli: Vec<OwnedStimulus> = Vec::new();
+
+            for tok in args.iter().skip(3) {
+                if let Some(v) = tok.strip_prefix("learn=") {
+                    learn = parse_bool(v)
+                        .unwrap_or_else(|| make_error("learn must be true|false (or 1|0)"));
+                    continue;
+                }
+                if let Some(v) = tok.strip_prefix("steps=") {
+                    steps = v
+                        .parse()
+                        .unwrap_or_else(|_| make_error("steps must be a u32"));
+                    continue;
+                }
+                if let Some(v) = tok.strip_prefix("alpha=") {
+                    let a: f32 = v
+                        .parse()
+                        .unwrap_or_else(|_| make_error("alpha must be a float"));
+                    meaning_alpha = Some(a);
+                    continue;
+                }
+                if let Some(v) = tok.strip_prefix("action=") {
+                    forced_action = Some(v.to_string());
+                    continue;
+                }
+                if let Some(v) = tok.strip_prefix("allowed=") {
+                    allowed_actions = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect();
+                    continue;
+                }
+
+                // stimulus token: name or name=strength
+                if let Some((name, s)) = tok.split_once('=') {
+                    let strength: f32 = s
+                        .parse()
+                        .unwrap_or_else(|_| make_error("stimulus strength must be a float"));
+                    stimuli.push(OwnedStimulus {
+                        name: name.to_string(),
+                        strength,
+                    });
+                } else {
+                    stimuli.push(OwnedStimulus {
+                        name: tok.to_string(),
+                        strength: 1.0,
+                    });
+                }
+            }
+
+            Request::Trial {
+                context_key,
+                stimuli,
+                allowed_actions,
+                forced_action,
+                reward,
+                learn,
+                steps,
+                meaning_alpha,
+            }
+        }
         "status" => Request::GetState,
         "start" => Request::Start,
         "stop" => Request::Stop,
@@ -1199,6 +1408,8 @@ fn main() {
             must(&Request::CfgSet {
                 exploration_eps: Some(0.25),
                 meaning_alpha: None,
+                reward_symbol_threshold: None,
+                concept_validate_threshold: None,
                 target_fps: Some(120),
                 trial_period_ms: Some(40),
                 max_units: None,
@@ -1288,6 +1499,35 @@ fn main() {
 
     match send_request(&addr, &req) {
         Ok(Response::State(s)) => print_state(*s),
+        Ok(Response::GatesModules { modules }) => {
+            if modules.is_empty() {
+                println!("(no routing modules)");
+            } else {
+                for m in modules {
+                    println!(
+                        "id={} name={} units={} frozen={} paralyzed={} reward_ema={:.3} last_routed={}",
+                        m.id,
+                        m.name,
+                        m.unit_count,
+                        m.frozen_units,
+                        m.paralyzed_units,
+                        m.reward_ema,
+                        m.last_routed_step
+                    );
+                }
+            }
+        }
+        Ok(Response::TrialResult {
+            action,
+            score,
+            reward,
+            learned,
+        }) => {
+            println!(
+                "trial: action={} score={:.4} reward={:.4} learned={}",
+                action, score, reward, learned
+            );
+        }
         Ok(Response::GameParams { game, params }) => {
             println!("Game params schema for: {game}");
             for p in params {
@@ -1353,6 +1593,23 @@ fn main() {
                 dataset.name,
                 dataset.trials.len()
             );
+        }
+        Ok(Response::Config {
+            exploration_eps,
+            meaning_alpha,
+            reward_symbol_threshold,
+            concept_validate_threshold,
+            target_fps,
+            trial_period_ms,
+            max_units_limit,
+        }) => {
+            println!("exploration_eps={exploration_eps:.3}");
+            println!("meaning_alpha={meaning_alpha:.3}");
+            println!("reward_symbol_threshold={reward_symbol_threshold:.3}");
+            println!("concept_validate_threshold={concept_validate_threshold:.3}");
+            println!("target_fps={target_fps}");
+            println!("trial_period_ms={trial_period_ms}");
+            println!("max_units_limit={max_units_limit}");
         }
         Ok(Response::Error { message }) => {
             eprintln!("Error: {message}");

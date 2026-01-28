@@ -226,6 +226,20 @@ pub struct BrainConfig {
     /// Eligibility trace gain (accumulation rate). Higher accumulates faster.
     pub eligibility_gain: f32,
 
+    /// Minimum reward magnitude required to emit discrete reward symbols into
+    /// causal/meaning memory during `commit_observation()`.
+    ///
+    /// This does **not** block plasticity directly; it only controls whether
+    /// `reward_pos` / `reward_neg` symbols are committed.
+    pub reward_symbol_threshold: f32,
+
+    /// Minimum positive reward magnitude required to validate reserved concepts
+    /// during `commit_observation()`.
+    ///
+    /// Keeping this separate from `reward_symbol_threshold` allows dense shaping
+    /// rewards to drive meaning memory without over-validating concepts.
+    pub concept_validate_threshold: f32,
+
     /// Smoothness for coactivity thresholding in eligibility.
     ///
     /// 0.0 keeps a hard ReLU at `coactive_threshold`. Higher values make the
@@ -389,6 +403,8 @@ impl Default for BrainConfig {
             learning_deadband: 0.05,
             eligibility_decay: 0.02,
             eligibility_gain: 0.35,
+            reward_symbol_threshold: 0.2,
+            concept_validate_threshold: 0.2,
             coactive_softness: 0.05,
             phase_gate_softness: 0.05,
             plasticity_budget: 0.0,
@@ -508,6 +524,20 @@ impl BrainConfig {
 
         if !self.activity_trace_decay.is_finite() || self.activity_trace_decay < 0.0 {
             return Err("activity_trace_decay must be finite and >= 0");
+        }
+
+        if !self.reward_symbol_threshold.is_finite()
+            || self.reward_symbol_threshold < 0.0
+            || self.reward_symbol_threshold > 1.0
+        {
+            return Err("reward_symbol_threshold must be finite and in [0, 1]");
+        }
+
+        if !self.concept_validate_threshold.is_finite()
+            || self.concept_validate_threshold < 0.0
+            || self.concept_validate_threshold > 1.0
+        {
+            return Err("concept_validate_threshold must be finite and in [0, 1]");
         }
 
         if self.growth_policy_mode > 1 {
@@ -921,6 +951,12 @@ pub struct Brain {
     // Used to protect a parent identity subset in child brains.
     learning_enabled: Vec<bool>,
 
+    // Manual gates (ephemeral; not persisted).
+    // - frozen: dynamics run, but learning updates are skipped for incident edges.
+    // - paralyzed: unit activity is clamped to zero (and learning is also skipped).
+    frozen_units: Vec<bool>,
+    paralyzed_units: Vec<bool>,
+
     // External "sensor" input is just injected current to some units.
     sensor_groups: Vec<NamedGroup>,
     action_groups: Vec<NamedGroup>,
@@ -986,6 +1022,20 @@ pub struct BrainDelta {
     pub weight_deltas: Vec<(usize, Weight)>,
 }
 
+/// Summary of a routing module (std-only; intended for UI/daemon introspection).
+#[cfg(feature = "std")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct RoutingModuleSummary {
+    pub id: u16,
+    pub name: String,
+    pub unit_count: u32,
+    pub reward_ema: f32,
+    pub last_routed_step: u64,
+    pub frozen_units: u32,
+    pub paralyzed_units: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Telemetry {
     enabled: bool,
@@ -997,6 +1047,150 @@ struct Telemetry {
 }
 
 impl Brain {
+    #[inline]
+    fn ensure_gate_vectors(&mut self) {
+        if self.frozen_units.len() != self.units.len() {
+            self.frozen_units.resize(self.units.len(), false);
+        }
+        if self.paralyzed_units.len() != self.units.len() {
+            self.paralyzed_units.resize(self.units.len(), false);
+        }
+    }
+
+    #[inline]
+    fn unit_learning_blocked(&self, unit: usize) -> bool {
+        self.frozen_units.get(unit).copied().unwrap_or(false)
+            || self.paralyzed_units.get(unit).copied().unwrap_or(false)
+    }
+
+    /// Freeze/unfreeze a unit: dynamics still run, but learning updates are skipped
+    /// for edges incident to the unit.
+    pub fn set_unit_frozen(&mut self, unit: usize, frozen: bool) {
+        self.ensure_gate_vectors();
+        if let Some(slot) = self.frozen_units.get_mut(unit) {
+            *slot = frozen;
+        }
+    }
+
+    /// Paralyze/unparalyze a unit: unit activity is clamped to zero (and learning is skipped).
+    pub fn set_unit_paralyzed(&mut self, unit: usize, paralyzed: bool) {
+        self.ensure_gate_vectors();
+        if let Some(slot) = self.paralyzed_units.get_mut(unit) {
+            *slot = paralyzed;
+            if paralyzed {
+                if unit < self.units.len() {
+                    self.units[unit].amp = 0.0;
+                }
+                if unit < self.pending_input.len() {
+                    self.pending_input[unit] = 0.0;
+                }
+                if unit < self.activity_trace.len() {
+                    self.activity_trace[unit] = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Clear all manual freeze/paralyze gates.
+    pub fn clear_gates(&mut self) {
+        self.ensure_gate_vectors();
+        self.frozen_units.fill(false);
+        self.paralyzed_units.fill(false);
+    }
+
+    /// Return total (frozen, paralyzed) unit counts.
+    #[must_use]
+    pub fn gate_counts(&self) -> (u32, u32) {
+        let mut frozen = 0u32;
+        let mut paralyzed = 0u32;
+        for i in 0..self.units.len() {
+            if self.frozen_units.get(i).copied().unwrap_or(false) {
+                frozen = frozen.saturating_add(1);
+            }
+            if self.paralyzed_units.get(i).copied().unwrap_or(false) {
+                paralyzed = paralyzed.saturating_add(1);
+            }
+        }
+        (frozen, paralyzed)
+    }
+
+    /// Return summaries of currently known routing modules.
+    ///
+    /// This is intended for UI/daemon introspection so clients can pick module ids
+    /// for freeze/paralyze gates.
+    #[cfg(feature = "std")]
+    pub fn routing_modules_summary(&mut self) -> Vec<RoutingModuleSummary> {
+        self.ensure_gate_vectors();
+        self.refresh_module_unit_counts_if_dirty();
+
+        let mut out: Vec<RoutingModuleSummary> = Vec::with_capacity(self.routing_modules.len());
+        for (i, m) in self.routing_modules.iter().enumerate() {
+            let id = i as u16;
+            let unit_count = self.module_unit_counts.get(i).copied().unwrap_or(0);
+
+            let mut frozen = 0u32;
+            let mut paralyzed = 0u32;
+            for (uid, &mid) in self.unit_module.iter().enumerate() {
+                if mid != id {
+                    continue;
+                }
+                if self.frozen_units.get(uid).copied().unwrap_or(false) {
+                    frozen = frozen.saturating_add(1);
+                }
+                if self.paralyzed_units.get(uid).copied().unwrap_or(false) {
+                    paralyzed = paralyzed.saturating_add(1);
+                }
+            }
+
+            out.push(RoutingModuleSummary {
+                id,
+                name: m.name.clone(),
+                unit_count,
+                reward_ema: m.reward_ema,
+                last_routed_step: m.last_routed_step,
+                frozen_units: frozen,
+                paralyzed_units: paralyzed,
+            });
+        }
+
+        out
+    }
+
+    /// Freeze/unfreeze all units currently assigned to a routing module id.
+    pub fn set_module_frozen(&mut self, module_id: u16, frozen: bool) {
+        self.ensure_gate_vectors();
+        if module_id == NO_MODULE {
+            return;
+        }
+        for (i, &mid) in self.unit_module.iter().enumerate() {
+            if mid == module_id {
+                self.frozen_units[i] = frozen;
+            }
+        }
+    }
+
+    /// Paralyze/unparalyze all units currently assigned to a routing module id.
+    pub fn set_module_paralyzed(&mut self, module_id: u16, paralyzed: bool) {
+        self.ensure_gate_vectors();
+        if module_id == NO_MODULE {
+            return;
+        }
+        for (i, &mid) in self.unit_module.iter().enumerate() {
+            if mid == module_id {
+                self.paralyzed_units[i] = paralyzed;
+                if paralyzed {
+                    self.units[i].amp = 0.0;
+                    if i < self.pending_input.len() {
+                        self.pending_input[i] = 0.0;
+                    }
+                    if i < self.activity_trace.len() {
+                        self.activity_trace[i] = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
     /// A coarse fingerprint of the current connection topology.
     ///
     /// Used for safe-ish synchronization between a master brain and edge/child brains.
@@ -1147,6 +1341,8 @@ impl Brain {
         let pending_input = vec![0.0; cfg.unit_count];
         let reserved = vec![false; cfg.unit_count];
         let learning_enabled = vec![true; cfg.unit_count];
+        let frozen_units = vec![false; cfg.unit_count];
+        let paralyzed_units = vec![false; cfg.unit_count];
         let sensor_member = vec![false; cfg.unit_count];
         let group_member = vec![false; cfg.unit_count];
         let concept_validated = vec![false; cfg.unit_count];
@@ -1202,6 +1398,9 @@ impl Brain {
             rng,
             reserved,
             learning_enabled,
+
+            frozen_units,
+            paralyzed_units,
 
             sensor_member,
             group_member,
@@ -2220,6 +2419,9 @@ impl Brain {
             group_member: vec![false; unit_count],
             concept_validated: vec![false; unit_count],
             learning_enabled,
+
+            frozen_units: vec![false; unit_count],
+            paralyzed_units: vec![false; unit_count],
             sensor_groups,
             sensor_group_index: HashMap::new(),
             action_groups,
@@ -2437,6 +2639,10 @@ impl Brain {
         storage::write_f32_le(w, self.cfg.latent_module_auto_reward_threshold)?;
         storage::write_u32_le(w, self.cfg.latent_module_retire_after_steps)?;
         storage::write_f32_le(w, self.cfg.latent_module_retire_reward_threshold)?;
+
+        // Reward event thresholds (appended; backwards compatible on load).
+        storage::write_f32_le(w, self.cfg.reward_symbol_threshold)?;
+        storage::write_f32_le(w, self.cfg.concept_validate_threshold)?;
         Ok(())
     }
 
@@ -2574,6 +2780,10 @@ impl Brain {
             let latent_module_retire_after_steps = read_u32_default(&mut c, 0);
             let latent_module_retire_reward_threshold = read_f32_default(&mut c, 0.05);
 
+            // Optional appended reward symbol thresholds (safe defaults).
+            let reward_symbol_threshold = read_f32_default(&mut c, 0.2);
+            let concept_validate_threshold = read_f32_default(&mut c, 0.2);
+
             let cfg = BrainConfig {
                 unit_count,
                 connectivity_per_unit,
@@ -2612,6 +2822,8 @@ impl Brain {
                 learning_deadband,
                 eligibility_decay,
                 eligibility_gain,
+                reward_symbol_threshold,
+                concept_validate_threshold,
                 coactive_softness,
                 phase_gate_softness,
                 plasticity_budget,
@@ -3874,16 +4086,19 @@ impl Brain {
     /// - (optional) reinforce_action
     pub fn commit_observation(&mut self) {
         // Map reward scalar to discrete events.
-        if self.neuromod > 0.2 {
+        if self.neuromod > self.cfg.reward_symbol_threshold {
             self.active_symbols.push(self.reward_pos_symbol);
-            // Validate concepts that are active during positive reinforcement.
+        } else if self.neuromod < -self.cfg.reward_symbol_threshold {
+            self.active_symbols.push(self.reward_neg_symbol);
+        }
+
+        // Validate concepts that are active during sufficiently strong positive reinforcement.
+        if self.neuromod > self.cfg.concept_validate_threshold {
             for i in 0..self.units.len() {
                 if self.reserved[i] && !self.group_member[i] && self.units[i].amp > 0.1 {
                     self.concept_validated[i] = true;
                 }
             }
-        } else if self.neuromod < -0.2 {
-            self.active_symbols.push(self.reward_neg_symbol);
         }
 
         // Deduplicate cheaply (small vectors).
@@ -4300,6 +4515,21 @@ impl Brain {
             ExecutionTier::Gpu => self.step_dynamics_gpu(),
         }
 
+        // Manual paralyze gate: clamp selected units' activity to zero.
+        self.ensure_gate_vectors();
+        for i in 0..self.units.len() {
+            if self.paralyzed_units[i] {
+                self.units[i].amp = 0.0;
+                if i < self.activity_trace.len() {
+                    self.activity_trace[i] = 0.0;
+                }
+                // Also drop any accumulated input for these units.
+                if i < self.pending_input.len() {
+                    self.pending_input[i] = 0.0;
+                }
+            }
+        }
+
         // Clear one-tick inputs.
         for x in &mut self.pending_input {
             *x = 0.0;
@@ -4359,6 +4589,20 @@ impl Brain {
             ExecutionTier::Simd => self.step_dynamics_simd(),
             ExecutionTier::Parallel => self.step_dynamics_parallel(),
             ExecutionTier::Gpu => self.step_dynamics_gpu(),
+        }
+
+        // Manual paralyze gate also applies during inference-only stepping.
+        self.ensure_gate_vectors();
+        for i in 0..self.units.len() {
+            if self.paralyzed_units[i] {
+                self.units[i].amp = 0.0;
+                if i < self.activity_trace.len() {
+                    self.activity_trace[i] = 0.0;
+                }
+                if i < self.pending_input.len() {
+                    self.pending_input[i] = 0.0;
+                }
+            }
         }
 
         for x in &mut self.pending_input {
@@ -5894,6 +6138,8 @@ impl Brain {
             self.activity_trace.resize(self.units.len(), 0.0);
         }
 
+        self.ensure_gate_vectors();
+
         let activity_for_learning = |brain: &Brain, unit: usize| -> f32 {
             let instant = brain.units[unit].amp.max(0.0);
             if brain.cfg.activity_trace_decay <= 0.0 {
@@ -5931,6 +6177,10 @@ impl Brain {
                 continue;
             }
 
+            if self.unit_learning_blocked(owner) {
+                continue;
+            }
+
             if !self.learning_allowed_for_unit(owner) {
                 continue;
             }
@@ -5949,6 +6199,10 @@ impl Brain {
             for idx in range {
                 let target = self.connections.targets[idx];
                 if target == INVALID_UNIT {
+                    continue;
+                }
+
+                if self.unit_learning_blocked(target) {
                     continue;
                 }
 
@@ -6036,11 +6290,17 @@ impl Brain {
         let mut l1 = 0.0f32;
         let mut edges = 0u32;
 
+        self.ensure_gate_vectors();
+
         for owner in 0..self.units.len() {
             if !self.learning_enabled[owner] {
                 continue;
             }
             if !self.learning_allowed_for_unit(owner) {
+                continue;
+            }
+
+            if self.unit_learning_blocked(owner) {
                 continue;
             }
 
@@ -6076,6 +6336,10 @@ impl Brain {
                     continue;
                 }
                 let target = self.connections.targets[idx];
+
+                if self.unit_learning_blocked(target) {
+                    continue;
+                }
                 let e = self.eligibility[idx];
                 if e == 0.0 {
                     continue;
@@ -6746,6 +7010,34 @@ fn phase_alignment(a: f32, b: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reward_symbol_threshold_controls_reward_symbol_emission() {
+        let mut brain = Brain::new(BrainConfig::default());
+        brain.set_observer_telemetry(true);
+
+        let reward_pos = brain.symbol_id("reward_pos").expect("reward_pos symbol");
+        let reward_neg = brain.symbol_id("reward_neg").expect("reward_neg symbol");
+
+        // Default threshold is 0.2: a small reward should not emit a reward symbol.
+        brain.neuromod = 0.1;
+        brain.commit_observation();
+        assert!(!brain.last_committed_symbols().contains(&reward_pos));
+        assert!(!brain.last_committed_symbols().contains(&reward_neg));
+
+        // Lower threshold: the same small reward should emit reward_pos.
+        brain
+            .update_config(|cfg| cfg.reward_symbol_threshold = 0.05)
+            .expect("update_config");
+        brain.neuromod = 0.1;
+        brain.commit_observation();
+        assert!(brain.last_committed_symbols().contains(&reward_pos));
+
+        // Symmetric for negative reward.
+        brain.neuromod = -0.1;
+        brain.commit_observation();
+        assert!(brain.last_committed_symbols().contains(&reward_neg));
+    }
 
     #[test]
     fn neuromodulator_sign_controls_plasticity_direction() {

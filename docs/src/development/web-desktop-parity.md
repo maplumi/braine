@@ -18,6 +18,8 @@ That means “feature parity” is not just UI work: many desktop features depen
 | Game selection | Daemon games + UI controls | Spot/Bandit/SpotReversal/SpotXY/Pong (plus Sequence added in this repo) |
 | Trial cadence | Daemon loop (trial ms, run/stop) | Local loop (trial ms, run/stop) |
 | SpotXY eval/holdout mode | Yes (suppresses learning writes) | Yes (suppresses learning writes) |
+| Manual gates (freeze/paralyze) | Yes (daemon protocol + UI/CLI) | Yes (local Brain gates UI) |
+| Reward symbol thresholds | Yes (`CfgSet`: `reward_symbol_threshold`, `concept_validate_threshold`) | Yes (Settings sliders; local BrainConfig) |
 | Graph visualization (nodes/edges) | Yes (daemon snapshot-driven) | Yes (local BrainViz: substrate + causal views) |
 | Brain plots (time series) | Yes | Partial (reward + action-choice traces; sampled unit plot) |
 | Meaning inspection | Yes | Partial (limited UI; no deep edge browser yet) |
@@ -33,6 +35,11 @@ The web app can gain parity in two different ways:
 2) **Remote parity**: implement a daemon client in the web app (WebSocket/WebTransport/HTTP bridge) and re-use the daemon’s snapshots and control protocol.
 
 Right now `braine_web` is optimized for **edge-first learning in a browser** (fast iteration + IndexedDB persistence). It includes lightweight local observability (BrainViz + a few charts), while the desktop stack remains the most complete introspection surface.
+
+The web app now exposes a few of the more operational learning controls locally:
+
+- **Reward symbol thresholds** (the knobs that decide when dense reward becomes discrete reward symbols)
+- **Manual gates** (freeze/paralyze by module or unit) for quick stabilization experiments
 
 ## Recommended next parity steps
 

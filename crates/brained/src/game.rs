@@ -321,6 +321,34 @@ impl PongGame {
             brain.apply_stimulus_inference(Stimulus::new("pong_ball_hidden", 1.0));
         }
 
+        // Simple short-term memory / efference copy: what action was last taken.
+        // This can help the dynamics disambiguate similar perceptual states.
+        let last = self.last_action.as_deref();
+        brain.apply_stimulus_inference(Stimulus::new(
+            "pong_last_action_none",
+            if last.is_none() { 1.0 } else { 0.0 },
+        ));
+        brain.apply_stimulus_inference(Stimulus::new(
+            "pong_last_action_up",
+            if matches!(last, Some("up")) { 1.0 } else { 0.0 },
+        ));
+        brain.apply_stimulus_inference(Stimulus::new(
+            "pong_last_action_down",
+            if matches!(last, Some("down")) {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+        brain.apply_stimulus_inference(Stimulus::new(
+            "pong_last_action_stay",
+            if matches!(last, Some("stay")) {
+                1.0
+            } else {
+                0.0
+            },
+        ));
+
         let vx_name = if self.sim.state.ball_vx >= 0.0 {
             "pong_vx_pos"
         } else {

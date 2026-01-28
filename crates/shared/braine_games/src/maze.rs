@@ -860,14 +860,22 @@ impl MazeGame {
         let dist01 = (dist as f32) / (denom as f32);
         let bucket = (dist01 * 4.0).floor().clamp(0.0, 3.0) as u32;
 
-        // Keep the meaning context compact. Wall bits are already available via
-        // sensor channels, and including them here fragments meaning memory.
+        // Include a compact local wall-mask signature to reduce perceptual aliasing
+        // for meaning/causal memory (avoid/seek actions depend on immediate walls).
+        // The individual wall bits remain available as sensor channels.
+        let w = self.sim.grid.w().max(1);
+        let h = self.sim.grid.h().max(1);
+        let px = self.sim.player_x.min(w.saturating_sub(1));
+        let py = self.sim.player_y.min(h.saturating_sub(1));
+        let wall_mask = (self.sim.grid.walls(px, py) & (W_UP | W_RIGHT | W_DOWN | W_LEFT)) as u32;
+
         self.stimulus_key = format!(
-            "maze_{}_{}{}_b{}",
+            "maze_{}_{}{}_b{}_w{:X}",
             self.difficulty.name(),
             dx_tag,
             dy_tag,
             bucket,
+            wall_mask,
         );
     }
 }

@@ -67,8 +67,12 @@ Get or update runtime knobs shared across games.
 - `CfgSet` request (all fields optional):
 
 ```json
-{"type":"CfgSet","exploration_eps":0.2,"meaning_alpha":2.5,"target_fps":60,"trial_period_ms":50,"max_units":4096}
+{"type":"CfgSet","exploration_eps":0.2,"meaning_alpha":2.5,"reward_symbol_threshold":0.1,"concept_validate_threshold":0.1,"target_fps":60,"trial_period_ms":50,"max_units":4096}
 ```
+
+Notes:
+- `reward_symbol_threshold` controls when scalar reward is converted into discrete `reward_pos` / `reward_neg` symbols during `commit_observation()`.
+- `concept_validate_threshold` controls when concept-validation is triggered (during sufficiently strong positive reward).
 
 ### `DiagGet`
 Lightweight diagnostics: running state, frame counter, brain stats, and storage paths.
@@ -197,13 +201,13 @@ Read:
 Response (shape):
 
 ```json
-{"type":"Config","exploration_eps":0.2,"meaning_alpha":2.5,"target_fps":60,"trial_period_ms":50,"max_units_limit":4096}
+{"type":"Config","exploration_eps":0.2,"meaning_alpha":2.5,"reward_symbol_threshold":0.2,"concept_validate_threshold":0.2,"target_fps":60,"trial_period_ms":50,"max_units_limit":4096}
 ```
 
 Update (all fields optional):
 
 ```json
-{"type":"CfgSet","exploration_eps":0.1,"meaning_alpha":3.0,"target_fps":60,"trial_period_ms":50,"max_units":4096}
+{"type":"CfgSet","exploration_eps":0.1,"meaning_alpha":3.0,"reward_symbol_threshold":0.1,"concept_validate_threshold":0.1,"target_fps":60,"trial_period_ms":50,"max_units":4096}
 ```
 
 Response:
@@ -225,6 +229,83 @@ If you prefer dedicated endpoints over `CfgSet`:
 ```
 
 Both respond with `{"type":"Success",...}` (or `Error`).
+
+## Manual gates (freeze / paralyze)
+
+The daemon exposes **manual gates** that let clients selectively suppress learning or activity.
+
+- **Freeze**: dynamics still run, but learning updates are skipped for edges incident to gated units.
+- **Paralyze**: unit activity is clamped to zero (and learning is skipped).
+
+These are *ephemeral* (not persisted in the brain image) and intended for experimentation/debugging.
+
+### `GatesGetModules`
+List routing modules so clients can target module ids.
+
+- Request:
+
+```json
+{"type":"GatesGetModules"}
+```
+
+- Response (shape):
+
+```json
+{"type":"GatesModules","modules":[{"id":0,"name":"latent::0","unit_count":128,"frozen_units":0,"paralyzed_units":0,"reward_ema":0.0,"last_routed_step":1234}, ...]}
+```
+
+### `GatesSet`
+Set freeze/paralyze for either units or routing modules.
+
+- Freeze module 0:
+
+```json
+{"type":"GatesSet","target":"module","ids":[0],"gate":"freeze","enabled":true}
+```
+
+- Paralyze units 10 and 11:
+
+```json
+{"type":"GatesSet","target":"unit","ids":[10,11],"gate":"paralyze","enabled":true}
+```
+
+### `GatesClear`
+Clear all gates.
+
+```json
+{"type":"GatesClear"}
+```
+
+## Programmable reward interface (external trial)
+
+For integration hosts, the daemon supports a simple “external trial” call that applies caller-provided stimuli and reward.
+
+Important:
+- The daemon must be stopped (`running=false`) to avoid interfering with an active game loop.
+
+### `Trial`
+
+Request (shape):
+
+```json
+{"type":"Trial","context_key":"ctx::0","stimuli":[{"name":"s::x","strength":1.0}],"allowed_actions":["left","right"],"reward":0.25,"learn":true,"steps":1,"meaning_alpha":2.5}
+```
+
+Fields:
+- `context_key`: stimulus signature string used for meaning queries and pair symbols.
+- `stimuli`: list of `{name, strength}` stimuli to apply before stepping.
+- `allowed_actions` (optional): if provided, the daemon selects the best-scoring action among those names.
+- `forced_action` (optional): if provided, uses this action instead of selecting.
+- `reward`: scalar reward in roughly `[-1, 1]`.
+- `learn`: if false, the daemon discards the observation (no learning/causal updates).
+- `steps`: how many substrate steps to advance after applying stimuli (default 1).
+- `meaning_alpha`: optional override for meaning weight.
+
+Response:
+
+```json
+{"type":"TrialResult","action":"left","score":0.42,"reward":0.25,"learned":true}
+```
 
 ### 7) Discover and set game parameters (knobs)
 

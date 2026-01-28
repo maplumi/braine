@@ -1,6 +1,9 @@
 #![allow(clippy::clone_on_copy)]
 
-use braine::substrate::{Brain, CausalGraphViz, ExecutionTier, Stimulus, UnitPlotPoint};
+use braine::substrate::{
+    Brain, CausalGraphViz, ExecutionTier, OwnedStimulus, RoutingModuleSummary, Stimulus,
+    UnitPlotPoint,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use std::sync::Arc;
@@ -61,6 +64,21 @@ struct InspectTrialEvent {
     action: String,
     reward: f32,
     recent_rate: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateKind {
+    Freeze,
+    Paralyze,
+}
+
+#[derive(Clone, Debug)]
+struct TrialUiResult {
+    status: String,
+    action: String,
+    score: f32,
+    reward: f32,
+    learned: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -759,6 +777,98 @@ fn App() -> impl IntoView {
     let (trial_period_ms, set_trial_period_ms) = signal::<u32>(settings0.trial_period_ms);
     let (run_interval_ms, set_run_interval_ms) = signal::<u32>(settings0.run_interval_ms);
 
+    // Manual gates (freeze/paralyze) for local web runtime.
+    let (gates_modules, set_gates_modules) = signal::<Vec<RoutingModuleSummary>>(Vec::new());
+    let (gates_version, set_gates_version) = signal::<u64>(0);
+    let (gates_module_id, set_gates_module_id) = signal::<u16>(0);
+    let (gates_unit_id, set_gates_unit_id) = signal::<u32>(0);
+    let (gates_kind, set_gates_kind) = signal(GateKind::Freeze);
+    let (gates_enabled, set_gates_enabled) = signal(true);
+
+    let refresh_gates = Callback::new({
+        let runtime = runtime.clone();
+        move |()| {
+            let mut mods: Vec<RoutingModuleSummary> = Vec::new();
+            runtime.update_value(|r| {
+                mods = r.brain.routing_modules_summary();
+            });
+            set_gates_modules.set(mods);
+            set_gates_version.update(|v| *v = v.saturating_add(1));
+        }
+    });
+
+    // Refresh once at startup so the panel has something if modules exist.
+    Effect::new({
+        let refresh_gates = refresh_gates.clone();
+        move |_| {
+            refresh_gates.run(());
+        }
+    });
+
+    let clear_gates = Callback::new({
+        let runtime = runtime.clone();
+        let refresh_gates = refresh_gates.clone();
+        move |()| {
+            runtime.update_value(|r| r.brain.clear_gates());
+            refresh_gates.run(());
+            push_toast(ToastLevel::Info, "Cleared all gates".to_string());
+        }
+    });
+
+    let apply_module_gate = Callback::new({
+        let runtime = runtime.clone();
+        let refresh_gates = refresh_gates.clone();
+        move |()| {
+            let id = gates_module_id.get_untracked();
+            let enabled = gates_enabled.get_untracked();
+            let kind = gates_kind.get_untracked();
+            runtime.update_value(|r| match kind {
+                GateKind::Freeze => r.brain.set_module_frozen(id, enabled),
+                GateKind::Paralyze => r.brain.set_module_paralyzed(id, enabled),
+            });
+            refresh_gates.run(());
+            push_toast(
+                ToastLevel::Success,
+                format!(
+                    "{} module {} {}",
+                    match kind {
+                        GateKind::Freeze => "Freeze",
+                        GateKind::Paralyze => "Paralyze",
+                    },
+                    id,
+                    if enabled { "enabled" } else { "disabled" }
+                ),
+            );
+        }
+    });
+
+    let apply_unit_gate = Callback::new({
+        let runtime = runtime.clone();
+        let refresh_gates = refresh_gates.clone();
+        move |()| {
+            let unit = gates_unit_id.get_untracked() as usize;
+            let enabled = gates_enabled.get_untracked();
+            let kind = gates_kind.get_untracked();
+            runtime.update_value(|r| match kind {
+                GateKind::Freeze => r.brain.set_unit_frozen(unit, enabled),
+                GateKind::Paralyze => r.brain.set_unit_paralyzed(unit, enabled),
+            });
+            refresh_gates.run(());
+            push_toast(
+                ToastLevel::Success,
+                format!(
+                    "{} unit {} {}",
+                    match kind {
+                        GateKind::Freeze => "Freeze",
+                        GateKind::Paralyze => "Paralyze",
+                    },
+                    unit,
+                    if enabled { "enabled" } else { "disabled" }
+                ),
+            );
+        }
+    });
+
     // Reward shaping is per-game (scale+bias). We keep a current-game signal for UI/runtime,
     // and store the per-game values in persisted vectors.
     let (reward_scale_by_game, set_reward_scale_by_game) =
@@ -781,6 +891,141 @@ fn App() -> impl IntoView {
     let (reward_bias, set_reward_bias) = signal::<f32>(reward_bias0);
     let (exploration_eps, set_exploration_eps) = signal::<f32>(0.10);
     let (meaning_alpha, set_meaning_alpha) = signal::<f32>(8.0);
+
+    // Local Trial panel (manual, daemon-like experiment runner).
+    let (trial_context_key, set_trial_context_key) = signal::<String>("manual".to_string());
+    let (trial_stimuli_text, set_trial_stimuli_text) = signal::<String>(String::new());
+    let (trial_allowed_actions, set_trial_allowed_actions) = signal::<String>(String::new());
+    let (trial_forced_action, set_trial_forced_action) = signal::<String>(String::new());
+    let (trial_reward, set_trial_reward) = signal::<f32>(0.0);
+    let (trial_learn, set_trial_learn) = signal::<bool>(true);
+    let (trial_steps, set_trial_steps) = signal::<u32>(1);
+    let (trial_result, set_trial_result) = signal::<Option<TrialUiResult>>(None);
+
+    let run_local_trial = {
+        let runtime = runtime.clone();
+        move || {
+            fn parse_stimuli(text: &str) -> Result<Vec<OwnedStimulus>, String> {
+                let mut out: Vec<OwnedStimulus> = Vec::new();
+                for (i, line) in text.lines().enumerate() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    let mut parts = line.split_whitespace();
+                    let name = parts
+                        .next()
+                        .ok_or_else(|| format!("stimulus line {}: missing name", i + 1))?;
+                    let strength = parts
+                        .next()
+                        .map(|s| {
+                            s.parse::<f32>()
+                                .map_err(|_| format!("stimulus line {}: bad strength", i + 1))
+                        })
+                        .transpose()?
+                        .unwrap_or(1.0);
+                    out.push(OwnedStimulus {
+                        name: name.to_string(),
+                        strength,
+                    });
+                }
+                Ok(out)
+            }
+
+            fn parse_actions(s: &str) -> Vec<String> {
+                s.split(|c: char| c == ',' || c.is_whitespace())
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(|t| t.to_string())
+                    .collect()
+            }
+
+            let ctx = trial_context_key.get_untracked();
+            let stimuli_text = trial_stimuli_text.get_untracked();
+            let allowed_text = trial_allowed_actions.get_untracked();
+            let forced = trial_forced_action.get_untracked();
+            let reward = trial_reward.get_untracked();
+            let learn = trial_learn.get_untracked();
+            let steps = trial_steps.get_untracked();
+            let alpha = meaning_alpha.get_untracked();
+
+            let stimuli = match parse_stimuli(&stimuli_text) {
+                Ok(v) => v,
+                Err(e) => {
+                    set_trial_result.set(Some(TrialUiResult {
+                        status: format!("Parse error: {e}"),
+                        action: "".to_string(),
+                        score: 0.0,
+                        reward,
+                        learned: learn,
+                    }));
+                    push_toast(ToastLevel::Error, format!("Trial parse error: {e}"));
+                    return;
+                }
+            };
+
+            let allowed_actions = parse_actions(&allowed_text);
+            let forced_action = {
+                let t = forced.trim();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            };
+
+            let req = runtime::ManualTrialRequest {
+                context_key: ctx,
+                stimuli,
+                allowed_actions,
+                forced_action,
+                reward,
+                learn,
+                steps,
+                meaning_alpha: alpha,
+            };
+
+            let mut result: runtime::ManualTrialResult =
+                runtime::ManualTrialResult::Error("trial: runtime unavailable".to_string());
+            runtime.update_value(|r| {
+                result = r.run_manual_trial(req);
+            });
+
+            match result {
+                runtime::ManualTrialResult::Ok {
+                    action,
+                    score,
+                    reward,
+                    learned,
+                } => {
+                    set_trial_result.set(Some(TrialUiResult {
+                        status: "OK".to_string(),
+                        action: action.clone(),
+                        score,
+                        reward,
+                        learned,
+                    }));
+                    push_toast(
+                        ToastLevel::Success,
+                        format!(
+                            "Trial OK: action={action} reward={}",
+                            fmt_f32_signed_fixed(reward, 3)
+                        ),
+                    );
+                }
+                runtime::ManualTrialResult::Error(e) => {
+                    set_trial_result.set(Some(TrialUiResult {
+                        status: format!("Error: {e}"),
+                        action: "".to_string(),
+                        score: 0.0,
+                        reward,
+                        learned: learn,
+                    }));
+                    push_toast(ToastLevel::Error, format!("Trial error: {e}"));
+                }
+            }
+        }
+    };
 
     // Persist settings when they change.
     // (We keep this narrow: only the core knobs in PersistedSettings.)
@@ -882,6 +1127,10 @@ fn App() -> impl IntoView {
     let (cfg_salience_decay, set_cfg_salience_decay) = signal::<f32>(cfg0.salience_decay);
     let (cfg_salience_gain, set_cfg_salience_gain) = signal::<f32>(cfg0.salience_gain);
     let (cfg_causal_decay, set_cfg_causal_decay) = signal::<f32>(cfg0.causal_decay);
+    let (cfg_reward_symbol_threshold, set_cfg_reward_symbol_threshold) =
+        signal::<f32>(cfg0.reward_symbol_threshold);
+    let (cfg_concept_validate_threshold, set_cfg_concept_validate_threshold) =
+        signal::<f32>(cfg0.concept_validate_threshold);
 
     // Derived "apply" disabled state (any invalid param disables apply).
     Effect::new(move |_| {
@@ -907,6 +1156,8 @@ fn App() -> impl IntoView {
             let salience_decay = cfg_salience_decay.get_untracked();
             let salience_gain = cfg_salience_gain.get_untracked();
             let causal_decay = cfg_causal_decay.get_untracked();
+            let reward_symbol_threshold = cfg_reward_symbol_threshold.get_untracked();
+            let concept_validate_threshold = cfg_concept_validate_threshold.get_untracked();
 
             let mut err: Option<String> = None;
             runtime.update_value(|r| {
@@ -925,6 +1176,8 @@ fn App() -> impl IntoView {
                     cfg.salience_decay = salience_decay;
                     cfg.salience_gain = salience_gain;
                     cfg.causal_decay = causal_decay;
+                    cfg.reward_symbol_threshold = reward_symbol_threshold;
+                    cfg.concept_validate_threshold = concept_validate_threshold;
                 }) {
                     err = Some(e.to_string());
                 }
@@ -973,6 +1226,8 @@ fn App() -> impl IntoView {
                 set_cfg_salience_decay.set(cfg.salience_decay);
                 set_cfg_salience_gain.set(cfg.salience_gain);
                 set_cfg_causal_decay.set(cfg.causal_decay);
+                set_cfg_reward_symbol_threshold.set(cfg.reward_symbol_threshold);
+                set_cfg_concept_validate_threshold.set(cfg.concept_validate_threshold);
             });
             set_status.set("Config reset to current".to_string());
             push_toast(ToastLevel::Info, "Settings reset".to_string());
@@ -7812,6 +8067,14 @@ fn App() -> impl IntoView {
                                         "coactive_threshold" => Some((cfg_coactive_threshold, set_cfg_coactive_threshold)),
                                         "phase_lock_threshold" => Some((cfg_phase_lock_threshold, set_cfg_phase_lock_threshold)),
                                         "causal_decay" => Some((cfg_causal_decay, set_cfg_causal_decay)),
+                                        "reward_symbol_threshold" => Some((
+                                            cfg_reward_symbol_threshold,
+                                            set_cfg_reward_symbol_threshold,
+                                        )),
+                                        "concept_validate_threshold" => Some((
+                                            cfg_concept_validate_threshold,
+                                            set_cfg_concept_validate_threshold,
+                                        )),
                                         _ => None,
                                     }
                                 };
@@ -8150,6 +8413,276 @@ fn App() -> impl IntoView {
                                 <div class="card">
                                     <h3 class="card-title">"🧪 Learning"</h3>
                                     <p class="subtle">"Controls for learning writes, accelerated learning, and simulation cadence."</p>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"🧊 Manual gates (freeze / paralyze)"</h3>
+                                    <p class="subtle">
+                                        "Freeze disables learning updates for gated units while dynamics still run. "
+                                        "Paralyze clamps activity to zero (and disables learning). "
+                                        "Use module gates to stabilize learned modules during exploration."
+                                    </p>
+
+                                    <div class="row wrap" style="gap: 10px; align-items: center; justify-content: space-between;">
+                                        <div class="row wrap" style="gap: 10px; align-items: center;">
+                                            <label class="label" style="display:flex; align-items:center; gap: 8px;">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Gate"</span>
+                                                <select
+                                                    class="select"
+                                                    prop:value=move || {
+                                                        match gates_kind.get() {
+                                                            GateKind::Freeze => "freeze".to_string(),
+                                                            GateKind::Paralyze => "paralyze".to_string(),
+                                                        }
+                                                    }
+                                                    on:change=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        set_gates_kind.set(if v.trim() == "paralyze" {
+                                                            GateKind::Paralyze
+                                                        } else {
+                                                            GateKind::Freeze
+                                                        });
+                                                    }
+                                                >
+                                                    <option value="freeze">"Freeze"</option>
+                                                    <option value="paralyze">"Paralyze"</option>
+                                                </select>
+                                            </label>
+
+                                            <label class="label" style="display:flex; align-items:center; gap: 8px;">
+                                                <input
+                                                    type="checkbox"
+                                                    prop:checked=move || gates_enabled.get()
+                                                    on:change=move |ev| {
+                                                        set_gates_enabled.set(event_target_checked(&ev));
+                                                    }
+                                                />
+                                                <span style="color: var(--text); font-size: 0.85rem;">"Enabled"</span>
+                                            </label>
+                                        </div>
+
+                                        <div class="row wrap" style="gap: 10px; align-items: center;">
+                                            <button
+                                                class="btn"
+                                                on:click=move |_| refresh_gates.run(())
+                                            >
+                                                "Refresh"
+                                            </button>
+                                            <button
+                                                class="btn danger"
+                                                on:click=move |_| clear_gates.run(())
+                                            >
+                                                "Clear all"
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div class="row wrap" style="gap: 10px; align-items: center; margin-top: 10px;">
+                                        <div class="subtle" style="min-width: 240px;">
+                                            {move || {
+                                                let _ = gates_version.get();
+                                                let (frozen, paralyzed) = runtime.with_value(|r| r.brain.gate_counts());
+                                                format!("Active gates: frozen={} paralyzed={}", frozen, paralyzed)
+                                            }}
+                                        </div>
+                                        <div style="flex: 1;"></div>
+                                    </div>
+
+                                    <div class="row wrap" style="gap: 12px; align-items: end; margin-top: 12px;">
+                                        <div style="min-width: 220px;">
+                                            <label class="label">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Module id"</span>
+                                                <input
+                                                    class="input"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    prop:value=move || gates_module_id.get().to_string()
+                                                    on:input=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        set_gates_module_id.set(v.trim().parse::<u16>().unwrap_or(0));
+                                                    }
+                                                />
+                                            </label>
+                                        </div>
+                                        <button
+                                            class="btn"
+                                            on:click=move |_| apply_module_gate.run(())
+                                        >
+                                            "Apply to module"
+                                        </button>
+
+                                        <div style="min-width: 220px;">
+                                            <label class="label">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Unit id"</span>
+                                                <input
+                                                    class="input"
+                                                    type="number"
+                                                    min="0"
+                                                    step="1"
+                                                    prop:value=move || gates_unit_id.get().to_string()
+                                                    on:input=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        set_gates_unit_id.set(v.trim().parse::<u32>().unwrap_or(0));
+                                                    }
+                                                />
+                                            </label>
+                                        </div>
+                                        <button
+                                            class="btn"
+                                            on:click=move |_| apply_unit_gate.run(())
+                                        >
+                                            "Apply to unit"
+                                        </button>
+                                    </div>
+
+                                    <div style="margin-top: 12px;">
+                                        <pre class="pre">{move || {
+                                            let _ = gates_version.get();
+                                            let mods = gates_modules.get();
+                                            if mods.is_empty() {
+                                                return "(no modules yet — train a bit, then Refresh)".to_string();
+                                            }
+
+                                            let mut out = String::new();
+                                            out.push_str("id  units  frozen  paralyzed  reward_ema  last_step  name\n");
+                                            for m in mods {
+                                                out.push_str(&format!(
+                                                    "{:>2}  {:>5}  {:>6}  {:>9}  {:>9}  {:>9}  {}\n",
+                                                    m.id,
+                                                    m.unit_count,
+                                                    m.frozen_units,
+                                                    m.paralyzed_units,
+                                                    fmt_f32_signed_fixed(m.reward_ema, 3),
+                                                    m.last_routed_step,
+                                                    m.name
+                                                ));
+                                            }
+                                            out
+                                        }}</pre>
+                                    </div>
+                                </div>
+
+                                <div class="card">
+                                    <h3 class="card-title">"🧪 Local Trial (manual experiment)"</h3>
+                                    <p class="subtle">
+                                        "Runs a single daemon-style Trial directly against the in-browser brain: inject stimuli, constrain actions, apply reward, and optionally learn. "
+                                        "This is useful for boundary tests and scripted shaping without leaving the web UI."
+                                    </p>
+
+                                    <div class="row wrap" style="gap: 12px; align-items: end;">
+                                        <div style="min-width: 240px;">
+                                            <label class="label">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Context key"</span>
+                                                <input
+                                                    class="input"
+                                                    prop:value=move || trial_context_key.get()
+                                                    on:input=move |ev| set_trial_context_key.set(event_target_value(&ev))
+                                                />
+                                            </label>
+                                        </div>
+
+                                        <div style="min-width: 160px;">
+                                            <label class="label">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Steps"</span>
+                                                <input
+                                                    class="input"
+                                                    type="number"
+                                                    min="1"
+                                                    step="1"
+                                                    prop:value=move || trial_steps.get().to_string()
+                                                    on:input=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        set_trial_steps.set(v.trim().parse::<u32>().unwrap_or(1).max(1));
+                                                    }
+                                                />
+                                            </label>
+                                        </div>
+
+                                        <div style="min-width: 160px;">
+                                            <label class="label">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Reward"</span>
+                                                <input
+                                                    class="input"
+                                                    type="number"
+                                                    step="0.01"
+                                                    prop:value=move || fmt_f32_signed_fixed(trial_reward.get(), 2)
+                                                    on:input=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        set_trial_reward.set(v.trim().parse::<f32>().unwrap_or(0.0));
+                                                    }
+                                                />
+                                            </label>
+                                        </div>
+
+                                        <label class="label" style="display:flex; align-items:center; gap: 8px; margin-bottom: 2px;">
+                                            <input
+                                                type="checkbox"
+                                                prop:checked=move || trial_learn.get()
+                                                on:change=move |ev| set_trial_learn.set(event_target_checked(&ev))
+                                            />
+                                            <span style="color: var(--text); font-size: 0.85rem;">"Learn"</span>
+                                        </label>
+
+                                        <button class="btn primary" on:click=move |_| run_local_trial()>
+                                            "Run trial"
+                                        </button>
+                                    </div>
+
+                                    <div class="row wrap" style="gap: 12px; align-items: end; margin-top: 10px;">
+                                        <div style="min-width: 320px; flex: 1;">
+                                            <label class="label">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Allowed actions (comma/space separated)"</span>
+                                                <input
+                                                    class="input"
+                                                    placeholder="e.g. left right"
+                                                    prop:value=move || trial_allowed_actions.get()
+                                                    on:input=move |ev| set_trial_allowed_actions.set(event_target_value(&ev))
+                                                />
+                                            </label>
+                                        </div>
+
+                                        <div style="min-width: 240px;">
+                                            <label class="label">
+                                                <span style="color: var(--muted); font-size: 0.85rem;">"Forced action (optional)"</span>
+                                                <input
+                                                    class="input"
+                                                    placeholder="(leave empty)"
+                                                    prop:value=move || trial_forced_action.get()
+                                                    on:input=move |ev| set_trial_forced_action.set(event_target_value(&ev))
+                                                />
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div style="margin-top: 10px;">
+                                        <label class="label">
+                                            <span style="color: var(--muted); font-size: 0.85rem;">"Stimuli (one per line: name strength)"</span>
+                                            <textarea
+                                                class="input"
+                                                style="min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;"
+                                                prop:value=move || trial_stimuli_text.get()
+                                                on:input=move |ev| set_trial_stimuli_text.set(event_target_value(&ev))
+                                                placeholder="# example\nmaze_goal_left 1.0\nmaze_wall_up 1.0"
+                                            ></textarea>
+                                        </label>
+                                    </div>
+
+                                    <div style="margin-top: 10px;">
+                                        <pre class="pre">{move || {
+                                            let Some(r) = trial_result.get() else {
+                                                return "(no trial run yet)".to_string();
+                                            };
+                                            format!(
+                                                "status={}\naction={}\nscore={}\nreward={}\nlearned={}\n",
+                                                r.status,
+                                                r.action,
+                                                fmt_f32_signed_fixed(r.score, 4),
+                                                fmt_f32_signed_fixed(r.reward, 4),
+                                                r.learned
+                                            )
+                                        }}</pre>
+                                    </div>
                                 </div>
 
                                 <div class="card">
